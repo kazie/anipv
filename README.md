@@ -21,27 +21,35 @@ history. anipv replaces that:
 - **Queue & play**: mark episodes from several shows, press `p`, and they play in one mpv session, just like `mpv A B C`.
 - **Automatic tracking**: anipv follows mpv over its IPC socket. Finished episodes are marked watched; stop half-way and it resumes there next time.
 - **Your library, understood**: bracketed (`[Group] Show - 07 (1080p)`), dotted (`Show.S01E07.1080p…`), underscored and numbered file names, `v2` versions, `S02E01` / `1x05` markers, season folders (inside an archive series folder, `Season 1` and `Season 2` stay separate seasons of the same title), OVAs, openings/endings, previews, multi-episode files. Parsed and grouped, with a test corpus covering each naming convention.
-- **Statuses**: following, paused ("dropped too early, might resume"), dropped (with a note), completed.
+- **Statuses**: following, paused ("dropped too early, might resume"), dropped (with a note), completed, skipped. A status you set on a series you've already finished stays, so you can follow it again for a rewatch.
 - **Local first, multi-device**: history is an append-only log per device. Sync the folder however you like; merging is conflict-free.
 - **Optional metadata**: episode totals and airing dates from the offline [anime-offline-database] and anonymous [AniList] queries. No account needed, and nothing about your watching leaves your machine.
 - **Bootstrap from fish**: imports the `mpv …` commands already in your fish history.
 
 ## Install
 
-There are no prebuilt binaries; build it yourself (Rust 1.89+).
+There are no prebuilt binaries; build it yourself (Rust 1.89+). anipv is
+Unix-only (mpv is controlled over a Unix socket, so Windows isn't supported)
+and is developed and tested on Linux.
 
 ```sh
 git clone https://github.com/kazie/anipv && cd anipv
-cargo install --path . --locked --root ~    # release build, installed as ~/bin/anipv
+just install    # release build, installed as ~/.cargo/bin/anipv
 ```
 
-`cargo install` always builds in release mode. Without `--root` it goes to
-`~/.cargo/bin` instead. To do the same by hand:
-`cargo build --release && cp target/release/anipv ~/bin/`.
-Re-run either one after `git pull` to update.
+Make sure `~/.cargo/bin` is on your `PATH`. [`just`](https://github.com/casey/just)
+runs `cargo install --path . --locked`, which always builds in release mode.
+Without `just`, run that command yourself (add `--root ~` to install as
+`~/bin/anipv` instead), or skip the checkout:
 
-Needs
-[`mpv`](https://mpv.io) on your `PATH`. Shell completions and a man page:
+```sh
+cargo install --git https://github.com/kazie/anipv --locked
+```
+
+Re-run it after `git pull` to update.
+
+Needs [`mpv`](https://mpv.io) on your `PATH`. fish is only needed for
+`import-fish`. Shell completions and a man page:
 `anipv completions fish > ~/.config/fish/completions/anipv.fish`, `anipv man > anipv.1`.
 
 ## Quick start
@@ -51,6 +59,8 @@ Needs
 #    ongoing = loose files, series from file names
 #    archive = one folder per series
 anipv init --ongoing ~/media/Downloads --archive ~/media/Anime
+#    (config goes to ~/.config/anipv/config.toml, history to
+#    ~/.local/share/anipv/events; add --events-dir <synced folder> to share history)
 
 # 2. Index it (also happens in the background every time the TUI starts).
 anipv scan
@@ -89,7 +99,7 @@ opens a fake library.
 
 Common keys: `1`–`5` switch views, `space` queues, `p` plays, `s` sets the
 status, `/` searches, `M` refreshes metadata for the series under the cursor,
-`ctrl-r` refreshes all of it, `?` shows everything. Full list: [docs/keybindings.md](docs/keybindings.md).
+`ctrl-r` refreshes all of it, `q` or `ctrl-c` quits (after asking), `?` shows everything. Full list: [docs/keybindings.md](docs/keybindings.md).
 
 ## The CLI
 
@@ -153,7 +163,7 @@ just demo             # try the TUI against a throwaway demo library
 just screenshots      # regenerate the SVGs in this README
 just record           # re-record the demo GIF (needs vhs and ttyd)
 just update-fixtures  # update golden files after an intentional change, then review
-just install          # install anipv to ~/.cargo/bin
+just install          # install a release build to ~/.cargo/bin
 ```
 
 - Tests are unit, property, snapshot and end-to-end tests (`cargo test`). After an

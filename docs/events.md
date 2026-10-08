@@ -34,7 +34,7 @@ name `dev`, and an event kind `e`:
 | `watched` | `series`, `item`, `file?` | Item finished. |
 | `progress` | `series`, `item`, `pos`, `dur?`, `file?` | Stopped part-way. Ignored if the item is already watched (re-watching doesn't un-watch). |
 | `unwatched` | `series`, `item`, `file?` | Reset an item. |
-| `series_status` | `series`, `status`, `note?`, `auto?` | `following`, `paused`, `dropped`, `completed`, `skipped` (never started, not interested) or `untracked`. A status a reader doesn't know (written by a newer version) reads as `untracked`. `auto: true` marks a change anipv made itself: a followed series is completed once it has finished airing and every episode is watched. That happens at most once per series, so setting it back to following sticks. |
+| `series_status` | `series`, `status`, `note?`, `auto?`, `keep?` | `following`, `paused`, `dropped`, `completed`, `skipped` (never started, not interested) or `untracked`. A status a reader doesn't know (written by a newer version) reads as `untracked`. `auto: true` marks a change anipv made itself: a followed series is completed once it has finished airing and every episode is watched. That happens at most once per series, so setting it back to following sticks. `keep: true` marks a status the user chose for a series that was already finished and fully watched; anipv doesn't complete it automatically until the status changes again. Readers that don't know `keep` ignore it. |
 | `alias` | `from`, `to` | Treat series key `from` as part of `to` (e.g. English vs. romaji names). |
 | `unalias` | `from` | Undo an alias. |
 | `title` | `series`, `title` | Display title override. |
