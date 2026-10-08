@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use crate::config::{Config, Paths};
 use std::collections::HashSet;
 
-use crate::events::{CachedLog, Event, EventBody, EventLog};
+use crate::events::{CachedLog, EventBody, EventLog, Recorded};
 use crate::index::Db;
 use crate::index::FileRow;
 use crate::index::classify::{Classified, FileClass, classify_row, classify_rows};
@@ -150,10 +150,11 @@ impl Ctx {
     /// keys to the current ones (see [`Db::rekey_legacy`]).
     ///
     /// Any [`Library::warnings`] are printed to stderr: only the CLI builds the
-    /// library this way (the TUI uses [`Ctx::library_with`] and shows them itself).
+    /// library this way (the TUI uses [`Ctx::library_completed`] and shows
+    /// them itself).
     #[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
     pub fn library(&self) -> Result<Library> {
-        let lib = self.library_with(&mut self.index()?)?;
+        let lib = self.migrated_library(&mut self.index()?, &mut self.log.load_cached()?)?;
         for w in &lib.warnings {
             eprintln!("warning: {w}");
         }
@@ -166,9 +167,13 @@ impl Ctx {
         Ok(Index::new(&self.cfg, self.db.files()?, self.meta_cache()?))
     }
 
-    /// [`Ctx::index`] after a scan: files that `old` has keep their classification.
-    pub fn index_from(&self, old: &Index) -> Result<Index> {
-        Ok(Index::with_known(&self.cfg, self.db.files()?, self.meta_cache()?, old))
+    /// [`Ctx::index`] after a scan: only the files are read again, and those
+    /// that `old` has keep their classification. The metadata, which a scan
+    /// does not change, is moved over from `old`.
+    pub fn index_from(&self, old: &mut Index) -> Result<Index> {
+        let files = self.db.files()?;
+        let meta = std::mem::take(&mut old.meta);
+        Ok(Index::with_known(&self.cfg, files, meta, old))
     }
 
     /// The metadata part of [`Ctx::index`], for after metadata updates.
@@ -186,23 +191,7 @@ impl Ctx {
         })
     }
 
-    /// Build the library from an already loaded index plus a fresh replay
-    /// (and migrate legacy keys, like [`Ctx::library`]).
-    ///
-    /// Rows moved in the database are moved in `index` too.
-    ///
-    /// Moving cache rows touches the database only for legacy keys that have
-    /// rows in `index` (and writes only when they still have them). If that,
-    /// or recording the aliases, fails (e.g. the database is locked), the
-    /// library is returned anyway with a message in [`Library::warnings`]: it
-    /// already reads those keys and rows as the current ones, and the next
-    /// build tries again.
-    pub fn library_with(&self, index: &mut Index) -> Result<Library> {
-        self.migrated_library(index, &mut self.log.load_cached()?)
-    }
-
-    /// [`Ctx::library_with`] from the events in `log` (read with
-    /// [`EventLog::load_cached`] and kept up to date by the caller), then
+    /// [`Ctx::migrated_library`], then
     /// [`Ctx::auto_complete`] on it. When anything was completed, the library
     /// is rebuilt from the same events plus the recorded ones. Whatever is
     /// recorded is merged into `log`. Returns the library and the completed
@@ -216,7 +205,7 @@ impl Ctx {
                 return Ok((lib, Vec::new()));
             }
         };
-        if recorded.is_empty() {
+        if recorded.events.is_empty() {
             return Ok((lib, done));
         }
         self.log.merge(log, recorded);
@@ -225,8 +214,19 @@ impl Ctx {
         Ok((rebuilt, done))
     }
 
-    /// [`Ctx::library_with`] from the events in `log` (see
-    /// [`Ctx::library_completed`]), merging the aliases it records into `log`.
+    /// Build the library from an already loaded index and the events in `log`
+    /// (read with [`EventLog::load_cached`] and kept up to date by the
+    /// caller), and migrate legacy keys (like [`Ctx::library`]), merging the
+    /// aliases it records into `log`.
+    ///
+    /// Rows moved in the database are moved in `index` too.
+    ///
+    /// Moving cache rows touches the database only for legacy keys that have
+    /// rows in `index` (and writes only when they still have them). If that,
+    /// or recording the aliases, fails (e.g. the database is locked), the
+    /// library is returned anyway with a message in [`Library::warnings`]: it
+    /// already reads those keys and rows as the current ones, and the next
+    /// build tries again.
     pub fn migrated_library(&self, index: &mut Index, log: &mut CachedLog) -> Result<Library> {
         let mut lib = Library::build(&self.cfg, log.events(), index);
         let legacy = lib.legacy_keys();
@@ -271,7 +271,7 @@ impl Ctx {
     /// spellings, see [`Library::unmerge_events`]), without reading the
     /// event log again: `lib` knows which spellings it names. Returns the
     /// recorded events.
-    pub fn unmerge<'a>(&self, lib: &Library, keys: impl IntoIterator<Item = &'a str>) -> Result<Vec<Event>> {
+    pub fn unmerge<'a>(&self, lib: &Library, keys: impl IntoIterator<Item = &'a str>) -> Result<Recorded> {
         self.record(keys.into_iter().flat_map(|k| lib.unmerge_events(k)))
     }
 
@@ -287,7 +287,7 @@ impl Ctx {
     }
 
     /// Record events for this device. Returns them as recorded.
-    pub fn record(&self, bodies: impl IntoIterator<Item = EventBody>) -> Result<Vec<Event>> {
+    pub fn record(&self, bodies: impl IntoIterator<Item = EventBody>) -> Result<Recorded> {
         self.log.append(bodies)
     }
 
@@ -296,7 +296,7 @@ impl Ctx {
     ///
     /// `series` is resolved through `lib` first, so a key held from before a
     /// merge or reload links the series it is now. Returns the recorded events.
-    pub fn link(&self, lib: &Library, series: &str, anilist: Option<u64>) -> Result<Vec<Event>> {
+    pub fn link(&self, lib: &Library, series: &str, anilist: Option<u64>) -> Result<Recorded> {
         let series = lib.resolve(series).to_string();
         // The cache goes first: it is disposable, so an error here leaves the
         // link unrecorded (and the caller's "not linked" accurate) rather than
@@ -314,15 +314,18 @@ impl Ctx {
     }
 
     /// Set a series' status. Returns the recorded event.
-    pub fn set_status(&self, series: &str, status: SeriesStatus, note: Option<String>) -> Result<Vec<Event>> {
+    pub fn set_status(&self, series: &str, status: SeriesStatus, note: Option<String>) -> Result<Recorded> {
         self.record([EventBody::status(series, status, note)])
     }
 
     /// Mark followed series that are finished and fully watched as completed.
-    /// Returns the recorded events and the series' titles. Call after anything
-    /// that changes watch state or metadata. See [`Ctx::library_completed`] to
-    /// get the library with them completed.
-    pub fn auto_complete(&self, lib: &Library) -> Result<(Vec<Event>, Vec<String>)> {
+    /// Returns the recorded events and the series' titles.
+    ///
+    /// Due after anything that changes watch state, statuses or metadata: the
+    /// TUI runs it on every reload ([`Ctx::library_completed`], which also
+    /// returns the library with them completed), the CLI after every command
+    /// that writes.
+    pub fn auto_complete(&self, lib: &Library) -> Result<(Recorded, Vec<String>)> {
         let done: Vec<&crate::library::Series> = lib.series.iter().filter(|s| s.should_auto_complete()).collect();
         let recorded = self.log.append(done.iter().map(|s| EventBody::SeriesStatus {
             series: s.key.clone(),
@@ -339,7 +342,7 @@ impl Ctx {
     /// when you actually watched them. Unwatching clears a resume point too,
     /// and skips items anipv has never heard of. An item named twice is
     /// recorded once. Returns the recorded events, one per item that changed.
-    pub fn mark(&self, s: &Series, items: &[ItemKey], watched: bool) -> Result<Vec<Event>> {
+    pub fn mark(&self, s: &Series, items: &[ItemKey], watched: bool) -> Result<Recorded> {
         let changes = |k: &ItemKey| match (s.item(k), watched) {
             (None, watched) => watched,
             (Some(i), true) => !i.state.is_watched(),
@@ -446,7 +449,7 @@ impl Ctx {
         pos: f64,
         dur: Option<f64>,
         eof: bool,
-    ) -> Result<(String, Vec<ItemKey>, crate::mpv::Outcome, Vec<Event>)> {
+    ) -> Result<(String, Vec<ItemKey>, crate::mpv::Outcome, Recorded)> {
         use crate::mpv::{Outcome, outcome};
         let (series, items) = lib.identify(&self.cfg, path);
         let file = Some(crate::library::file_name_lossy(path)).filter(|f| !f.is_empty());
@@ -670,7 +673,7 @@ mod tests {
         ctx.mark(ctx.library().unwrap().get("yuru camp").unwrap(), std::slice::from_ref(&ep), false).unwrap();
         let before = ctx.log.load_all().unwrap().events.len();
         let lib = ctx.library().unwrap();
-        assert_eq!(ctx.mark(lib.get("yuru camp").unwrap(), &[ep.clone(), ep], true).unwrap().len(), 1);
+        assert_eq!(ctx.mark(lib.get("yuru camp").unwrap(), &[ep.clone(), ep], true).unwrap().events.len(), 1);
         assert_eq!(ctx.log.load_all().unwrap().events.len(), before + 1);
     }
 
@@ -687,7 +690,7 @@ mod tests {
         let (lib, done) = ctx.library_completed(&mut index, &mut log).unwrap();
         assert_eq!(done, vec!["Yuru Camp"]);
         assert_eq!(lib.get("yuru camp").unwrap().status, SeriesStatus::Completed);
-        let fresh = ctx.library_with(&mut index).unwrap();
+        let fresh = ctx.migrated_library(&mut index, &mut ctx.log.load_cached().unwrap()).unwrap();
         let summary =
             |l: &Library| -> Vec<_> { l.series.iter().map(|s| (s.key.clone(), s.status, s.note.clone())).collect() };
         assert_eq!(summary(&lib), summary(&fresh));
@@ -836,14 +839,14 @@ mod tests {
         let baka = ("バカ".to_string(), Some(1));
         ctx.db.put_metas(&[meta("ハカ", 1)]).unwrap();
         let mut index = ctx.index().unwrap();
-        ctx.library_with(&mut index).unwrap();
+        ctx.migrated_library(&mut index, &mut ctx.log.load_cached().unwrap()).unwrap();
         assert_eq!(rows(&index), sorted(meta_rows(&ctx)));
         assert!(rows(&index).contains(&baka) && no_legacy_row(&ctx));
 
         // A row already under the new key wins.
         ctx.db.put_metas(&[meta("ハカ", 2)]).unwrap();
         let mut index = ctx.index().unwrap();
-        ctx.library_with(&mut index).unwrap();
+        ctx.migrated_library(&mut index, &mut ctx.log.load_cached().unwrap()).unwrap();
         assert_eq!(rows(&index), sorted(meta_rows(&ctx)));
         assert!(rows(&index).contains(&baka) && no_legacy_row(&ctx));
     }

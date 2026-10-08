@@ -93,9 +93,10 @@ pub fn match_library(lib: &Library, db: &OfflineDb, ts: i64, only: Option<&str>)
     rep
 }
 
-/// Metadata for `s`, preferring rows not yet written to the library.
+/// Metadata for `s`, preferring rows not yet written to the library (when
+/// its link admits them, see [`Series::usable_meta`]).
 fn meta_of<'a>(s: &'a Series, fresh: &'a HashMap<String, SeriesMeta>) -> Option<&'a SeriesMeta> {
-    fresh.get(&s.key).or(s.meta.as_ref())
+    s.usable_meta(fresh.get(&s.key)).or(s.meta.as_ref())
 }
 
 // How long cached metadata is trusted, in seconds.
@@ -147,7 +148,7 @@ fn stale_id(s: &Series, m: Option<&SeriesMeta>, checks: &Checks, ts: i64, max_ag
     // Airing info is kept fresh for series being watched; others (e.g.
     // completed) only get the one-time refresh below.
     let watching = matches!(s.status, SeriesStatus::Following | SeriesStatus::Paused);
-    let id = s.link.manual().or_else(|| m.and_then(|m| m.anilist))?;
+    let id = s.anilist_id_with(m)?;
     if recently_not_found(checks, id, ts) {
         return None;
     }
@@ -175,10 +176,7 @@ pub fn requested_ids(lib: &Library, fresh: &HashMap<String, SeriesMeta>, only: O
             Some(k) => s.key == k,
             None => s.status.is_tracked(),
         })
-        .filter_map(|s| {
-            let id = s.link.manual().or_else(|| meta_of(s, fresh).and_then(|m| m.anilist))?;
-            Some((s.key.clone(), id))
-        })
+        .filter_map(|s| Some((s.key.clone(), s.anilist_id_with(meta_of(s, fresh))?)))
         .collect()
 }
 
@@ -212,7 +210,7 @@ pub fn needs_match(lib: &Library) -> bool {
     lib.series.iter().any(|s| {
         let unchecked = s.meta.is_none() && !s.match_checked && s.link == Link::Auto;
         (unchecked && (s.present() || s.status != SeriesStatus::Untracked))
-            || s.link.manual().is_some_and(|id| s.meta.as_ref().and_then(|m| m.anilist) != Some(id))
+            || (s.link.manual().is_some() && s.usable_meta(s.meta.as_ref()).is_none())
     })
 }
 
@@ -314,11 +312,15 @@ pub struct SyncOptions {
     pub update_offline: bool,
     /// The offline database as loaded by earlier syncs (and updated by this one).
     pub offline: std::sync::Arc<offline::OfflineCache>,
+    /// Network metadata is on (`anilist` in the config): without it, [`sync`]
+    /// asks `AniList` nothing, whatever transport it is given.
+    pub network: bool,
 }
 
 impl SyncOptions {
     /// A user-requested re-match and refresh of everything (`None`) or one
-    /// series, without inbox lookups or an offline database download.
+    /// series, without inbox lookups or an offline database download (nor,
+    /// until [`SyncOptions::network`] is set, any `AniList` query).
     pub fn requested(only: Option<String>) -> Self {
         Self { refresh: Refresh::Requested, rematch: true, only, ..Self::default() }
     }
@@ -332,7 +334,8 @@ impl SyncOptions {
 /// Plan a metadata update for `request`: `None` when an automatic one has
 /// nothing to do. With `anilist = false` in `cfg`, nothing is planned that
 /// needs the network (inbox lookups, stale refreshes, the offline database
-/// download); matching still uses a downloaded database.
+/// download) and the options say so ([`SyncOptions::network`]), so [`sync`]
+/// asks `AniList` nothing; matching still uses a downloaded database.
 pub fn plan(
     lib: &Library,
     cfg: &crate::config::Config,
@@ -350,13 +353,13 @@ pub fn plan(
                 return None;
             }
             let refresh = Refresh::Stale { ids, max_age: *max_age, checks: checks.clone() };
-            return Some(SyncOptions { inbox, refresh, rematch, ..SyncOptions::default() });
+            return Some(SyncOptions { inbox, refresh, rematch, network, ..SyncOptions::default() });
         }
         Request::All => None,
         Request::Series(key) => Some(key.clone()),
     };
     // A requested update also refreshes an old offline database.
-    Some(SyncOptions { inbox, update_offline: network, ..SyncOptions::requested(only) })
+    Some(SyncOptions { inbox, update_offline: network, network, ..SyncOptions::requested(only) })
 }
 
 /// What a [`sync_with_progress`] is doing.
@@ -369,8 +372,9 @@ pub enum SyncStep {
 }
 
 /// Match against the offline database (if downloaded), then (when `http` is
-/// given) refresh from `AniList`: stale airing info, the inbox series' airing
-/// info and prequels, or, when forced, everything requested.
+/// given and [`SyncOptions::network`] is on) refresh from `AniList`: stale
+/// airing info, the inbox series' airing info and prequels, or, when forced,
+/// everything requested.
 pub fn sync(
     lib: &Library,
     cache_dir: &Path,
@@ -418,7 +422,7 @@ pub fn sync_with_progress(
             Err(e) => out.errors.push(format!("offline db: {e:#}")),
         }
     }
-    if let Some(http) = http {
+    if let Some(http) = http.filter(|_| opts.network) {
         // A series whose cached link no longer matches is being unlinked: don't
         // refresh the old anime's data, which would write the link back.
         let unlinked: HashSet<&str> = out.attempts.iter().map(|a| a.series.as_str()).collect();
@@ -655,8 +659,14 @@ mod tests {
         SyncOptions {
             refresh: Refresh::Stale { ids, max_age, checks },
             rematch: needs_match(l),
+            network: true,
             ..SyncOptions::default()
         }
+    }
+
+    /// [`SyncOptions::requested`] with network metadata on.
+    fn requested(only: Option<&str>) -> SyncOptions {
+        SyncOptions { network: true, ..SyncOptions::requested(only.map(str::to_string)) }
     }
 
     /// An automatic update with nothing stale, unmatched or in the inbox is
@@ -722,7 +732,7 @@ mod tests {
         let auto = sync(&l, dir.path(), Some(&fake), &auto(&l, Checks::new(), 100, 3600), 100);
         assert!(auto.rows.is_empty() && fake.asked.borrow().is_empty());
 
-        let all = sync(&l, dir.path(), Some(&fake), &SyncOptions::requested(None), 100);
+        let all = sync(&l, dir.path(), Some(&fake), &requested(None), 100);
         assert_eq!(*fake.asked.borrow(), vec![21], "every tracked series, but not untracked ones");
         assert_eq!(all.rows[0].episodes, Some(10));
         assert_eq!(all.rows[0].refreshed_at, Some(100));
@@ -734,9 +744,24 @@ mod tests {
         let l = lib(&[follow], &[row("one piece", 21, Some(99)), row("zzz", 5, Some(99))]);
         let fake = Echo::default();
         let dir = tempfile::tempdir().unwrap();
-        let res = sync(&l, dir.path(), Some(&fake), &SyncOptions::requested(Some("zzz".into())), 100);
+        let res = sync(&l, dir.path(), Some(&fake), &requested(Some("zzz")), 100);
         assert_eq!(*fake.asked.borrow(), vec![5]);
         assert_eq!(res.rows.iter().map(|r| r.series.as_str()).collect::<Vec<_>>(), vec!["zzz"]);
+    }
+
+    /// With network metadata off, a sync asks `AniList` nothing, even when it
+    /// is given a transport.
+    #[test]
+    fn network_off_asks_anilist_nothing() {
+        let follow = Event::new(1, "d", EventBody::status("one piece", SeriesStatus::Following, None));
+        let l = lib(&[follow], &[row("one piece", 21, Some(99))]);
+        let opts = plan(&l, &Config { anilist: false, ..cfg() }, &Checks::new(), &Request::All, 100).unwrap();
+        assert!(!opts.network);
+        let fake = Echo::default();
+        sync(&l, tempfile::tempdir().unwrap().path(), Some(&fake), &opts, 100);
+        assert!(fake.asked.borrow().is_empty());
+        let on = plan(&l, &Config { anilist: true, ..cfg() }, &Checks::new(), &Request::All, 100).unwrap();
+        assert!(on.network);
     }
 
     /// The offline database no longer knows a series whose link was cached: the
@@ -848,8 +873,7 @@ mod tests {
             .collect();
         let rows: Vec<SeriesMeta> = (0..60).map(|i| row(&format!("s{i}"), 1000 + i, None)).collect();
         let l = lib(&follows, &rows);
-        let res =
-            sync(&l, tempfile::tempdir().unwrap().path(), Some(&Echo::failing(2)), &SyncOptions::requested(None), 100);
+        let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&Echo::failing(2)), &requested(None), 100);
         assert_eq!(res.errors.len(), 1, "{:?}", res.errors);
         assert!(res.errors[0].contains("connection reset"), "{:?}", res.errors);
         assert_eq!(res.rows.len(), 50, "the first batch's rows are kept");

@@ -69,13 +69,24 @@ fn show_mark_and_status() {
         .success()
         .stdout(predicate::str::is_match(r"Sousou no Frieren\s+31").unwrap());
     anipv(d.path()).args(["mark", "frieren", "30", "--unwatched"]).assert().success();
+    // An episode listed twice counts once.
+    anipv(d.path())
+        .args(["mark", "frieren", "30,30"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("marked 1 episode(s) of Sousou no Frieren as watched\n"));
     // Unwatching a started episode clears its resume point; unknown episodes
-    // aren't invented.
+    // aren't invented, nor counted as already unwatched.
     anipv(d.path())
         .args(["mark", "ranma", "1,99", "--unwatched"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("marked 1 episode(s) of Ranma 1-2 2024 S3 as unwatched (1 already were)"));
+        .stdout(predicate::str::contains("marked 1 episode(s) of Ranma 1-2 2024 S3 as unwatched (1 not known)\n"));
+    anipv(d.path()).args(["mark", "ranma", "1,1,99", "--unwatched"]).assert().success().stdout(
+        predicate::str::contains(
+            "marked 0 episode(s) of Ranma 1-2 2024 S3 as unwatched (1 already were, 1 not known)\n",
+        ),
+    );
     anipv(d.path()).args(["show", "ranma"]).assert().success().stdout(predicate::str::contains("%").not());
     anipv(d.path()).args(["status", "yuru camp", "following"]).assert().success();
     anipv(d.path())
@@ -84,6 +95,28 @@ fn show_mark_and_status() {
         .success()
         .stdout(predicate::str::contains("Yuru Camp"));
     anipv(d.path()).args(["status", "nonexistent-zzz", "following"]).assert().failure();
+}
+
+/// Following a finished show whose episodes are all watched completes it,
+/// as marking the last episode would.
+#[test]
+fn every_write_completes_finished_series() {
+    let d = demo();
+    anipv(d.path())
+        .args(["mark", "yuru camp", "1-12"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("completed").not());
+    anipv(d.path())
+        .args(["status", "yuru camp", "following"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ Yuru Camp completed: all episodes watched"));
+    anipv(d.path())
+        .args(["ls", "--status", "completed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Yuru Camp"));
 }
 
 #[test]
@@ -269,6 +302,64 @@ fn help_completions_and_man() {
         .success()
         .stdout(predicate::str::contains("complete -c anipv"));
     anipv(d.path()).arg("man").assert().success().stdout(predicate::str::contains(".TH anipv"));
+}
+
+/// Characters the generated completions don't escape inside a quoted
+/// value list (fish `-a "…"`, zsh and bash value specs): a `"` there ends the
+/// quote early and breaks the whole completion file.
+const UNSAFE_IN_COMPLETIONS: &[char] = &['"', '`', '$', '\\'];
+
+/// Every possible value (of a `ValueEnum` or otherwise) of every argument in
+/// `cmd` and its subcommands: `(where, name, help)`.
+fn possible_values(cmd: &clap::Command, at: &str, out: &mut Vec<(String, String, String)>) {
+    for arg in cmd.get_arguments() {
+        for v in arg.get_possible_values() {
+            let help = v.get_help().map(ToString::to_string).unwrap_or_default();
+            out.push((format!("{at} --{}", arg.get_id()), v.get_name().to_string(), help));
+        }
+    }
+    for sub in cmd.get_subcommands() {
+        possible_values(sub, &format!("{at} {}", sub.get_name()), out);
+    }
+}
+
+/// Completions stay valid shell code: no value or value help contains a
+/// character the generators leave unescaped, every fish `-a "…"` argument
+/// closes where it should, and the scripts parse in the shells installed.
+#[test]
+fn completions_are_valid_shell_code() {
+    let mut values = Vec::new();
+    possible_values(&anipv::cli::command(), "anipv", &mut values);
+    assert!(values.iter().any(|(_, name, help)| name == "following" && !help.is_empty()), "{values:?}");
+    for (at, name, help) in &values {
+        assert!(!name.contains(UNSAFE_IN_COMPLETIONS) && !help.contains(UNSAFE_IN_COMPLETIONS), "{at}: {name}: {help}");
+    }
+
+    let d = tempfile::tempdir().unwrap();
+    for shell in ["fish", "bash", "zsh"] {
+        let out = anipv(d.path()).args(["completions", shell]).output().unwrap();
+        assert!(out.status.success(), "{shell}");
+        let script = String::from_utf8(out.stdout).unwrap();
+        if shell == "fish" {
+            // Each `-a "…"` closes right before whitespace or the end of the line.
+            for (i, _) in script.match_indices(r#" -a ""#) {
+                let rest = &script[i + 5..];
+                let end = rest.find('"').unwrap_or_else(|| panic!("unclosed -a at {i}"));
+                let after = rest[end + 1..].chars().next();
+                assert!(after.is_none_or(char::is_whitespace), "-a argument closes early: {}", &rest[..=end]);
+            }
+        }
+        let file = d.path().join(format!("anipv.{shell}"));
+        std::fs::write(&file, &script).unwrap();
+        match std::process::Command::new(shell).arg("-n").arg(&file).output() {
+            Ok(check) => assert!(
+                check.status.success(),
+                "{shell} -n rejects the completions: {}",
+                String::from_utf8_lossy(&check.stderr)
+            ),
+            Err(_) => eprintln!("{shell} not installed: skipping its syntax check"),
+        }
+    }
 }
 
 #[test]

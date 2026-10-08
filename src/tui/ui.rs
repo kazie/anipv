@@ -71,7 +71,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Some(Popup::Status { series, idx }) => draw_status_popup(f, &app.lib, series, *idx),
         Some(Popup::Merge(picker)) => draw_merge(f, &app.lib, picker),
         Some(Popup::Input { purpose, prompt, text }) => draw_input(f, purpose, prompt, text),
-        Some(Popup::ConfirmQuit) => draw_confirm(f),
+        Some(Popup::ConfirmQuit) => draw_confirm(f, app.playing.is_some()),
         None => {}
     }
 }
@@ -603,7 +603,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// A count of rows or characters as terminal cells (saturating).
-fn cells(n: usize) -> u16 {
+pub(super) fn cells(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
 }
 
@@ -628,7 +628,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("M", "refresh metadata for the series under the cursor"),
             ("ctrl-r", "refresh all metadata now (updates the anime database if old)"),
             ("?", "this help"),
-            ("q", "quit"),
+            ("q / ctrl-c", "quit (asks first: q, y or ⏎ confirms)"),
         ],
     ),
     (
@@ -762,16 +762,16 @@ fn draw_input(f: &mut Frame, purpose: &InputPurpose, prompt: &str, text: &str) {
     f.render_widget(Paragraph::new(format!("{text}▏")).block(block(format!(" {prompt} "))), area);
 }
 
-fn draw_confirm(f: &mut Frame) {
-    let area = centered(f.area(), 52, 4);
+fn draw_confirm(f: &mut Frame, playing: bool) {
+    let area = centered(f.area(), 56, 4);
     f.render_widget(Clear, area);
+    let lines = if playing {
+        ["mpv is still playing; progress won't be recorded.", "Quit anyway? q/y/Enter quits, any other key cancels"]
+    } else {
+        ["Quit anipv?", "q/y/Enter quits, any other key cancels"]
+    };
     f.render_widget(
-        Paragraph::new(vec![
-            Line::from("mpv is still playing; progress won't be recorded."),
-            Line::from("Quit anyway? y / n"),
-        ])
-        .alignment(Alignment::Center)
-        .block(block(" Quit? ")),
+        Paragraph::new(lines.map(Line::from).to_vec()).alignment(Alignment::Center).block(block(" Quit? ")),
         area,
     );
 }

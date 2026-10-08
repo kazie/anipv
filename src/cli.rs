@@ -2,6 +2,7 @@
 
 mod meta;
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -9,12 +10,12 @@ use anyhow::{Result, bail};
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
-use crate::app::{Ctx, find_series, parse_episode_list, queue_new};
+use crate::app::{Ctx, Index, find_series, parse_episode_list, queue_new};
 use crate::config::{Config, Paths, RootKind};
-use crate::events::{EventBody, now};
+use crate::events::{CachedLog, EventBody, Recorded, now};
 use crate::fmt::{ago, ago_opt, bold, cyan, dim, green, magenta, pad, red, yellow};
-use crate::library::{Library, Series};
-use crate::model::{ItemKind, SeriesStatus, WatchState};
+use crate::library::Library;
+use crate::model::{ItemKey, ItemKind, SeriesStatus, WatchState};
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
@@ -204,13 +205,42 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::New => inbox(&Ctx::load()?, &mut out),
         Cmd::Ls { status, all } => ls(&Ctx::load()?, &status, all, &mut out),
         Cmd::Show { series, all } => show(&Ctx::load()?, &series, all, &mut out),
-        Cmd::Play { series, count, print } => play(&Ctx::load()?, &series, count, print, &mut out),
-        Cmd::Mark { series, episodes, unwatched } => mark(&Ctx::load()?, &series, &episodes, unwatched, &mut out),
-        Cmd::Status { series, status, note } => set_status(&Ctx::load()?, &series, status, note, &mut out),
-        Cmd::Merge { from, to } => merge(&Ctx::load()?, &from, &to, &mut out),
-        Cmd::Unmerge { key } => unmerge(&Ctx::load()?, &key, &mut out),
-        Cmd::Rename { series, title } => rename(&Ctx::load()?, &series, &title, &mut out),
-        Cmd::ImportFish(a) => import_fish(&Ctx::load()?, a, &mut out),
+        Cmd::Play { series, count, print } => {
+            let ctx = Ctx::load()?;
+            if print {
+                play(&ctx, &mut Session::load(&ctx)?, &series, count, print, &mut out)
+            } else {
+                writing(&ctx, &mut out, |s, out| play(&ctx, s, &series, count, print, out))
+            }
+        }
+        Cmd::Mark { series, episodes, unwatched } => {
+            let ctx = Ctx::load()?;
+            writing(&ctx, &mut out, |s, out| mark(&ctx, s, &series, &episodes, unwatched, out))
+        }
+        Cmd::Status { series, status, note } => {
+            let ctx = Ctx::load()?;
+            writing(&ctx, &mut out, |s, out| set_status(&ctx, s, &series, status, note, out))
+        }
+        Cmd::Merge { from, to } => {
+            let ctx = Ctx::load()?;
+            writing(&ctx, &mut out, |s, out| merge(&ctx, s, &from, &to, out))
+        }
+        Cmd::Unmerge { key } => {
+            let ctx = Ctx::load()?;
+            writing(&ctx, &mut out, |s, out| unmerge(&ctx, s, &key, out))
+        }
+        Cmd::Rename { series, title } => {
+            let ctx = Ctx::load()?;
+            writing(&ctx, &mut out, |s, out| rename(&ctx, s, &series, &title, out))
+        }
+        Cmd::ImportFish(a) => {
+            let ctx = Ctx::load()?;
+            if a.dry_run {
+                import_fish(&ctx, &mut Session::load(&ctx)?, a, &mut out)
+            } else {
+                writing(&ctx, &mut out, |s, out| import_fish(&ctx, s, a, out))
+            }
+        }
         Cmd::Meta(m) => meta::run(&Ctx::load()?, m, &mut out),
         Cmd::Doctor => doctor(&Ctx::load()?, &mut out),
         Cmd::Export => export(&Ctx::load()?, &mut out),
@@ -264,73 +294,143 @@ fn init(a: InitArgs, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// Build the library and run `f` on the series `query` names.
-fn with_series<T>(ctx: &Ctx, query: &str, f: impl FnOnce(&Library, &Series) -> Result<T>) -> Result<T> {
-    let lib = ctx.library()?;
-    f(&lib, find_series(&lib, query)?)
+/// The library a command works on, with the index and event log it was
+/// built from, so rebuilding it after a write reads and classifies nothing
+/// again.
+struct Session {
+    index: Index,
+    log: CachedLog,
+    lib: Library,
 }
 
-fn mark(ctx: &Ctx, query: &str, episodes: &str, unwatched: bool, out: &mut impl Write) -> Result<()> {
-    with_series(ctx, query, |_, s| {
-        let items = parse_episode_list(episodes)?;
-        let changed = ctx.mark(s, &items, !unwatched)?.len();
-        let state = if unwatched { "unwatched" } else { "watched" };
-        write!(out, "{ok} marked {changed} episode(s) of {title} as {state}", ok = green("✓"), title = bold(&s.title))?;
-        match items.len() - changed {
-            0 => writeln!(out)?,
-            n => writeln!(out, " ({n} already were)")?,
+impl Session {
+    /// Read the index and the event log and build the library (printing its
+    /// warnings, like [`Ctx::library`]).
+    #[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
+    fn load(ctx: &Ctx) -> Result<Self> {
+        let mut index = ctx.index()?;
+        let mut log = ctx.log.load_cached()?;
+        let lib = ctx.migrated_library(&mut index, &mut log)?;
+        for w in &lib.warnings {
+            eprintln!("warning: {w}");
         }
+        Ok(Self { index, log, lib })
+    }
+
+    /// Keep events just recorded, without reading the log again.
+    fn add(&mut self, ctx: &Ctx, recorded: Recorded) {
+        ctx.log.merge(&mut self.log, recorded);
+    }
+
+    /// Rebuild the library with the events recorded and metadata cached since
+    /// (anything recorded but not [`Session::add`]ed is read from the log).
+    fn rebuild(&mut self, ctx: &Ctx) -> Result<()> {
+        ctx.log.refresh(&mut self.log)?;
+        self.index.meta = ctx.meta_cache()?;
+        self.lib = ctx.migrated_library(&mut self.index, &mut self.log)?;
         Ok(())
-    })?;
-    report_auto_complete(ctx, out)
+    }
 }
 
-fn set_status(ctx: &Ctx, query: &str, status: SeriesStatus, note: Option<String>, out: &mut impl Write) -> Result<()> {
-    with_series(ctx, query, |_, s| {
-        ctx.set_status(&s.key, status, note)?;
-        let (ok, title, status) = (green("✓"), bold(&s.title), status_label(status));
-        writeln!(out, "{ok} {title} is now {status}")?;
-        Ok(())
-    })
+/// Run a command that writes (watch state, statuses, merges, metadata) on a
+/// [`Session`], then complete followed series that are now finished and fully
+/// watched, and say so. Every writing command runs through here, so none
+/// leaves a finished series uncompleted.
+fn writing<W: Write>(ctx: &Ctx, out: &mut W, command: impl FnOnce(&mut Session, &mut W) -> Result<()>) -> Result<()> {
+    let mut s = Session::load(ctx)?;
+    command(&mut s, out)?;
+    s.rebuild(ctx)?;
+    for title in ctx.auto_complete(&s.lib)?.1 {
+        writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(&title))?;
+    }
+    Ok(())
 }
 
-fn merge(ctx: &Ctx, from: &str, to: &str, out: &mut impl Write) -> Result<()> {
-    with_series(ctx, from, |lib, f| {
-        let t = find_series(lib, to)?;
-        if f.key == t.key {
-            bail!("{from} and {to} are already the same series");
-        }
-        ctx.record([EventBody::Alias { from: f.key.clone(), to: t.key.clone() }])?;
-        writeln!(out, "{ok} merged {from} into {to}", ok = green("✓"), from = bold(&f.title), to = bold(&t.title))?;
-        Ok(())
-    })
+fn mark(ctx: &Ctx, s: &mut Session, query: &str, episodes: &str, unwatched: bool, out: &mut impl Write) -> Result<()> {
+    let series = find_series(&s.lib, query)?;
+    let items = parse_episode_list(episodes)?;
+    let recorded = ctx.mark(series, &items, !unwatched)?;
+    let changed = recorded.events.len();
+    let state = if unwatched { "unwatched" } else { "watched" };
+    write!(
+        out,
+        "{ok} marked {changed} episode(s) of {title} as {state}",
+        ok = green("✓"),
+        title = bold(&series.title)
+    )?;
+    // Each episode once; marking unwatched leaves alone (and counts apart)
+    // episodes anipv knows nothing about, while marking watched records them.
+    let unique: HashSet<&ItemKey> = items.iter().collect();
+    let unknown = if unwatched { unique.iter().filter(|k| series.item(k).is_none()).count() } else { 0 };
+    let already = unique.len() - changed - unknown;
+    let notes: Vec<String> = [(already, "already were"), (unknown, "not known")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
+    if notes.is_empty() {
+        writeln!(out)?;
+    } else {
+        writeln!(out, " ({})", notes.join(", "))?;
+    }
+    s.add(ctx, recorded);
+    Ok(())
 }
 
-fn unmerge(ctx: &Ctx, key: &str, out: &mut impl Write) -> Result<()> {
-    let lib = ctx.library()?;
+fn set_status(
+    ctx: &Ctx,
+    s: &mut Session,
+    query: &str,
+    status: SeriesStatus,
+    note: Option<String>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let series = find_series(&s.lib, query)?;
+    let recorded = ctx.set_status(&series.key, status, note)?;
+    let (ok, title, status) = (green("✓"), bold(&series.title), status_label(status));
+    writeln!(out, "{ok} {title} is now {status}")?;
+    s.add(ctx, recorded);
+    Ok(())
+}
+
+fn merge(ctx: &Ctx, s: &mut Session, from: &str, to: &str, out: &mut impl Write) -> Result<()> {
+    let (f, t) = (find_series(&s.lib, from)?, find_series(&s.lib, to)?);
+    if f.key == t.key {
+        bail!("{from} and {to} are already the same series");
+    }
+    let recorded = ctx.record([EventBody::Alias { from: f.key.clone(), to: t.key.clone() }])?;
+    writeln!(out, "{ok} merged {from} into {to}", ok = green("✓"), from = bold(&f.title), to = bold(&t.title))?;
+    s.add(ctx, recorded);
+    Ok(())
+}
+
+fn unmerge(ctx: &Ctx, s: &mut Session, key: &str, out: &mut impl Write) -> Result<()> {
+    let lib = &s.lib;
     let normalized = crate::identity::series_key(key);
     // The name may be keyed as it was before kana voiced marks were kept.
     let legacy = crate::identity::legacy_series_key(key);
     let Some(from) = [key, normalized.as_str(), legacy.as_str()].into_iter().find(|k| lib.is_merged_away(k)) else {
         // Maybe they named the series that others were merged into.
-        if let Ok(s) = find_series(&lib, key)
-            && !s.aliases.is_empty()
+        if let Ok(series) = find_series(lib, key)
+            && !series.aliases.is_empty()
         {
-            bail!("{title} has merged names; unmerge one of: {names}", title = s.title, names = s.aliases.join(", "));
+            let (title, names) = (&series.title, series.aliases.join(", "));
+            bail!("{title} has merged names; unmerge one of: {names}");
         }
         bail!("{key:?} is not a merged-away name (see the \"also:\" line of `anipv show`)");
     };
-    ctx.unmerge(&lib, [from])?;
+    let recorded = ctx.unmerge(lib, [from])?;
     writeln!(out, "{} {} is a separate series again", green("✓"), lib.current_key(from))?;
+    s.add(ctx, recorded);
     Ok(())
 }
 
-fn rename(ctx: &Ctx, query: &str, title: &str, out: &mut impl Write) -> Result<()> {
-    with_series(ctx, query, |_, s| {
-        ctx.record([EventBody::Title { series: s.key.clone(), title: title.to_string() }])?;
-        writeln!(out, "{ok} {old} → {new}", ok = green("✓"), old = s.title, new = bold(title))?;
-        Ok(())
-    })
+fn rename(ctx: &Ctx, s: &mut Session, query: &str, title: &str, out: &mut impl Write) -> Result<()> {
+    let series = find_series(&s.lib, query)?;
+    let recorded = ctx.record([EventBody::Title { series: series.key.clone(), title: title.to_string() }])?;
+    writeln!(out, "{ok} {old} → {new}", ok = green("✓"), old = series.title, new = bold(title))?;
+    s.add(ctx, recorded);
+    Ok(())
 }
 
 #[expect(clippy::print_stderr, reason = "live progress goes to the terminal, not to `out`")]
@@ -557,32 +657,33 @@ fn show(ctx: &Ctx, query: &str, all: bool, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn play(ctx: &Ctx, queries: &[String], count: usize, print: bool, out: &mut impl Write) -> Result<()> {
-    let lib = ctx.library()?;
+fn play(ctx: &Ctx, s: &mut Session, queries: &[String], count: usize, print: bool, out: &mut impl Write) -> Result<()> {
+    let lib = &s.lib;
     let mut queue = Vec::new();
     for q in queries {
-        let s = find_series(&lib, q)?;
-        let entries = queue_new(s, count, |_| false);
+        let series = find_series(lib, q)?;
+        let entries = queue_new(series, count, |_| false);
         if entries.is_empty() {
-            writeln!(out, "{warn} nothing new for {title}", warn = yellow("!"), title = s.title)?;
+            writeln!(out, "{warn} nothing new for {title}", warn = yellow("!"), title = series.title)?;
         }
         queue.extend(entries);
     }
     if queue.is_empty() {
         bail!("nothing to play");
     }
-    let files = ctx.play_files(&lib, &queue);
+    let files = ctx.play_files(lib, &queue);
     if print {
         out.write_all(&crate::mpv::command_line(&ctx.cfg, &files))?;
         writeln!(out)?;
         return Ok(());
     }
-    play_blocking(ctx, &lib, &files, out)
+    play_blocking(ctx, s, &files, out)
 }
 
 /// Run mpv, report and record each finished file.
-fn play_blocking(ctx: &Ctx, lib: &Library, files: &[crate::mpv::PlayFile], out: &mut impl Write) -> Result<()> {
+fn play_blocking(ctx: &Ctx, s: &mut Session, files: &[crate::mpv::PlayFile], out: &mut impl Write) -> Result<()> {
     use crate::mpv::{Outcome, PlayerEvent};
+    let Session { lib, log, .. } = s;
     let (tx, rx) = std::sync::mpsc::channel();
     crate::mpv::spawn_tracked(&ctx.cfg, ctx.socket_path(), files, move |e| {
         let _ = tx.send(e);
@@ -597,11 +698,11 @@ fn play_blocking(ctx: &Ctx, lib: &Library, files: &[crate::mpv::PlayFile], out: 
                 writeln!(out, "{play} {name}", play = cyan("▶"))
             }
             PlayerEvent::Ended { path, pos, dur, eof } => match ctx.record_playback(lib, &path, pos, dur, eof) {
-                // Keep following mpv even if one write fails, or later files go unrecorded.
                 Err(e) => {
                     writeln!(out, "{fail} could not record {file}: {e:#}", fail = red("✗"), file = path.display())
                 }
-                Ok((series, items, o, _)) => {
+                Ok((series, items, o, recorded)) => {
+                    ctx.log.merge(log, recorded);
                     let what = lib.label(&series, &items);
                     match o {
                         Outcome::Watched => {
@@ -630,24 +731,14 @@ fn play_blocking(ctx: &Ctx, lib: &Library, files: &[crate::mpv::PlayFile], out: 
         };
         written = written.and(res);
     }
-    written?;
-    report_auto_complete(ctx, out)
+    Ok(written?)
 }
 
-/// Complete followed series that are now finished and fully watched, and say so.
-fn report_auto_complete(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
-    for title in ctx.auto_complete(&ctx.library()?)?.1 {
-        writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(&title))?;
-    }
-    Ok(())
-}
-
-fn import_fish(ctx: &Ctx, a: ImportArgs, out: &mut impl Write) -> Result<()> {
+fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) -> Result<()> {
     use crate::import_fish::{already_imported, default_history_path, plan, read_history};
     let path = a.history.unwrap_or_else(default_history_path);
     let plays = read_history(&path)?;
-    let lib = ctx.library()?;
-    let p = plan(&ctx.cfg, &lib, &plays, &already_imported(&ctx.log.load_all()?.events), now());
+    let p = plan(&ctx.cfg, &s.lib, &plays, &already_imported(s.log.events()), now());
     let matched = p.watches.iter().filter(|w| w.matched).count();
     writeln!(
         out,
@@ -682,13 +773,16 @@ fn import_fish(ctx: &Ctx, a: ImportArgs, out: &mut impl Write) -> Result<()> {
         writeln!(out, "\n{}", dim("dry run: nothing written"))?;
         return Ok(());
     }
-    ctx.log.append_events(&p.events(ctx.log.device()))?;
+    let events = p.events(ctx.log.device());
+    let written = ctx.log.append_events(&events)?;
+    s.add(ctx, Recorded { events, written });
     if a.apply_status {
-        ctx.record(
+        let recorded = ctx.record(
             p.proposals
                 .iter()
                 .map(|pr| EventBody::status(pr.series.clone(), pr.status, Some("from fish history".into()))),
         )?;
+        s.add(ctx, recorded);
     }
     let also = if a.apply_status { " and applied statuses" } else { "" };
     writeln!(out, "\n{ok} imported{also}", ok = green("✓"))?;
@@ -742,12 +836,11 @@ fn doctor(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
             dim(&last)
         )?;
     }
-    let loaded = ctx.log.load_all()?;
-    writeln!(out, "{label} {n} events", label = bold("log:   "), n = loaded.events.len())?;
-    for e in loaded.errors.iter().take(10) {
+    let Session { log, lib, .. } = Session::load(ctx)?;
+    writeln!(out, "{label} {n} events", label = bold("log:   "), n = log.events().len())?;
+    for e in log.errors().iter().take(10) {
         writeln!(out, "  {} {e}", red("✗"))?;
     }
-    let lib = ctx.library()?;
     let mut odd: Vec<&crate::library::IndexedFile> = lib
         .files
         .iter()

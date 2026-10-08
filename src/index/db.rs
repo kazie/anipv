@@ -234,8 +234,6 @@ pub struct AnilistCheck {
 /// A finished scan of one root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanRecord {
-    /// When the walk started.
-    pub started_at: i64,
     /// When the results were stored.
     pub finished_at: i64,
     /// Every directory could be listed.
@@ -341,21 +339,31 @@ impl Db {
         )?;
         let scan = tx.last_insert_rowid();
         let mut stats = ScanStats { seen: files.len(), ..ScanStats::default() };
+        // New files are the rows the upserts add (an upsert of a known path
+        // updates it in place).
+        let count = |tx: &rusqlite::Transaction<'_>| -> Result<usize> {
+            Ok(from_sql(tx.query_row("SELECT COUNT(*) FROM files", [], |r| r.get::<_, i64>(0))?))
+        };
+        let before = count(&tx)?;
         {
-            let mut exists = tx.prepare_cached("SELECT 1 FROM files WHERE path = ?1")?;
             let mut upsert = tx.prepare_cached(
                 "INSERT INTO files(path, root, rel, size, mtime, present, first_seen, last_scan)
                  VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)
                  ON CONFLICT(path) DO UPDATE SET root = ?2, rel = ?3, size = ?4, mtime = ?5, present = 1, last_scan = ?7",
             )?;
             for f in files {
-                let path = path_bytes(&f.path);
-                if !exists.exists([path])? {
-                    stats.new += 1;
-                }
-                upsert.execute(params![path, root, path_bytes(&f.rel), to_sql(f.size), f.mtime, started_at, scan])?;
+                upsert.execute(params![
+                    path_bytes(&f.path),
+                    root,
+                    path_bytes(&f.rel),
+                    to_sql(f.size),
+                    f.mtime,
+                    started_at,
+                    scan
+                ])?;
             }
         }
+        stats.new = count(&tx)? - before;
         let previously: i64 =
             tx.query_row("SELECT COUNT(*) FROM files WHERE root = ?1 AND present = 1", [root], |r| r.get(0))?;
         let key = format!("{ROOT_MOUNTED}{root}");
@@ -426,17 +434,16 @@ impl Db {
         Ok(self
             .conn
             .query_row(
-                "SELECT started_at, finished_at, complete, seen, new, gone FROM scans WHERE root = ?1 ORDER BY id DESC LIMIT 1",
+                "SELECT finished_at, complete, seen, new, gone FROM scans WHERE root = ?1 ORDER BY id DESC LIMIT 1",
                 [root],
                 |r| {
                     Ok(ScanRecord {
-                        started_at: r.get(0)?,
-                        finished_at: r.get(1)?,
-                        complete: r.get(2)?,
+                        finished_at: r.get(0)?,
+                        complete: r.get(1)?,
                         stats: ScanStats {
-                            seen: from_sql(r.get(3)?),
-                            new: from_sql(r.get(4)?),
-                            gone: from_sql(r.get(5)?),
+                            seen: from_sql(r.get(2)?),
+                            new: from_sql(r.get(3)?),
+                            gone: from_sql(r.get(4)?),
                         },
                     })
                 },
@@ -706,7 +713,7 @@ mod tests {
         assert!(!files.iter().find(|r| r.rel == Path::new("a.mkv")).unwrap().present);
         assert_eq!(files.iter().find(|r| r.rel == Path::new("b.mkv")).unwrap().first_seen, 10);
         let last = db.last_scan("dl").unwrap().unwrap();
-        assert_eq!((last.started_at, last.complete), (20, true));
+        assert!(last.complete);
         assert_eq!(last.stats, ScanStats { seen: 2, new: 1, gone: 1 });
         db.apply_scan("dl", &[f("c.mkv")], 30, false, m(), None).unwrap();
         assert!(!db.last_scan("dl").unwrap().unwrap().complete);

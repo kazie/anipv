@@ -18,11 +18,6 @@ impl EpNo {
         Self(n.saturating_mul(10))
     }
 
-    /// Construct from tenths (`125` = episode 12.5).
-    pub fn from_tenths(t: u32) -> Self {
-        Self(t)
-    }
-
     /// The raw value in tenths.
     pub fn tenths(self) -> u32 {
         self.0
@@ -195,19 +190,27 @@ impl ItemKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum SeriesStatus {
+    // `help` texts are shown in --help and shell completions; keep them short
+    // and free of quotes (the fish completion generator doesn't escape them).
     /// Exists on disk, no decision made. Also what an unknown status (written by
     /// a newer version) reads as, so the event still applies.
     #[default]
+    #[value(help = "On disk, no decision made")]
     Untracked,
     /// Actively watching; shows up in "Up next".
+    #[value(help = "Watching; shows up in Up next")]
     Following,
     /// Stopped for now, may resume ("dropped too early").
+    #[value(help = "Stopped for now, may resume")]
     Paused,
     /// Not interested; hidden by default.
+    #[value(help = "Not interested; hidden by default")]
     Dropped,
     /// Finished.
+    #[value(help = "Finished")]
     Completed,
     /// Never started and not interested (kept out of the inbox).
+    #[value(help = "Never started, not interested")]
     Skipped,
 }
 
@@ -326,7 +329,7 @@ mod tests {
         assert!("1.25".parse::<EpNo>().is_err());
         assert!("x".parse::<EpNo>().is_err());
         assert!("500000000".parse::<EpNo>().is_err(), "overflow is an error, not a panic");
-        assert_eq!(EpNo::new(u32::MAX), EpNo::from_tenths(u32::MAX));
+        assert_eq!(EpNo::new(u32::MAX).tenths(), u32::MAX);
         assert!(EpNo::new(12) < "12.5".parse().unwrap());
     }
 

@@ -168,6 +168,9 @@ struct Current {
     /// Furthest position reached: seeking back doesn't undo progress.
     max_pos: f64,
     dur: Option<f64>,
+    /// When the last `Progress` for this file was sent (throttled to two a
+    /// second); `None` = none yet, so each file's first position goes out.
+    last_sent: Option<Instant>,
 }
 
 impl Current {
@@ -194,15 +197,17 @@ pub fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -
     let mut cur: Option<Current> = None;
     // Id of the last `get_property path` request (observe replies carry 0).
     let mut requests = 0;
-    // Progress is throttled to two updates a second; `None` = nothing sent yet.
-    let mut last_sent: Option<Instant> = None;
     // Raw bytes: mpv passes file names that aren't valid UTF-8 through as-is,
     // and such a line must cost only itself, not end the whole session.
     let mut line = Vec::new();
-    loop {
+    // A read error (mpv crashed: connection reset) ends the stream like EOF,
+    // so the open file still ends below; the error is reported after that.
+    let read_error = loop {
         line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            break;
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break None,
+            Ok(_) => {}
+            Err(e) => break Some(e),
         }
         let Ok(msg) = serde_json::from_slice::<Value>(&line) else { continue };
         let entry = msg.get("playlist_entry_id").and_then(Value::as_i64);
@@ -249,8 +254,8 @@ pub fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -
                                 c.started = true;
                                 emit(PlayerEvent::Started { path: path.clone() });
                             }
-                            if last_sent.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
-                                last_sent = Some(Instant::now());
+                            if c.last_sent.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
+                                c.last_sent = Some(Instant::now());
                                 emit(PlayerEvent::Progress { path: path.clone(), pos, dur: c.dur });
                             }
                         }
@@ -276,11 +281,14 @@ pub fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -
             }
             _ => {}
         }
-    }
+    };
     if let Some(ev) = cur.and_then(|c| c.finish(false)) {
         emit(ev);
     }
-    Ok(())
+    match read_error {
+        Some(e) => Err(e.into()),
+        None => Ok(()),
+    }
 }
 
 /// Connect to `socket` (waiting for mpv to create it), follow playback and
@@ -586,5 +594,86 @@ mod tests {
                 PlayerEvent::Ended { path: "/a.mkv".into(), pos: 600.0, dur: None, eof: false },
             ]
         );
+    }
+
+    /// A transport that yields canned bytes, then fails (mpv crashed:
+    /// connection reset); writes are discarded.
+    struct Failing(std::io::Cursor<Vec<u8>>);
+
+    impl std::io::Read for Failing {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.read(buf)? {
+                0 => Err(std::io::ErrorKind::ConnectionReset.into()),
+                n => Ok(n),
+            }
+        }
+    }
+
+    impl Write for Failing {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A read error mid-stream still ends the open file (keeping its
+    /// progress) before the error is reported.
+    #[test]
+    fn follow_ends_the_open_file_on_a_read_error() {
+        let msgs = [
+            r#"{"event":"start-file","playlist_entry_id":1}"#,
+            r#"{"event":"property-change","id":1,"name":"path","data":"/a.mkv"}"#,
+            r#"{"event":"property-change","id":3,"name":"duration","data":1440.0}"#,
+            r#"{"event":"property-change","id":2,"name":"time-pos","data":900.0}"#,
+            r#"{"event":"property-change","id":2,"name":"time-pos","data":800.0}"#,
+        ];
+        let data = (msgs.join("\n") + "\n").into_bytes();
+        let evs = std::cell::RefCell::new(Vec::new());
+        let res = follow(Failing(std::io::Cursor::new(data)), &|e| evs.borrow_mut().push(e));
+        let err = res.expect_err("the read error is reported");
+        assert!(
+            err.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::ConnectionReset),
+            "{err:?}"
+        );
+        let evs: Vec<_> = evs.into_inner().into_iter().filter(|e| !matches!(e, PlayerEvent::Progress { .. })).collect();
+        assert_eq!(
+            evs,
+            vec![
+                PlayerEvent::Started { path: "/a.mkv".into() },
+                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 900.0, dur: Some(1440.0), eof: false },
+            ]
+        );
+    }
+
+    /// The Progress throttle is per file: the first position of the next
+    /// file goes out even right after the previous file's.
+    #[test]
+    fn follow_sends_each_files_first_progress() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || follow(ours, &|e| tx.send(e).unwrap()));
+        for m in [
+            r#"{"event":"start-file","playlist_entry_id":1}"#,
+            r#"{"event":"property-change","id":1,"name":"path","data":"/a.mkv"}"#,
+            r#"{"event":"property-change","id":2,"name":"time-pos","data":1439.0}"#,
+            r#"{"event":"end-file","reason":"eof","playlist_entry_id":1}"#,
+            r#"{"event":"start-file","playlist_entry_id":2}"#,
+            r#"{"event":"property-change","id":1,"name":"path","data":"/b.mkv"}"#,
+            r#"{"event":"property-change","id":2,"name":"time-pos","data":0.5}"#,
+        ] {
+            writeln!(theirs, "{m}").unwrap();
+        }
+        theirs.shutdown(std::net::Shutdown::Write).unwrap();
+        handle.join().unwrap().unwrap();
+        let progress: Vec<(PathBuf, f64)> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                PlayerEvent::Progress { path, pos, .. } => Some((path, pos)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(progress, vec![("/a.mkv".into(), 1439.0), ("/b.mkv".into(), 0.5)]);
     }
 }

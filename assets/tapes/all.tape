@@ -37,4 +37,5 @@ Type "catching up later" Sleep 600ms Enter Sleep 1.5s
 Escape Sleep 800ms
 Type "?" Sleep 2s Escape Sleep 500ms
 Type "1" Sleep 1.5s
-Type "q"
+Type "q" Sleep 800ms
+Type "y"

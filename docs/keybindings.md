@@ -18,7 +18,7 @@ Press `?` in the TUI to see these at any time.
 | `M` | refresh metadata for the series under the cursor |
 | `ctrl-r` | refresh all metadata now (updates the anime database if old) |
 | `?` | this help |
-| `q` | quit |
+| `q / ctrl-c` | quit (asks first: q, y or ⏎ confirms) |
 
 ## Up next
 

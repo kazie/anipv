@@ -215,17 +215,19 @@ impl EventLog {
     }
 
     /// Append events stamped with the current time.
-    pub fn append(&self, bodies: impl IntoIterator<Item = EventBody>) -> Result<Vec<Event>> {
+    pub fn append(&self, bodies: impl IntoIterator<Item = EventBody>) -> Result<Recorded> {
         let ts = now();
         let events: Vec<Event> = bodies.into_iter().map(|body| Event::new(ts, self.device.as_str(), body)).collect();
-        self.append_events(&events)?;
-        Ok(events)
+        let written = self.append_events(&events)?;
+        Ok(Recorded { events, written })
     }
 
     /// Append fully formed events (e.g. imported with historical timestamps).
-    pub fn append_events(&self, events: &[Event]) -> Result<()> {
+    /// Returns the length of their lines in bytes (not counting a newline
+    /// written first to end a cut-off last line, see [`EventLog::merge`]).
+    pub fn append_events(&self, events: &[Event]) -> Result<u64> {
         if events.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         // Serialize first: an event that can't be written leaves the file alone.
         let mut lines = String::new();
@@ -249,7 +251,7 @@ impl EventLog {
         buf.push_str(&lines);
         f.write_all(buf.as_bytes())?;
         f.sync_data()?;
-        Ok(())
+        Ok(lines.len() as u64)
     }
 
     /// Read and order all events from every device file.
@@ -262,7 +264,9 @@ impl EventLog {
     pub fn load_cached(&self) -> Result<CachedLog> {
         // Stamped first: a change made while reading is seen by the next refresh.
         let stamps = stamps(&self.dir)?;
-        Ok(CachedLog { events: self.load_all()?.events, stamps })
+        let Tagged { events, errors, files } = load_tagged(&self.dir)?;
+        let (tags, events) = events.into_iter().map(|(f, l, e)| ((f, l), e)).unzip();
+        Ok(CachedLog { events, tags, files, errors, stamps })
     }
 
     /// Read the log again if any log file changed since `cache` was read
@@ -278,15 +282,16 @@ impl EventLog {
 
     /// Add events just appended by [`EventLog::append`] to `cache`, where
     /// reading the log again would put them, without reading it again.
-    pub fn merge(&self, cache: &mut CachedLog, recorded: Vec<Event>) {
+    pub fn merge(&self, cache: &mut CachedLog, recorded: Recorded) {
+        let Recorded { events: recorded, written } = recorded;
         if recorded.is_empty() {
             return;
         }
         // This device's file grew by exactly these lines unless something else
-        // wrote to it too; then its stamp stays stale and the next refresh reads it.
+        // wrote to it too (or a cut-off last line had to be ended first); then
+        // its stamp stays stale and the next refresh reads it.
         let own = self.own_file();
         let name = own.file_name().unwrap_or_default();
-        let written: u64 = recorded.iter().map(|e| serde_json::to_string(e).map_or(0, |s| s.len() as u64 + 1)).sum();
         let now = stamp(&own);
         match (cache.stamps.iter_mut().find(|s| s.0 == name), now) {
             (Some(s), Some(now)) if s.1 + written == now.1 => *s = (name.to_owned(), now.1, now.2),
@@ -296,14 +301,31 @@ impl EventLog {
             }
             _ => {}
         }
-        add_events(&mut cache.events, recorded);
+        add_events(cache, name, recorded);
     }
+}
+
+/// Events just appended to this device's log (see [`EventLog::append`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Recorded {
+    /// The events, as written.
+    pub events: Vec<Event>,
+    /// The length of their lines in bytes, as [`EventLog::append_events`]
+    /// returns it, so [`EventLog::merge`] need not serialize them again.
+    pub written: u64,
 }
 
 /// The event log as last read (see [`EventLog::load_cached`]).
 #[derive(Debug, Clone, Default)]
 pub struct CachedLog {
     events: Vec<Event>,
+    /// `(file index, line)` of each event, as [`load_dir`] sorts by them.
+    tags: Vec<(usize, usize)>,
+    /// `(file name, lines read)` of each log file, in path order (the order
+    /// the file indices in `tags` follow).
+    files: Vec<(std::ffi::OsString, usize)>,
+    /// Lines that could not be parsed, as [`Loaded::errors`].
+    errors: Vec<String>,
     /// `(file name, length, modification time)` of each log file, by name.
     stamps: Vec<Stamp>,
 }
@@ -313,25 +335,38 @@ impl CachedLog {
     pub fn events(&self) -> &[Event] {
         &self.events
     }
+
+    /// `file:line: error` for each malformed line when the log was read.
+    pub fn errors(&self) -> &[String] {
+        &self.errors
+    }
 }
 
 type Stamp = (std::ffi::OsString, u64, Option<std::time::SystemTime>);
 
-/// [`Stamp`]s of the `*.jsonl` files in `dir`, by name.
-fn stamps(dir: &Path) -> Result<Vec<Stamp>> {
+/// The `*.jsonl` files in `dir`, sorted by path (none if `dir` is missing).
+fn log_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
     };
-    let mut out: Vec<Stamp> = entries
+    let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+/// [`Stamp`]s of the `*.jsonl` files in `dir`, by name.
+fn stamps(dir: &Path) -> Result<Vec<Stamp>> {
+    // In one directory, sorting by path sorts by name.
+    Ok(log_files(dir)?
+        .into_iter()
         // A file that can't be stat'ed stamps as empty: once readable, it differs.
         .map(|p| stamp(&p).unwrap_or_else(|| (p.file_name().unwrap_or_default().to_owned(), 0, None)))
-        .collect();
-    out.sort();
-    Ok(out)
+        .collect())
 }
 
 fn stamp(path: &Path) -> Option<Stamp> {
@@ -339,16 +374,36 @@ fn stamp(path: &Path) -> Option<Stamp> {
     Some((path.file_name()?.to_owned(), m.len(), m.modified().ok()))
 }
 
-/// Add events just appended to this device's log to `events` (ordered like
-/// [`EventLog::load_all`]) where loading the log again would put them: after
-/// everything with the same time and device.
-fn add_events(events: &mut Vec<Event>, recorded: Vec<Event>) {
-    if recorded.is_empty() {
-        return;
+/// Add events just appended to this device's log (the file named `own`) to
+/// `cache` where loading the log again would put them: ordered by
+/// `(ts, dev, file, line)` like [`load_dir`], as the next lines of `own`.
+fn add_events(cache: &mut CachedLog, own: &std::ffi::OsStr, recorded: Vec<Event>) {
+    let fi = match cache.files.binary_search_by(|(n, _)| n.as_os_str().cmp(own)) {
+        Ok(fi) => fi,
+        Err(fi) => {
+            // The file is new: the files after it in path order move up one.
+            cache.files.insert(fi, (own.to_owned(), 0));
+            for t in &mut cache.tags {
+                if t.0 >= fi {
+                    t.0 += 1;
+                }
+            }
+            fi
+        }
+    };
+    for ev in recorded {
+        let tag = (fi, cache.files[fi].1);
+        cache.files[fi].1 += 1;
+        let key = (ev.ts, ev.dev.as_str(), tag);
+        let at = cache
+            .events
+            .iter()
+            .zip(&cache.tags)
+            .rposition(|(e, t)| (e.ts, e.dev.as_str(), *t) <= key)
+            .map_or(0, |i| i + 1);
+        cache.events.insert(at, ev);
+        cache.tags.insert(at, tag);
     }
-    events.extend(recorded);
-    // Stable, and nearly sorted already.
-    events.sort_by(|a, b| (a.ts, &a.dev).cmp(&(b.ts, &b.dev)));
 }
 
 /// True for an empty file or one whose last byte is `\n`.
@@ -385,44 +440,51 @@ pub struct Loaded {
 
 /// Read every `*.jsonl` in `dir` and order events deterministically.
 pub fn load_dir(dir: &Path) -> Result<Loaded> {
-    let mut out = Loaded::default();
-    // (file index in path order, line number, event); sorted by
-    // (ts, dev, file, line) below. Line numbers restart in every file, and two
-    // files can hold the same `dev` (a Syncthing conflict copy, two machines
-    // with one name), so the file keeps each file's events together.
-    let mut tagged: Vec<(usize, usize, Event)> = Vec::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
-    };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-        .collect();
-    files.sort();
-    for (fi, path) in files.into_iter().enumerate() {
+    let Tagged { events, errors, .. } = load_tagged(dir)?;
+    Ok(Loaded { events: events.into_iter().map(|t| t.2).collect(), errors })
+}
+
+/// [`load_dir`], keeping where each event came from.
+#[derive(Default)]
+struct Tagged {
+    /// `(file index in path order, line number, event)`, sorted by
+    /// `(ts, dev, file, line)`.
+    events: Vec<(usize, usize, Event)>,
+    errors: Vec<String>,
+    /// `(file name, lines read)` per file, in path order.
+    files: Vec<(std::ffi::OsString, usize)>,
+}
+
+fn load_tagged(dir: &Path) -> Result<Tagged> {
+    let mut out = Tagged::default();
+    // Line numbers restart in every file, and two files can hold the same
+    // `dev` (a Syncthing conflict copy, two machines with one name), so the
+    // file keeps each file's events together.
+    for (fi, path) in log_files(dir)?.into_iter().enumerate() {
         let f = std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
         // Read raw bytes: serde validates UTF-8, so a line cut off mid-character
         // (e.g. by a sync tool) is reported and skipped like any malformed line.
         let mut reader = BufReader::new(f);
         let mut line = Vec::new();
-        for i in 0.. {
+        let mut lines = 0;
+        loop {
             line.clear();
             if reader.read_until(b'\n', &mut line)? == 0 {
                 break;
             }
+            let i = lines;
+            lines += 1;
             if line.trim_ascii().is_empty() {
                 continue;
             }
             match serde_json::from_slice::<Event>(&line) {
-                Ok(ev) => tagged.push((fi, i, ev)),
+                Ok(ev) => out.events.push((fi, i, ev)),
                 Err(e) => out.errors.push(format!("{file}:{line}: {e}", file = path.display(), line = i + 1)),
             }
         }
+        out.files.push((path.file_name().unwrap_or_default().to_owned(), lines));
     }
-    tagged.sort_by(|(fa, la, a), (fb, lb, b)| (a.ts, &a.dev, fa, la).cmp(&(b.ts, &b.dev, fb, lb)));
-    out.events = tagged.into_iter().map(|t| t.2).collect();
+    out.events.sort_by(|(fa, la, a), (fb, lb, b)| (a.ts, &a.dev, fa, la).cmp(&(b.ts, &b.dev, fb, lb)));
     Ok(out)
 }
 
@@ -876,6 +938,31 @@ mod tests {
         let loaded = load_dir(dir.path()).unwrap();
         let order: Vec<&str> = loaded.events.iter().filter_map(|e| e.body.series()).collect();
         assert_eq!(order, ["a1", "a2", "b1", "b2"]);
+    }
+
+    /// Events merged into a cached log land where a fresh read puts them,
+    /// also next to a conflict copy of this device's file with events from
+    /// the same second (ordered by file, then line), and when the device's
+    /// own file is new and sorts before other files.
+    #[test]
+    fn merged_events_are_ordered_like_a_fresh_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let desk = EventLog::open(dir.path(), "desk").unwrap();
+        let now = now();
+        let line = |s: &str, ts| serde_json::to_string(&ev(ts, "desk", watched(s, 1))).unwrap() + "\n";
+        // Files after desk.jsonl in path order, both carrying dev "desk"
+        // (the second one never has its index refreshed below).
+        // One event a second for a while: the appends below share a second with one.
+        let conflict: String = (0..10).map(|d| line(&format!("c{d}"), now + d)).collect();
+        std::fs::write(dir.path().join("desk.sync-conflict-20260101-000000-ABCDEF.jsonl"), conflict).unwrap();
+        std::fs::write(dir.path().join("zed.jsonl"), line("z", now)).unwrap();
+        let mut cache = desk.load_cached().unwrap();
+        for n in 1..=3 {
+            let recorded = desk.append([watched("own", n), watched("own2", n)]).unwrap();
+            desk.merge(&mut cache, recorded);
+            assert!(!desk.refresh(&mut cache).unwrap(), "own append {n}");
+            assert_eq!(cache.events(), desk.load_all().unwrap().events, "append {n}");
+        }
     }
 
     /// A half-written last line (crash, full disk) costs only itself: the

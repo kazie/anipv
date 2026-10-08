@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::app::{Ctx, Index, QueueEntry, fuzzy_rank, queue_new};
-use crate::events::{CachedLog, Event, EventBody, now};
+use crate::events::{CachedLog, EventBody, Recorded, now};
 use crate::library::{Hint, InboxEntry, Item, Library, Series};
 use crate::model::{ItemKey, ItemKind, SeriesStatus};
 use crate::mpv::{Outcome, PlayerEvent};
@@ -153,7 +153,7 @@ pub enum Popup {
         /// Current text.
         text: String,
     },
-    /// mpv is still running; quitting loses tracking.
+    /// Quit anipv? (Warns that tracking is lost while mpv is still running.)
     ConfirmQuit,
 }
 
@@ -173,7 +173,7 @@ pub struct MergePicker {
 
 impl MergePicker {
     fn new(app: &App, from: &str) -> Self {
-        let from = app.lib.resolve(from).to_string();
+        let from = from.to_string();
         let mut picker = Self { from, query: String::new(), targets: Vec::new(), state: TableState::default() };
         picker.refresh(app, None);
         picker
@@ -242,8 +242,8 @@ impl NowPlaying {
 pub enum Msg {
     /// Scan progress for a root.
     ScanProgress(String, usize),
-    /// Scan finished (summary text).
-    ScanDone(Result<String, String>),
+    /// Scan finished.
+    ScanDone(Result<ScanSummary, String>),
     /// mpv activity.
     Player(PlayerEvent),
     /// What a background metadata update is doing now (header text).
@@ -252,6 +252,15 @@ pub enum Msg {
     Meta(crate::meta::SyncResult, u64),
     /// Metadata error.
     MetaError(String),
+}
+
+/// What a finished scan reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanSummary {
+    /// Changes per root, for the status line.
+    pub text: String,
+    /// Roots that could not be scanned (unmounted, say).
+    pub offline_roots: Vec<String>,
 }
 
 /// The whole TUI state.
@@ -318,7 +327,8 @@ pub struct App {
     offline: Arc<crate::meta::offline::OfflineCache>,
     /// Fixed clock for tests/screenshots; `None` uses the real time.
     pub clock: Option<i64>,
-    /// Roots whose directory is missing (unmounted), checked on load and after scans.
+    /// Roots the last scan could not reach (unmounted, say); none are known
+    /// before the first scan (see [`App::start_scan`]).
     pub offline_roots: Vec<String>,
     // Row caches: indices into `lib.series` / `lib.files`, rebuilt by `refresh_rows`.
     upnext_ix: Vec<usize>,
@@ -394,7 +404,6 @@ impl App {
         if !completed.is_empty() {
             app.say(format!("✓ completed: {} (all episodes watched)", completed.join(", ")));
         }
-        app.check_roots();
         app.refresh_rows();
         if app.upnext_ix.is_empty() {
             app.view = if app.inbox.is_empty() { View::Series } else { View::Inbox };
@@ -441,14 +450,10 @@ impl App {
         self.current().map(|m| m.text.as_str())
     }
 
-    /// Re-read the index from the cache database (after a scan: files known
-    /// before keep their classification) and the event log, then reload.
+    /// Re-read the indexed files from the cache database (after a scan: files
+    /// known before keep their classification), then reload.
     pub fn reload_index(&mut self) {
-        match self.ctx.log.load_cached() {
-            Ok(events) => self.events = events,
-            Err(e) => self.fail(format!("reading the event log failed: {e:#}")),
-        }
-        match self.ctx.index_from(&self.index) {
+        match self.ctx.index_from(&mut self.index) {
             Ok(index) => self.index = index,
             Err(e) => self.fail(format!("reading the index failed: {e:#}")),
         }
@@ -502,12 +507,6 @@ impl App {
             self.lib.series.iter().all(|s| s.items.iter().all(|i| i.key.kind.is_known())),
             "items of unknown kinds never reach the library"
         );
-    }
-
-    /// Re-check which roots are reachable (a `stat` per root; may block on network mounts).
-    fn check_roots(&mut self) {
-        self.offline_roots =
-            self.ctx.cfg.roots.iter().filter(|r| !r.resolved().is_dir()).map(|r| r.name.clone()).collect();
     }
 
     /// Number of rows in `view`.
@@ -570,14 +569,14 @@ impl App {
         let lib = &self.lib;
         // A key held from before a merge finds the series it was merged into.
         let series_at = |ix: &[usize], k: &str| {
-            let k = lib.resolve(k);
-            ix.iter().position(|&i| lib.series[i].key == k)
+            let at = lib.index_of(k)?;
+            ix.iter().position(|&i| i == at)
         };
         let found = match (view, id) {
             (View::UpNext, RowId::Series(k)) => series_at(&self.upnext_ix, k),
             (View::Inbox, RowId::Series(k)) => {
-                let k = lib.resolve(k);
-                self.inbox.iter().position(|e| lib.series[e.index].key == k)
+                let at = lib.index_of(k);
+                self.inbox.iter().position(|e| Some(e.index) == at)
             }
             (View::Series, RowId::Series(k)) => series_at(&self.series_ix, k),
             (View::Files, RowId::File(p)) => self.files_ix.iter().position(|&i| lib.files[i].file.path == *p),
@@ -608,7 +607,7 @@ impl App {
         self.inbox_hint_width = inbox
             .iter()
             .filter_map(|e| e.hint)
-            .map(|h| u16::try_from(unicode_width::UnicodeWidthStr::width(h.describe(lib).as_str())).unwrap_or(u16::MAX))
+            .map(|h| super::ui::cells(unicode_width::UnicodeWidthStr::width(h.describe(lib).as_str())))
             .max()
             .unwrap_or(0);
         self.upnext_ready = upnext.iter().filter(|&&i| lib.series[i].next_up().is_some()).count();
@@ -676,10 +675,12 @@ impl App {
         self.files_state.selected().and_then(|i| self.files_ix.get(i)).map(|&i| &self.lib.files[i])
     }
 
-    /// Map series keys held across a reload (Detail, the queue, an open popup)
-    /// to the keys they are now (after a merge, or a legacy key), so events
-    /// written for them name the current series and queue checks compare
-    /// current keys. This is the one place held keys are resolved.
+    /// Map series keys held across a reload (Detail, the queue, an open popup,
+    /// metadata requests) to the keys they are now (after a merge, or a
+    /// legacy key), so events written for them name the current series and
+    /// queue checks compare current keys. This is the one place held keys
+    /// are resolved: everything else takes them as current, and looks up
+    /// rows kept by key (see [`App::select_id`]) with [`Library::index_of`].
     fn resolve_held_keys(&mut self) {
         let lib = Arc::clone(&self.lib);
         let resolve = |k: &mut String| {
@@ -701,6 +702,12 @@ impl App {
             ) => resolve(series),
             Some(Popup::Merge(picker)) => resolve(&mut picker.from),
             Some(Popup::Help | Popup::ConfirmQuit | Popup::Input { purpose: InputPurpose::Search, .. }) | None => {}
+        }
+        let running = self.meta_running.as_mut().map(|(r, _)| r);
+        for request in running.into_iter().chain(&mut self.meta_pending) {
+            if let MetaRequest::Series(key) = request {
+                resolve(key);
+            }
         }
     }
 
@@ -803,14 +810,14 @@ impl App {
     }
 
     /// Report a failed write, then reload to show the new state.
-    fn after_write(&mut self, res: Result<Vec<Event>>) {
+    fn after_write(&mut self, res: Result<Recorded>) {
         self.add_recorded(res);
         self.reload();
     }
 
     /// Keep events just recorded (without reading the log again), or report
     /// that writing them failed.
-    fn add_recorded(&mut self, res: Result<Vec<Event>>) {
+    fn add_recorded(&mut self, res: Result<Recorded>) {
         match res {
             Ok(recorded) => self.ctx.log.merge(&mut self.events, recorded),
             Err(e) => self.fail(format!("{}: {e:#}", crate::app::WRITE_FAILED)),
@@ -907,12 +914,13 @@ impl App {
         }
     }
 
-    /// `q` / Ctrl-C: quit, but ask first while mpv plays (asked already: quit anyway).
+    /// `q` / Ctrl-C: ask first (asked already: quit).
     fn request_quit(&mut self) {
-        if self.playing.is_some() && !matches!(self.popup, Some(Popup::ConfirmQuit)) {
-            self.popup = Some(Popup::ConfirmQuit);
-        } else {
+        if matches!(self.popup, Some(Popup::ConfirmQuit)) {
+            self.popup = None;
             self.quit = true;
+        } else {
+            self.popup = Some(Popup::ConfirmQuit);
         }
     }
 
@@ -951,7 +959,9 @@ impl App {
             }
             Msg::ScanDone(res) => {
                 self.scanning = None;
-                self.check_roots();
+                if let Ok(done) = &res {
+                    self.offline_roots.clone_from(&done.offline_roots);
+                }
                 let before: HashSet<String> = self.inbox_rows().iter().map(|(s, _)| s.key.clone()).collect();
                 self.reload_index();
                 let arrived = self.inbox_rows().iter().filter(|(s, _)| !before.contains(&s.key)).count();
@@ -960,7 +970,7 @@ impl App {
                         "{arrived} new show{} in your inbox (press 2)",
                         if arrived == 1 { "" } else { "s" }
                     )),
-                    Ok(s) => self.say(s),
+                    Ok(done) => self.say(done.text),
                     Err(e) => self.fail(format!("scan failed: {e}")),
                 }
             }
@@ -1200,13 +1210,11 @@ impl App {
     fn reselect_detail(&mut self, target: Option<&ItemKey>) {
         self.refresh_detail_rows();
         let idx = self.detail_series().zip(target).and_then(|(s, t)| {
-            let rows = s.ordered_items(self.episodes_shown.extras, self.episodes_shown.missing);
-            let all = s.ordered_items(self.episodes_shown.extras, true);
-            // `rows` is `all` with some items left out: find each by identity.
-            let row_of: HashMap<*const Item, usize> =
-                rows.iter().enumerate().map(|(n, &r)| (std::ptr::from_ref(r), n)).collect();
-            let shown = |i: &&Item| row_of.get(&std::ptr::from_ref(*i)).copied();
-            let at = all.iter().position(|i| i.key == *t)?;
+            // The rows are these items with some left out: find each by index.
+            let all = s.ordered_indices(self.episodes_shown.extras, true);
+            let row_of: HashMap<usize, usize> = self.detail_ix.iter().enumerate().map(|(n, &i)| (i, n)).collect();
+            let shown = |i: &usize| row_of.get(i).copied();
+            let at = all.iter().position(|&i| s.items[i].key == *t)?;
             all[at..].iter().find_map(shown).or_else(|| all[..at].iter().rev().find_map(shown))
         });
         self.detail_state.select(idx.or(Some(0)));
@@ -1443,7 +1451,7 @@ impl App {
         match popup {
             Popup::Help => {}
             Popup::ConfirmQuit => {
-                if matches!(key.code, KeyCode::Char('y' | 'q')) {
+                if matches!(key.code, KeyCode::Char('y' | 'q') | KeyCode::Enter) {
                     self.quit = true;
                 }
             }
@@ -1528,8 +1536,8 @@ impl App {
 
     /// Candidate series to merge `from` into.
     pub fn merge_targets(&self, from: &str, query: &str) -> Vec<&Series> {
-        let from = self.lib.resolve(from);
-        let others = self.lib.series.iter().filter(|s| s.key != from);
+        let from_ix = self.lib.index_of(from);
+        let others = self.lib.series.iter().enumerate().filter(move |(i, _)| Some(*i) != from_ix).map(|(_, s)| s);
         if query.is_empty() {
             let from_title = self.lib.get(from).map(|s| s.title.clone()).unwrap_or_default();
             // Suggest similarly named series first.
@@ -1579,9 +1587,10 @@ impl App {
                 let res = self.ctx.link(&self.lib, &series, id);
                 let linked = res.is_ok();
                 if linked {
-                    // Its cached rows are gone: drop them here too.
+                    // Its cached rows are gone: drop them here too. (`series`
+                    // is current, see `resolve_held_keys`, as `link` needs.)
                     let lib = Arc::clone(&self.lib);
-                    let keys: HashSet<&str> = lib.spellings(lib.resolve(&series)).collect();
+                    let keys: HashSet<&str> = lib.spellings(&series).collect();
                     self.index.meta.rows.retain(|m| !keys.contains(m.series.as_str()));
                 } else if let Ok(meta) = self.ctx.meta_cache() {
                     self.index.meta = meta;
@@ -1635,7 +1644,10 @@ impl App {
                     Err(e) => format!("{}: {e}", r.root),
                 })
                 .collect();
-            Ok(parts.join(" · "))
+            // Found here rather than on the UI thread: checking a root may
+            // block on a network mount.
+            let offline_roots = out.iter().filter(|r| r.stats.is_err()).map(|r| r.root.clone()).collect();
+            Ok(ScanSummary { text: parts.join(" · "), offline_roots })
         });
     }
 
@@ -1657,12 +1669,11 @@ impl App {
         let Some(opts) = crate::meta::plan(&self.lib, &self.ctx.cfg, checks, &request, now()) else { return };
         let opts = crate::meta::SyncOptions { offline: Arc::clone(&self.offline), ..opts };
         self.meta_running = Some((request, "metadata"));
-        let network = self.ctx.cfg.anilist;
         let (lib, cache, tx, epoch) =
             (Arc::clone(&self.lib), self.ctx.paths.cache_dir.clone(), self.tx.clone(), self.meta_epoch);
         spawn_meta(&self.tx, epoch, move || {
-            let http = crate::meta::anilist::Ureq;
-            let http: Option<&dyn crate::meta::anilist::Http> = if network { Some(&http) } else { None };
+            // `opts` says whether the network may be used (see `plan`).
+            let http = Some(&crate::meta::anilist::Ureq as &dyn crate::meta::anilist::Http);
             crate::meta::sync_with_progress(&lib, &cache, http, &opts, now(), &mut |step| {
                 let _ = tx.send(Msg::MetaProgress(match step {
                     crate::meta::SyncStep::Downloading => "downloading anime database…",
@@ -1781,7 +1792,7 @@ fn spawn_reporting<T, M>(
 
 /// Run `scan` in the background; it always ends with `ScanDone`, so the
 /// header and `r` never stay stuck on "scanning".
-fn spawn_scan(tx: &Sender<Msg>, scan: impl FnOnce() -> Result<String> + Send + 'static) {
+fn spawn_scan(tx: &Sender<Msg>, scan: impl FnOnce() -> Result<ScanSummary> + Send + 'static) {
     spawn_reporting(tx, scan, |res| {
         let res = match res {
             Ok(res) => res.map_err(|e| format!("{e:#}")),
@@ -1860,25 +1871,30 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     }
 
-    /// Ctrl-C while mpv plays asks first, like `q`; a second Ctrl-C quits anyway.
+    /// `q` and Ctrl-C ask first, playing or not; at the prompt `q`, `y`,
+    /// Enter or a second Ctrl-C quits, any other key cancels.
     #[test]
-    fn ctrl_c_while_playing_asks_first() {
+    fn quitting_asks_first() {
         let (_dir, mut app) = demo_app();
-        app.playing = Some(NowPlaying::starting(1));
-        ctrl_c(&mut app);
-        assert!(!app.quit);
-        assert_eq!(app.popup, Some(Popup::ConfirmQuit));
-        app.press("n");
-        assert!(!app.quit && app.popup.is_none(), "declining keeps running");
-        ctrl_c(&mut app);
-        ctrl_c(&mut app);
-        assert!(app.quit, "second Ctrl-C quits anyway");
-
-        // Not playing: quits at once.
-        app.quit = false;
-        app.playing = None;
-        ctrl_c(&mut app);
-        assert!(app.quit);
+        for playing in [true, false] {
+            app.playing = playing.then(|| NowPlaying::starting(1));
+            for quit in ["q", "y", "\n", "ctrl-c"] {
+                for first in ["q", "ctrl-c"] {
+                    let press = |app: &mut App, k: &str| if k == "ctrl-c" { ctrl_c(app) } else { app.press(k) };
+                    for cancel in ["n", "\x1b", "x"] {
+                        press(&mut app, first);
+                        assert!(!app.quit, "{first} alone doesn't quit");
+                        assert_eq!(app.popup, Some(Popup::ConfirmQuit));
+                        press(&mut app, cancel);
+                        assert!(!app.quit && app.popup.is_none(), "{cancel:?} cancels");
+                    }
+                    press(&mut app, first);
+                    press(&mut app, quit);
+                    assert!(app.quit, "{first} then {quit:?} quits (playing: {playing})");
+                    app.quit = false;
+                }
+            }
+        }
     }
 
     /// An error stays in the status line over later messages until it times
@@ -1965,6 +1981,24 @@ mod tests {
             Msg::ScanDone(Err(e)) => assert!(e.contains("boom"), "{e}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Roots a scan could not reach are shown until a scan reaches them; a
+    /// failed scan says nothing about them.
+    #[test]
+    fn offline_roots_come_from_the_last_scan() {
+        let (_dir, mut app) = demo_app();
+        assert!(app.offline_roots.is_empty(), "unknown before the first scan");
+        let done = |offline: &[&str]| {
+            let offline_roots = offline.iter().map(|r| (*r).to_string()).collect();
+            Msg::ScanDone(Ok(ScanSummary { text: "done".into(), offline_roots }))
+        };
+        app.on_msg(done(&["Downloads"]));
+        assert_eq!(app.offline_roots, ["Downloads"]);
+        app.on_msg(Msg::ScanDone(Err("boom".into())));
+        assert_eq!(app.offline_roots, ["Downloads"]);
+        app.on_msg(done(&[]));
+        assert!(app.offline_roots.is_empty());
     }
 
     /// A metadata update that panics still ends the busy state (and says why).

@@ -362,6 +362,10 @@ fn help_and_quit() {
     app.press("x");
     assert!(app.popup.is_none());
     app.press("q");
+    assert!(!app.quit, "quitting asks first");
+    let s = render(&mut app);
+    assert!(s.contains("Quit anipv?"), "{s}");
+    app.press("q");
     assert!(app.quit);
 }
 

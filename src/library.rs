@@ -168,7 +168,21 @@ impl Series {
 
     /// `AniList` id: the manual link, else the automatic match.
     pub fn anilist_id(&self) -> Option<u64> {
-        self.link.manual().or_else(|| self.meta.as_ref().and_then(|m| m.anilist))
+        self.anilist_id_with(self.meta.as_ref())
+    }
+
+    /// `m` if it can be this series' metadata under its link: never when it
+    /// is unlinked, only a row for the linked anime when it is linked by hand.
+    /// The filter [`Series::meta`] went through when the library was built,
+    /// for rows from elsewhere (e.g. fresh from a sync).
+    pub fn usable_meta<'a>(&self, m: Option<&'a SeriesMeta>) -> Option<&'a SeriesMeta> {
+        m.filter(|m| link_admits(self.link, m))
+    }
+
+    /// [`Series::anilist_id`] with `m` as its metadata: the manual link, else
+    /// the id of `m` if it is [usable](Series::usable_meta).
+    pub fn anilist_id_with(&self, m: Option<&SeriesMeta>) -> Option<u64> {
+        self.link.manual().or_else(|| self.usable_meta(m)?.anilist)
     }
 
     /// Total episodes: manual override, then metadata. For a long-running
@@ -189,9 +203,13 @@ impl Series {
             || self.watched_count() > 0
     }
 
-    /// Items `ordered_items(extras, false)` leaves out that `missing` would show.
+    /// Items `ordered_items(extras, false)` leaves out that `missing` would
+    /// show: those not on disk, unless nothing is (then all are listed).
     pub fn missing_count(&self, extras: bool) -> usize {
-        self.ordered_count(extras, true) - self.ordered_count(extras, false)
+        if !self.has_watchable_on_disk() {
+            return 0;
+        }
+        self.items.iter().filter(|i| listed(i, extras, true) && !i.present()).count()
     }
 
     /// Anything besides extras on disk; otherwise hiding what is not on disk
@@ -303,12 +321,6 @@ impl Series {
         out
     }
 
-    /// `ordered_items(extras, missing).len()` without building the list.
-    pub fn ordered_count(&self, extras: bool, missing: bool) -> usize {
-        let missing = missing || !self.has_watchable_on_disk();
-        self.items.iter().filter(|i| listed(i, extras, missing)).count()
-    }
-
     /// Up to `n` new episodes with the file to play for each, skipping `skip`.
     ///
     /// A multi-episode file (`- 001&002`) is listed once, under its first episode.
@@ -349,6 +361,18 @@ impl Series {
     /// Find an item by key.
     pub fn item(&self, key: &ItemKey) -> Option<&Item> {
         self.items.iter().find(|i| &i.key == key)
+    }
+}
+
+/// True if the metadata row `m` can belong to a series linked by `link`: an
+/// unlinked series ignores a link cached before the unlink arrived, and a
+/// manual link ignores data cached for another anime (until the next sync
+/// replaces it).
+fn link_admits(link: Link, m: &SeriesMeta) -> bool {
+    match link {
+        Link::Off => false,
+        Link::Manual(id) => m.is_for(id),
+        Link::Auto => true,
     }
 }
 
@@ -434,7 +458,7 @@ fn group(
     let mut building: HashMap<String, Building> = HashMap::new();
     let mut indexed = Vec::with_capacity(classified.len());
     for (row, kind, Classified { series, title, parsed, .. }) in classified {
-        let canon = state.resolve(series).to_string();
+        let canon = state.resolve(series);
         let items = crate::index::classify::expand_items(parsed);
         let file = FileRef {
             path: row.path.clone(),
@@ -446,7 +470,11 @@ fn group(
             mtime: row.mtime,
             version: parsed.version,
         };
-        let b = building.entry(canon.clone()).or_default();
+        // Most files join a series already started: no key copy for those.
+        let b = match building.get_mut(canon) {
+            Some(b) => b,
+            None => building.entry(canon.to_string()).or_default(),
+        };
         // Archive folder names are the most reliable titles.
         let weight = if kind == RootKind::Archive && row.rel.components().count() > 1 { 1000 } else { 1 };
         let votes = if row.present { &mut b.titles } else { &mut b.gone_titles };
@@ -457,9 +485,14 @@ fn group(
             votes.insert(title.clone(), weight);
         }
         for it in &items {
-            b.items.entry(it.clone()).or_default().push(file.clone());
+            match b.items.get_mut(it) {
+                Some(files) => files.push(file.clone()),
+                None => {
+                    b.items.insert(it.clone(), vec![file.clone()]);
+                }
+            }
         }
-        indexed.push(IndexedFile { file, series: canon, items });
+        indexed.push(IndexedFile { file, series: canon.to_string(), items });
     }
 
     // Items/series known only from history (files deleted or never indexed here).
@@ -553,20 +586,11 @@ impl<'a> Lookups<'a> {
         items.sort_by_key(|i| (i.key.kind, i.key.kind == ItemKind::Episode && i.key.ep.is_none()));
         let mut aliases = self.aliases_of.get(key.as_str()).cloned().unwrap_or_default();
         aliases.sort();
-        // Caches written under a legacy key still belong to the series.
-        // An unlinked series ignores a link cached before the unlink
-        // arrived, and a manual link ignores data cached for another
-        // anime (until the next sync replaces it).
-        // The first usable row wins: a row for another anime under
-        // one key doesn't hide a matching row under the other.
+        // Caches written under a legacy key still belong to the series. The
+        // first usable row (see `link_admits`) wins: a row for another anime
+        // under one key doesn't hide a matching row under the other.
         let meta = spellings(self.legacy_of, &key)
-            .find_map(|k| {
-                self.meta_by.get(k).filter(|m| match st.link {
-                    Link::Off => false,
-                    Link::Manual(id) => m.is_for(id),
-                    Link::Auto => true,
-                })
-            })
+            .find_map(|k| self.meta_by.get(k).filter(|m| link_admits(st.link, m)))
             .map(|m| SeriesMeta { series: key.clone(), ..(*m).clone() });
         // A "no match" for the old key doesn't count: the new key is a
         // different title to match (`Ctx::migrated_library` drops those rows).
@@ -665,7 +689,7 @@ impl Library {
 
     /// Canonical key for a (possibly merged-away) series key.
     pub fn resolve<'a>(&'a self, key: &'a str) -> &'a str {
-        self.canonical.get(key).map_or(key, String::as_str)
+        crate::events::rekey(&self.canonical, key)
     }
 
     /// The current key for `key`: itself, unless it is a mapped legacy key
@@ -753,13 +777,16 @@ impl Library {
         let ongoing = cfg.ongoing_roots();
         let by_anilist: HashMap<u64, usize> =
             self.series.iter().enumerate().filter_map(|(i, s)| s.anilist_id().map(|id| (id, i))).collect();
-        let bases: Vec<&str> = self.series.iter().map(|s| crate::identity::base_key(&s.key)).collect();
+        let mut by_base: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, s) in self.series.iter().enumerate() {
+            by_base.entry(crate::identity::base_key(&s.key)).or_default().push(i);
+        }
         let mut entries: Vec<InboxEntry> = self
             .series
             .iter()
             .enumerate()
             .filter(|(_, s)| Self::in_inbox(s, &ongoing))
-            .map(|(i, s)| InboxEntry { index: i, hint: self.inbox_hint(i, s, &by_anilist, &bases) })
+            .map(|(i, s)| InboxEntry { index: i, hint: self.inbox_hint(i, s, &by_anilist, &by_base) })
             .collect();
         entries.sort_by_cached_key(|e| {
             let rank = match e.hint {
@@ -780,26 +807,31 @@ impl Library {
             && s.items.iter().flat_map(|i| &i.files).any(|f| f.present && ongoing.contains(f.root.as_str()))
     }
 
-    /// `bases[j]` is the base key of `self.series[j]` (computed once per inbox).
-    fn inbox_hint(&self, i: usize, s: &Series, by_anilist: &HashMap<u64, usize>, bases: &[&str]) -> Option<Hint> {
+    /// `by_base` holds the indices of the series with each base key, in order
+    /// (made once per inbox).
+    fn inbox_hint(
+        &self,
+        i: usize,
+        s: &Series,
+        by_anilist: &HashMap<u64, usize>,
+        by_base: &HashMap<&str, Vec<usize>>,
+    ) -> Option<Hint> {
         // A prequel you're watching (AniList), or the same base title with a
         // season marker (`kusuriya no hitorigoto s3` after `kusuriya no hitorigoto`).
         let prequel = s.prequels.iter().flatten().filter_map(|id| by_anilist.get(id)).copied();
-        let base = bases[i];
+        let base = crate::identity::base_key(&s.key);
         // Only a key with a season marker (base differs) looks for its other seasons.
-        let others = if base == s.key { 0..0 } else { 0..self.series.len() };
-        let same_title = others.filter(|&j| j != i && bases[j] == base);
+        let others = if base == s.key { None } else { by_base.get(base) };
+        let same_title = others.into_iter().flatten().copied();
         if let Some(j) = prequel.chain(same_title).find(|&j| j != i && self.series[j].engaged()) {
             return Some(Hint::NewSeasonOf(j));
         }
-        // `pocket monsters 2023 pokemon go` belongs to `pocket monsters 2023`.
-        self.series
-            .iter()
-            .enumerate()
-            .filter(|&(j, o)| j != i && s.key.len() > o.key.len() && s.key.starts_with(&o.key))
-            .filter(|(_, o)| s.key.as_bytes()[o.key.len()] == b' ')
-            .max_by_key(|(_, o)| o.key.len())
-            .map(|(j, _)| Hint::PartOf(j))
+        // `pocket monsters 2023 pokemon go` belongs to `pocket monsters 2023`:
+        // the longest key of another series that the key continues with a word.
+        s.key.rmatch_indices(' ').find_map(|(at, _)| {
+            let prefix = &s.key[..at];
+            self.index_of(prefix).filter(|&j| j != i && self.series[j].key == prefix).map(Hint::PartOf)
+        })
     }
 
     /// Position of a series in [`Library::series`].
@@ -1078,8 +1110,9 @@ mod tests {
         assert_eq!(eps(false), [ep(4), ep(5)]);
         assert_eq!(eps(true), (1..=5).map(ep).collect::<Vec<_>>());
         assert_eq!(s.missing_count(false), 3);
-        for (extras, missing) in [(false, false), (false, true), (true, false), (true, true)] {
-            assert_eq!(s.ordered_count(extras, missing), s.ordered_items(extras, missing).len());
+        for extras in [false, true] {
+            let listed = |missing| s.ordered_items(extras, missing).len();
+            assert_eq!(s.missing_count(extras), listed(true) - listed(false));
         }
 
         // Nothing on disk any more: hiding it all would leave an empty list.
@@ -1088,7 +1121,6 @@ mod tests {
         let s = lib.get("show").unwrap();
         assert_eq!(s.ordered_items(false, false).len(), 5);
         assert_eq!(s.missing_count(false), 0);
-        assert_eq!(s.ordered_count(false, false), 5);
     }
 
     #[test]
@@ -1144,7 +1176,7 @@ mod tests {
             let file = s.items[0].files.clone();
             s.items.iter_mut().find(|i| i.key == unnumbered).unwrap().files = file;
             assert_eq!(keys(s), [ep(1), ep(2), unnumbered.clone()]);
-            assert_eq!(s.ordered_count(false, false), 3);
+            assert_eq!(s.ordered_items(false, false).len(), 3);
             assert_eq!(s.disk_range(), "01–02");
             let queued: Vec<ItemKey> = s.queue_candidates(5, |_| false).into_iter().map(|(k, _)| k).collect();
             if s.watched_count() == 0 {
@@ -1182,7 +1214,6 @@ mod tests {
         // ep 1, x1, x1b, ep 2, special, x3, loose
         let expected = [0, 3, 6, 1, 4, 2, 5].map(|i| s.items[i].key.describe());
         assert_eq!(order, expected);
-        assert_eq!(s.ordered_count(true, false), order.len());
     }
 
     #[test]

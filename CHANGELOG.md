@@ -6,6 +6,26 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `meta link` also fetches the series from AniList (with network metadata
+  on), like linking in the TUI.
+- Every CLI command that writes (`status`, `merge`, `import-fish`, `meta
+  link`, …) completes finished, fully watched series, like the TUI.
+- Quitting the TUI with `q` or Ctrl-C always asks first; `q`, `y` or Enter
+  confirms, any other key cancels.
+
+### Fixed
+
+- Progress on the playing episode is kept when the connection to mpv breaks
+  (e.g. mpv crashes).
+- The position of each new episode in a queue shows up right away.
+- Events from the same second in a sync-conflict copy of this device's log
+  apply in the same order before and after a restart.
+- `mark --unwatched` counts episodes anipv doesn't know separately ("2
+  already were, 1 not known"), and an episode listed twice counts once.
+- fish shell completions load again (a status description broke them).
+
 ## [0.1.0] - 2026-10-08
 
 First release.
