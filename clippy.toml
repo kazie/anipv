@@ -1,0 +1,6 @@
+# Flag `format!("{e} {}", x)` mixes too, not only all-positional calls.
+allow-mixed-uninlined-format-args = false
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# Proper names, not code; newer clippy already knows some of these. ".." keeps the defaults.
+doc-valid-idents = ["SQLite", "AniList", ".."]

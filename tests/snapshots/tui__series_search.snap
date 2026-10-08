@@ -1,0 +1,32 @@
+---
+source: tests/tui.rs
+expression: s
+---
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
+╭ Series · on disk 1 /aria ──────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                          Status     Watched    Disk  Last   Seen  Airing            │
+│▌Aria The Animation                              paused     7/13       13    13     30w   finished          │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ⏎ open  / search  f filter  s status  m merge  M metadata  ? help

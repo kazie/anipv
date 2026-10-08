@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="872" height="734" viewBox="0 0 872 734" font-family="'JetBrains Mono','Cascadia Code','Fira Code',Menlo,Consolas,monospace" font-size="14">
+<rect width="100%" height="100%" rx="10" fill="#1e1e2e"/>
+<circle cx="20" cy="17" r="6" fill="#f38ba8"/><circle cx="40" cy="17" r="6" fill="#f9e2af"/><circle cx="60" cy="17" r="6" fill="#a6e3a1"/>
+<text x="436" y="22" fill="#6c7086" text-anchor="middle" font-size="12">anipv --help</text>
+<text x="16.0" y="47.0" fill="#cdd6f4" xml:space="preserve" textLength="840.0" lengthAdjust="spacingAndGlyphs"> anipv — keep track of the anime you watch with mpv.                                                </text>
+<text x="16.0" y="85.0" fill="#cdd6f4" xml:space="preserve" textLength="840.0" lengthAdjust="spacingAndGlyphs"> Run without arguments to open the TUI. Watch history is stored as append-only per-device logs that </text>
+<text x="16.0" y="104.0" fill="#cdd6f4" xml:space="preserve" textLength="840.0" lengthAdjust="spacingAndGlyphs"> you can sync between machines.                                                                     </text>
+<text x="24.4" y="142.0" fill="#f9e2af" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">Usage:</text>
+<text x="83.2" y="142.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">anipv</text>
+<text x="133.6" y="142.0" fill="#a6e3a1" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">[COMMAND]</text>
+<text x="24.4" y="180.0" fill="#f9e2af" font-weight="bold" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">Commands:</text>
+<text x="41.2" y="199.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">tui</text>
+<text x="66.4" y="199.0" fill="#cdd6f4" xml:space="preserve" textLength="789.6" lengthAdjust="spacingAndGlyphs">          Open the interactive TUI (default)                                                  </text>
+<text x="41.2" y="218.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">init</text>
+<text x="74.8" y="218.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Create a config file with your media folders                                        </text>
+<text x="41.2" y="237.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">scan</text>
+<text x="74.8" y="237.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Scan media folders for new and removed files                                        </text>
+<text x="41.2" y="256.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">next</text>
+<text x="74.8" y="256.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Followed series with unwatched episodes on disk                                     </text>
+<text x="41.2" y="275.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">new</text>
+<text x="66.4" y="275.0" fill="#cdd6f4" xml:space="preserve" textLength="789.6" lengthAdjust="spacingAndGlyphs">          New untracked shows in your download folders (the Inbox)                            </text>
+<text x="41.2" y="294.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">ls</text>
+<text x="58.0" y="294.0" fill="#cdd6f4" xml:space="preserve" textLength="798.0" lengthAdjust="spacingAndGlyphs">           List series                                                                         </text>
+<text x="41.2" y="313.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">show</text>
+<text x="74.8" y="313.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Show the episodes of a series                                                       </text>
+<text x="41.2" y="332.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">play</text>
+<text x="74.8" y="332.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Play the next episode(s) of one or more series in a single mpv                      </text>
+<text x="41.2" y="351.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">mark</text>
+<text x="74.8" y="351.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Mark episodes watched (or unwatched)                                                </text>
+<text x="41.2" y="370.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">status</text>
+<text x="91.6" y="370.0" fill="#cdd6f4" xml:space="preserve" textLength="764.4" lengthAdjust="spacingAndGlyphs">       Set a series' status                                                                </text>
+<text x="41.2" y="389.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">merge</text>
+<text x="83.2" y="389.0" fill="#cdd6f4" xml:space="preserve" textLength="772.8" lengthAdjust="spacingAndGlyphs">        Merge series FROM into series TO (e.g. English and romaji names)                    </text>
+<text x="41.2" y="408.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs">unmerge</text>
+<text x="100.0" y="408.0" fill="#cdd6f4" xml:space="preserve" textLength="756.0" lengthAdjust="spacingAndGlyphs">      Undo a merge: make a merged-away name its own series again                          </text>
+<text x="41.2" y="427.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">rename</text>
+<text x="91.6" y="427.0" fill="#cdd6f4" xml:space="preserve" textLength="764.4" lengthAdjust="spacingAndGlyphs">       Set a series' display title                                                         </text>
+<text x="41.2" y="446.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs">import-fish</text>
+<text x="133.6" y="446.0" fill="#cdd6f4" xml:space="preserve" textLength="722.4" lengthAdjust="spacingAndGlyphs">  Import watch history from "mpv …" commands in fish history                          </text>
+<text x="41.2" y="465.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">meta</text>
+<text x="74.8" y="465.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Metadata from the offline anime database and AniList                                </text>
+<text x="41.2" y="484.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">doctor</text>
+<text x="91.6" y="484.0" fill="#cdd6f4" xml:space="preserve" textLength="764.4" lengthAdjust="spacingAndGlyphs">       Show file names the parser could not make sense of, and other checks                </text>
+<text x="41.2" y="503.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">export</text>
+<text x="91.6" y="503.0" fill="#cdd6f4" xml:space="preserve" textLength="764.4" lengthAdjust="spacingAndGlyphs">       Print all series and episode states as JSON                                         </text>
+<text x="41.2" y="522.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs">completions</text>
+<text x="133.6" y="522.0" fill="#cdd6f4" xml:space="preserve" textLength="722.4" lengthAdjust="spacingAndGlyphs">  Print shell completions                                                             </text>
+<text x="41.2" y="541.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">man</text>
+<text x="66.4" y="541.0" fill="#cdd6f4" xml:space="preserve" textLength="789.6" lengthAdjust="spacingAndGlyphs">          Print the man page (roff)                                                           </text>
+<text x="41.2" y="560.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="33.6" lengthAdjust="spacingAndGlyphs">help</text>
+<text x="74.8" y="560.0" fill="#cdd6f4" xml:space="preserve" textLength="781.2" lengthAdjust="spacingAndGlyphs">         Print this message or the help of the given subcommand(s)                           </text>
+<text x="24.4" y="598.0" fill="#f9e2af" font-weight="bold" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">Options:</text>
+<text x="41.2" y="617.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">-h</text>
+<text x="58.0" y="617.0" fill="#cdd6f4" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">, </text>
+<text x="74.8" y="617.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">--help</text>
+<text x="16.0" y="636.0" fill="#cdd6f4" xml:space="preserve" textLength="840.0" lengthAdjust="spacingAndGlyphs">           Print help (see a summary with '-h')                                                     </text>
+<text x="41.2" y="674.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">-V</text>
+<text x="58.0" y="674.0" fill="#cdd6f4" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">, </text>
+<text x="74.8" y="674.0" fill="#94e2d5" font-weight="bold" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs">--version</text>
+<text x="16.0" y="693.0" fill="#cdd6f4" xml:space="preserve" textLength="840.0" lengthAdjust="spacingAndGlyphs">           Print version                                                                            </text>
+</svg>

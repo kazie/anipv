@@ -1,0 +1,176 @@
+# Synthetic parser corpus: one section per naming convention.
+# Names are made up for testing (fictional group tags, neutral technical tags, fake checksums).
+# Columns: name	kind	episode	title	label	key  (regenerate: UPDATE_FIXTURES=1 cargo test --test parser_corpus)
+# --- bracketed group, dash, number
+[GroupA] Grand Blue S3 - 07 (1080p) [1234ABCD].mkv	episode	7	Grand Blue S3		grand blue s3
+[GroupA] One Piece - 1180 (1080p) [ABCD1180].mkv	episode	1180	One Piece		one piece
+[GroupA] One Piece - 0999 (720p).mkv	episode	999	One Piece		one piece
+[GroupB] Aria - The Natural - 15 [DVD 960x720 x264 AC3].mkv	episode	15	Aria - The Natural		aria the natural
+[GroupC] Cardfight!! Vanguard - Divinez - 01 (1080p) [ABCD0001].mkv	episode	1	Cardfight!! Vanguard - Divinez		cardfight vanguard divinez
+[GroupD] Log Horizon - 21 - The Two of Us Shall Waltz (BD 1080p AAC) [ABCD0021].mkv	episode	21	Log Horizon		log horizon
+[GroupE] Lupin III S2 - 066 - Shooting Orders!! [720p].mkv	episode	66	Lupin III S2		lupin iii s2
+[GroupF]Yes! Pretty Cure 5 - 21[BD][1080p][0000BEEF].mkv	episode	21	Yes! Pretty Cure 5		yes pretty cure 5
+[Group-G] Healin' Good♥Precure - 19.mkv	episode	19	Healin' Good♥Precure		healin good precure
+[Group G] Kiratto Pri☆Chan - 051 (BD 720p AAC).mkv	episode	51	Kiratto Pri☆Chan		kiratto pri chan
+(GroupH) Bakusou Kyoudai Let's & Go!! WGP - 43.mkv	episode	43	Bakusou Kyoudai Let's & Go!! WGP		bakusou kyoudai lets and go wgp
+Meitantei Holmes  - 07 [1080p[BD].mkv	episode	7	Meitantei Holmes		meitantei holmes
+Dirty Pair - 25 (BD 1440x1080p x265 HEVC FLAC 2.0).mkv	episode	25	Dirty Pair		dirty pair
+City Hunter - 41 (BD 1440x1080p x265 HEVC FLAC).mkv	episode	41	City Hunter		city hunter
+[GroupA] Kono Subarashii Sekai ni Shukufuku wo! S3 - 03 (1080p).mkv	episode	3	Kono Subarashii Sekai ni Shukufuku wo! S3		kono subarashii sekai ni shukufuku wo s3
+[GroupB] Uma Musume Pretty Derby S2 - 06 (BD 1080p).mkv	episode	6	Uma Musume Pretty Derby S2		uma musume pretty derby s2
+[GroupC] Spice and Wolf (2024) - 03 (1080p).mkv	episode	3	Spice and Wolf (2024)		spice and wolf 2024
+[GroupA] Recap Episode Show - 12.5 (1080p).mkv	episode	12.5	Recap Episode Show		recap episode show
+[GroupA] Ghost Meets Gal! - 03v2 (1080p) [0000AAAA].mkv	episode	3	Ghost Meets Gal!		ghost meets gal
+[GroupB] Aikatsu! - 047v2 (BD 1920x1080 x265 FLAC) [ABCD0047].mkv	episode	47	Aikatsu!		aikatsu
+[GroupC] Paripi Koumei - 05v2 [ABCD0005].mkv	episode	5	Paripi Koumei		paripi koumei
+[GroupD] Pocket Monsters (2023) 111 (1080p HEVC 10-bit) v2 [11111111].mkv	episode	111	Pocket Monsters (2023)		pocket monsters 2023
+Nekketsu Saikyo Go-Saurer - Episode 24v0[ABCD0024].mkv	episode	24	Nekketsu Saikyo Go-Saurer		nekketsu saikyo go saurer
+[GroupE] Spider Riders - 10v2.avi	episode	10	Spider Riders		spider riders
+Chainsmoker.Cat.S01E07.1080p.WEB.AAC2.0.H.264-GRP.mkv	episode	7	Chainsmoker Cat		chainsmoker cat
+Ranma.1-2.2024.S03E01.Training.Meals.1080p.WEB.DUAL.AAC2.0.H.264-GRP.mkv	episode	1	Ranma 1-2 2024		ranma 1 2 2024 s3
+JoJos.Bizarre.Adventure.S06E02.The.Request.1080p.WEB.DUAL.AAC2.0.H.264-GRP.mkv	episode	2	JoJos Bizarre Adventure		jojos bizarre adventure s6
+BEASTARS.S03E05.1080p.WEB.DUAL.DDP5.1.H.264-GRP.mkv	episode	5	BEASTARS		beastars s3
+Mobile.Fighter.G.Gundam.S01E37.mkv	episode	37	Mobile Fighter G Gundam		mobile fighter g gundam
+New.PANTY.and.STOCKING.with.GARTERBELT.S01E02.2.3.1080p.WEB.DUAL.DDP5.1.H.264-GRP.mkv	episode	2	New PANTY and STOCKING with GARTERBELT		new panty and stocking with garterbelt
+The.Summer.Hikaru.Died.S01E06.Asako.1080p.WEB.DDP5.1.H.264-GRP.mkv	episode	6	The Summer Hikaru Died		summer hikaru died
+Ranma.1-2.2024.S01E05.Who.Says.Youre.Cute.1080p.WEB.DDP2.0.H.264.MSubs-GRP.mkv	episode	5	Ranma 1-2 2024		ranma 1 2 2024
+Orb.On.the.Movements.of.the.Earth.S01E13.Freedom.1080p.WEB.AAC2.0.H.264-GRP.mkv	episode	13	Orb On the Movements of the Earth		orb on the movements of the earth
+Castlevania.Nocturne.S02E01.A.Living.Legend.1080p.WEB.DDP5.1.Atmos.H.264-GRP.mkv	episode	1	Castlevania Nocturne		castlevania nocturne s2
+[GroupA] Dungeons & Television - S01E01 [WEB 1080P AVC, Opus MULTi-AUD, MULTi][DDDD0001].mkv	episode	1	Dungeons & Television		dungeons and television
+[GroupB] Milky☆Subway The Galactic Limited Express - S01E01 [WEB 1080P AVC, AAC MULTi-AUD][ABCD0001].mkv	episode	1	Milky☆Subway The Galactic Limited Express		milky subway the galactic limited express
+Lupin III - S02E145 - [Japanese] Albatross, The Wings of Death.mkv	episode	145	Lupin III		lupin iii s2
+Castlevania (2017) - S02E06 - The River (1080p BD x265).mkv	episode	6	Castlevania (2017)		castlevania 2017 s2
+[GroupC] Oshi no Ko - S02E03 (WEB 1080p AVC EAC3) [ABCD0203].mkv	episode	3	Oshi no Ko		oshi no ko s2
+[GroupD] YAIBA Samurai Legend (2025) - 06v2 (S01E06) (WEB 1080p H264 AAC) [ABCD0006].mkv	episode	6	YAIBA Samurai Legend (2025)		yaiba samurai legend 2025
+Grisaia.no.Kajitsu.E05.1080p.BluRay.x264-GRP.mkv	episode	5	Grisaia no Kajitsu		grisaia no kajitsu
+Gundam.Wing.Ep.32.mkv	episode	32	Gundam Wing		gundam wing
+Steam_Detectives _Ep.23[h.264-AAC][GroupE][ABCD0024].mkv	episode	23	Steam Detectives		steam detectives
+Yuusha Exkaiser - Episode 06(GroupA)(VHS Audio)[ABCD0006].mkv	episode	6	Yuusha Exkaiser		yuusha exkaiser
+Zettai Muteki Raijin-Oh - Episode 42[ABCD0042].mkv	episode	42	Zettai Muteki Raijin-Oh		zettai muteki raijin oh
+Kemurikusa Episode 01.mkv	episode	1	Kemurikusa		kemurikusa
+[GroupB]Powerpuff_Girls_Z_-_09_[0000ABCD].avi	episode	9	Powerpuff Girls Z		powerpuff girls z
+[Group-C]_Gokinjo_Monogatari_-_36_[ABCD0036].mkv	episode	36	Gokinjo Monogatari		gokinjo monogatari
+[GroupD]_Mahou_no_Star_Magical_Emi_23_[h264&AAC]_[ABCD0023].mkv	episode	23	Mahou no Star Magical Emi		mahou no star magical emi
+[GroupF]_Jojo's_Bizarre_Adventure_23_(1920x1080_BD_FLAC)_[ABCD0025].mkv	episode	23	Jojo's Bizarre Adventure		jojos bizarre adventure
+[GroupA]_Onmyou_Taisenki_-_12_(DVD_h264_AC3)_[ABCD0012].mkv	episode	12	Onmyou Taisenki		onmyou taisenki
+[GroupB]_Lord_Of_Lords_Ryu_Knight_-_10.avi	episode	10	Lord Of Lords Ryu Knight		lord of lords ryu knight
+[GroupC]_The_Brave_Fighter_of_Legend_Da_Garn_28[ABCD0028].mkv	episode	28	The Brave Fighter of Legend Da Garn		brave fighter of legend da garn
+[GroupD]_Smile_Precure_01_[1080p][ABCD0001].mkv	episode	1	Smile Precure		smile precure
+[GroupE]_Nurse_Witch_Komugi-chan_Magikarte_Z_S1_[ABCD0001].mkv	movie		Nurse Witch Komugi-chan Magikarte Z S1		nurse witch komugi chan magikarte z
+Azumanga Daiou 24 [ABCD0124].mkv	episode	24	Azumanga Daiou		azumanga daiou
+Danball Senki Wars 37.mp4	episode	37	Danball Senki Wars		danball senki wars
+[GroupA] Bakusou Kyoudai Let's & Go!! WGP 10.mkv	episode	10	Bakusou Kyoudai Let's & Go!! WGP		bakusou kyoudai lets and go wgp
+[GroupB] Pocket Monsters (2023) 116 (1080p HEVC 10-bit) [11111116].mkv	episode	116	Pocket Monsters (2023)		pocket monsters 2023
+[GroupC] Sailor Moon SuperS 162 (DVD.H264.AC3) [ABCD0162].mkv	episode	162	Sailor Moon SuperS		sailor moon supers
+[GroupB] POKÉTOON 21 - The Summer That Goes On (1080p VP9 Opus) [ABCD0221].mkv	episode	21	POKÉTOON		poketoon
+[GroupD]_K-On!_B-Side_Theater_-_Uraon_05_[BD][ABCD0005].mkv	episode	5	K-On! B-Side Theater - Uraon		k on b side theater uraon
+Transformable Shinkansen Robot Shinkalion Z 17 [ABCD0017].mkv	episode	17	Transformable Shinkansen Robot Shinkalion Z		transformable shinkansen robot shinkalion z
+[GroupE] Irresponsible Captain Tylor 11 [Dual Audio][BD][1080].mkv	episode	11	Irresponsible Captain Tylor		irresponsible captain tylor
+[GroupF] Yes! Pretty Cure 5 Go Go! 12.mkv	episode	12	Yes! Pretty Cure 5 Go Go!		yes pretty cure 5 go go
+Gunbuster_Science_Lesson_04_BD(10bit_720p)[ABCD0004].mkv	episode	4	Gunbuster Science Lesson		gunbuster science lesson
+41 - Princess In Peril! The Pilfered Carafe!!.mkv	episode	41			
+05. Kino no Tabi - the Beautiful World [Hi10p AAC][GroupA].mkv	episode	5			
+19 - I Want To Be Stronger!.mkv	episode	19			
+00 - Introductions.mkv	episode	0			
+01. The Dragon Dentist (en) [ABCD0001].mp4	episode	1			
+1 - Momiji Recap.mkv	episode	1			
+[GroupD] Mahou Shoujotai - 09-10 [ABCD0910].avi	episode	9-10	Mahou Shoujotai		mahou shoujotai
+[GroupE] Urusei Yatsura - 001&002 [BD 1280x960 x264 Hi10P FLAC].mkv	episode	1-2	Urusei Yatsura		urusei yatsura
+[GroupE] Urusei Yatsura - 041&042 [BD 1280x960 x264 Hi10P FLAC].mkv	episode	41-42	Urusei Yatsura		urusei yatsura
+[GroupA] Some Show - 05-06 (1080p).mkv	episode	5-6	Some Show		some show
+[GroupA] Some Show - 07~08 (1080p).mkv	episode	7-8	Some Show		some show
+Some.Show.S01E03-E04.1080p.WEB.x264-GRP.mkv	episode	3-4	Some Show		some show
+[GroupA] Meitantei Precure! - 20 Next Ep PV (1080p).mkv	extra	20	Meitantei Precure!	next ep pv	meitantei precure
+[GroupA] Meitantei Precure! - 19 Fanart Corner (1080p).mkv	extra	19	Meitantei Precure!	fanart corner	meitantei precure
+[GroupA] Meitantei Precure! - 06v2 Fanart Corner (1080p).mkv	extra	6	Meitantei Precure!	fanart corner	meitantei precure
+[GroupB] Some Show - 03 Preview (1080p).mkv	extra	3	Some Show	preview	some show
+[GroupC] Senki Zesshou Symphogear - NCOP 1 [BD 720p AAC] [ABCD00C1].mkv	extra		Senki Zesshou Symphogear	ncop 1	senki zesshou symphogear
+[GroupD] Shirobako - NCED1 [BD 720p] [ABCD00E1].mkv	extra		Shirobako	nced1	shirobako
+[GroupE] Yes! Precure 5 Go Go! NCOP (BD 720p).mkv	extra		Yes! Precure 5 Go Go!	ncop	yes precure 5 go go
+[GroupF] Planet With - NCOPv1 [BD 1080p][ABCD0001].mkv	extra		Planet With	ncopv1	planet with
+[GroupA]_Onmyou_Taisenki_-_Opening2_v3_(DVD_h264_AC3)_[ABCD0002].mkv	extra		Onmyou Taisenki	opening2	onmyou taisenki
+[GroupB] My Dress-Up Darling - NCED [BD 1080p HEVC FLAC].mkv	extra		My Dress-Up Darling	nced	my dress up darling
+[GroupF] Houkago no Pleiades - Trailer 2 [BD 1080p][ABCD0002].mkv	extra		Houkago no Pleiades	trailer 2	houkago no pleiades
+[GroupC] Girls und Panzer - das Finale 5 PV [WEB 1080p][ABCD0005].mkv	extra		Girls und Panzer - das Finale 5	pv	girls und panzer das finale 5
+[GroupC] Girls und Panzer - Drama CD 3 - 1 [1080p][ABCD0031].mkv	extra		Girls und Panzer	drama cd 3 1	girls und panzer
+[GroupC] Girls und Panzer - DTM Picture Drama 4 [1080p].mkv	extra		Girls und Panzer - DTM	picture drama 4	girls und panzer dtm
+[GroupA] Sayonara Lara Audio Drama 3 - Lara to Mari to Sugosu Shiki ~Aki~.mkv	extra		Sayonara Lara	audio drama 3 lara to mari to sugosu shiki aki	sayonara lara
+[GroupD] Healin' Good♥Precure - Transformation and Attack Scene Collection 1.mkv	extra		Healin' Good♥Precure - Transformation and Attack	scene collection 1	healin good precure transformation and attack
+Clean Opening B.mkv	extra			clean opening b	
+Clean Ending 1f.mkv	extra			clean ending 1f	
+Creditless OP.mkv	extra			creditless op	
+Opening Music Video.mkv	extra			opening music video	
+Commercials.mkv	extra			commercials	
+Mahou no Yousei Persia - Bonus.mkv	extra		Mahou no Yousei Persia	bonus	mahou no yousei persia
+Astro Boy (Tetsuwan Atom) 2003 DVD 13 EXTRAS.mkv	extra		Astro Boy 2003	extras	astro boy 2003
+Mahoutsukai Tai! - BTS Featurette (DVD 720x480p x265 HEVC AC3 2.0).mkv	extra		Mahoutsukai Tai! - BTS	featurette	mahoutsukai tai bts
+BOX3 Disc 8 Menu.mkv	extra		BOX3 Disc 8	menu	box3 disc 8
+Promotional Movie III [ABCD0003].mp4	extra			promotional movie iii	
+[Yes! Precure 5 Go Go!][NCED2][BD][1080P][H264_FLAC].mkv	extra		Yes! Precure 5 Go Go!	nced2	yes precure 5 go go
+[GroupD] Fortune Quest OVA 4.mkv	special	4	Fortune Quest	ova	fortune quest
+[GroupE] Aria the Avvenire OVA - 02 [BD 1080p HEVC][FLAC][ABCD0002].mkv	special	2	Aria the Avvenire	ova	aria the avvenire
+[GroupC] Girls und Panzer - MLLSD - SP1 [WEB 1080p][ABCD00F1].mkv	special	1	Girls und Panzer - MLLSD	sp	girls und panzer mllsd
+[GroupB] Pocket Monsters (2023) - Pokémon Unite Special Anime (Post-141 Extra) (1080p VP9 Opus) [ABCD0141].mkv	special		Pocket Monsters (2023) - Pokémon Unite	special anime	pocket monsters 2023 pokemon unite
+[GroupA] Shinkalion Change the World - Special Episode (1080p).mkv	special		Shinkalion Change the World	special episode	shinkalion change the world
+[GroupF] Kekkai Sensen & Beyond OVA (BD 720P) [ABCD0001].mkv	special		Kekkai Sensen & Beyond	ova	kekkai sensen and beyond
+[GroupA] Some Show - Recap 2 (1080p).mkv	special	2	Some Show	recap	some show
+[GroupB] Some Show Omake 3.mkv	special	3	Some Show	omake	some show
+Kuramerukagari (2024) - 1080p WEB x264 -GroupA (JP).mkv	movie		Kuramerukagari (2024)		kuramerukagari 2024
+[GroupB] Garden of Remembrance (1080p) [ABCD1080].mkv	movie		Garden of Remembrance		garden of remembrance
+THE.RIBBON.HERO.2026.1080p.WEB.DUAL.DDP5.1.H.264-GRP.mkv	movie		THE RIBBON HERO		ribbon hero
+MOBILE.SUIT.GUNDAM.HATHAWAY.The.Sorcery.Of.Nymph.Circe.2026.REPACK.1080p.WEB.DDP2.0.H.264-GRP.mkv	movie		MOBILE SUIT GUNDAM HATHAWAY The Sorcery Of Nymph Circe		mobile suit gundam hathaway the sorcery of nymph circe
+Laid-Back Camp The Movie (2022) (BD Remux 1080p AVC TrueHD) [ABCD2022] [GroupC].mkv	movie		Laid-Back Camp The Movie (2022)		laid back camp the movie 2022
+[GroupA] Detective Conan - A Hanamaru Answer (1080p).mkv	movie		Detective Conan - A Hanamaru Answer		detective conan a hanamaru answer
+[GroupA] Tensei shitara Slime Datta Ken Movie 2 - Soukai no Namida-hen (1080p) [ABCD0002].mkv	movie		Tensei shitara Slime Datta Ken	movie 2	tensei shitara slime datta ken
+[GroupD] Project A-ko [BD1080][ABCD1986].mkv	movie		Project A-ko		project a ko
+On Your Mark [BD 1080p HEVC Main10P AAC][ABCD1995].mkv	movie		On Your Mark		on your mark
+Dirty Pair no Ooshoubu Nolandia no Nazo (1985) (BD 1440x1080p x265 HEVC FLAC)(Dual Audio).mkv	movie		Dirty Pair no Ooshoubu Nolandia no Nazo (1985)		dirty pair no ooshoubu nolandia no nazo 1985
+[GroupE] Sakura Taisen Sumire v2 [BD 768p x264 8bit AAC] [ABCD0768].mkv	movie		Sakura Taisen Sumire		sakura taisen sumire
+[GroupF] Maris the Choujo v2 (LD) [ABCD0002].mkv	movie		Maris the Choujo		maris the choujo
+Bâan -The Boundaries of Adulthood.mkv	movie		Bâan -The Boundaries of Adulthood		baan the boundaries of adulthood
+your name [2160p][HDR][BD].mkv	movie		your name		your name
+snow-2022.mp4	movie		snow-2022		snow 2022
+[字幕组][Z.O.E Dolores,i][02][BD X264 AAC 720P].mkv	episode	2			
+[字幕组][Z.O.E Dolores,i][06][BD X264 AAC 720P].mkv	episode	6			
+DOWN LOAD 南無阿弥陀仏は愛の詩.mkv	movie		DOWN LOAD 南無阿弥陀仏は愛の詩		down load 南無阿弥陀仏は愛の詩
+けものフレンズV 1stLIVE-seg7.mkv	movie		けものフレンズV 1stLIVE-seg7		けものフレンズv 1stlive seg7
+[GroupA] バカとテスト - 01 (1080p).mkv	episode	1	バカとテスト		バカとテスト
+[GroupA] ハカとテスト - 01 (1080p).mkv	episode	1	ハカとテスト		ハカとテスト
+[GroupA] ﾊﾞｶとテスト - 02 (1080p).mkv	episode	2	ﾊﾞｶとテスト		バカとテスト
+[GroupA] バカとテスト - 03 (1080p).mkv	episode	3	バカとテスト		バカとテスト
+Kiratto Pri☆chan - 51 [1080p].mkv	episode	51	Kiratto Pri☆chan		kiratto pri chan
+Lucky☆Star - 18 [BD][1080p FLAC].mkv	episode	18	Lucky☆Star		lucky star
+[GroupA] Miru - Watashi no Mirai (01-05) (1080p) [Batch]	movie		Miru - Watashi no Mirai		miru watashi no mirai
+[GroupA] Meitantei Precure! - 1-12 Batch (1080p)	movie		Meitantei Precure!		meitantei precure
+BEASTARS.S03.1080p.WEB.DUAL.DDP5.1.H.264-GRP	movie		BEASTARS S03		beastars s3
+[GroupB] Jewelpet Sunshine 1-52 Batch	movie		Jewelpet Sunshine		jewelpet sunshine
+Mahou no Idol Pastel Yumi (WEB 1080p x264 FLAC)	movie		Mahou no Idol Pastel Yumi		mahou no idol pastel yumi
+One Piece	movie		One Piece		one piece
+Pocket Monsters (2023)	movie		Pocket Monsters (2023)		pocket monsters 2023
+Thumbs.db	movie		Thumbs.db		thumbs db
+mpvpipe	movie		mpvpipe		mpvpipe
+1080p.mkv	movie		1080p		1080p
+.mkv	movie				
+- 01 -.mkv	episode	1			
+[].mkv	movie				
+Evangelion 3.0 You Can (Not) Redo.mkv	movie		Evangelion 3.0 You Can Redo		evangelion 3 0 you can redo
+Show 1x05.mkv	episode	5	Show		show
+Show - 1x05 - Title (1080p).mkv	episode	5	Show		show
+Show 1920x1080.mkv	movie		Show		show
+Show 720x480 DVD.mkv	movie		Show		show
+Show 12.5.mkv	episode	12.5	Show		show
+Show 2x05.mkv	episode	5	Show		show s2
+Show 2.0.mkv	movie		Show 2.0		show 2 0
+2.5 Jigen no Ririsa 01.mkv	episode	1	2.5 Jigen no Ririsa		2 5 jigen no ririsa
+[GroupA] 2.5 Jigen no Ririsa - 03 (1080p) [ABCD2503].mkv	episode	3	2.5 Jigen no Ririsa		2 5 jigen no ririsa
+3.0+1.0 Thrice Upon a Time (1080p).mkv	movie		3.0+1.0 Thrice Upon a Time		3 0 1 0 thrice upon a time
+Show 1x05-06.mkv	episode	5-6	Show		show
+Show.1x05-1x06.720p.mkv	episode	5-6	Show		show
+Show 0x05.mkv	special	5	Show	special	show
+Show.S00E05.1080p.WEB.x264-GRP.mkv	special	5	Show	special	show
+[GroupA] Show - 05 The Preview Night (1080p) [ABCD0005].mkv	episode	5	Show		show
+Show 03 - Interview with the Vampire.mkv	episode	3	Show		show
+Show - 05 Trailer 2 (1080p).mkv	extra	5	Show	trailer 2	show
+Movie Title - 2024.mkv	movie		Movie Title		movie title
+[GroupA] Movie Title - 2024 (1080p) [ABCD2024].mkv	movie		Movie Title		movie title
+Show - 2024v2.mkv	episode	2024	Show		show

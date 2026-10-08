@@ -1,0 +1,32 @@
+---
+source: tests/tui.rs
+expression: s
+---
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
+╭ Inbox · new in your download folders · 5 ──────────────────────────────────────────────────────────────────╮
+│ Series                             On disk   Added Airing                                                  │
+│▌Sousou no Frieren S2               01        now                    sequel to Sousou no Frieren · following│
+│ Dungeon Meshi                      01–03     now                                                           │
+│ Kusuriya no Hitorigoto S3          01        now                                                           │
+│ Laid-Back Camp The Movie (2022)              now                                                           │
+│ One Piece Fan Letter                         now                    part of One Piece                      │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ f follow  s skip  z later  space queue ep 1  ⏎ open  m merge  ? help

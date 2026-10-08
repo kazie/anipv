@@ -1,0 +1,68 @@
+[package]
+name = "anipv"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "A TUI that keeps track of the anime you watch with mpv: what's new, what's next, what you dropped."
+authors = ["Petter Salminen"]
+publish = false
+repository = "https://github.com/kazie/anipv"
+readme = "README.md"
+keywords = ["anime", "mpv", "tui", "tracker", "ratatui"]
+categories = ["command-line-utilities", "multimedia::video"]
+exclude = ["assets/", ".github/"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "color", "wrap_help"] }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
+directories = "6.0.0"
+nucleo-matcher = "0.3.1"
+ratatui = "0.30.2"
+regex = "1.13.1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "1.1.6"
+unicode-normalization = "0.1.25"
+unicode-width = "0.2.2"
+ureq = { version = "3.4.2", features = ["json"] }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+insta = "1.49.0"
+predicates = "3.1.4"
+proptest = "1.11.0"
+tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# nursery, cherry-picked (the group as a whole is unstable and opinionated)
+use_self = "warn"
+or_fun_call = "warn"
+derive_partial_eq_without_eq = "warn"
+redundant_clone = "warn"
+needless_collect = "warn"
+redundant_pub_crate = "warn"
+# restriction: cheap guarantees (tests may unwrap, see clippy.toml)
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+# pedantic lints that don't pay off for an application crate
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+implicit_hasher = "allow"     # generic hashers only matter for library APIs

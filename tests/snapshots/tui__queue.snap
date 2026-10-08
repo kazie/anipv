@@ -1,0 +1,32 @@
+---
+source: tests/tui.rs
+expression: s
+---
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                       desktop
+╭ Queue · plays in this order ───────────────────────────────────────────────────────────────────────────────╮
+│ #   Series                           Item                   File                                           │
+│▌1   Dandadan S2                      06                     [GroupA] Dandadan S2 - 06v2 (1080p) [DDDE0006].│
+│ 2   Meitantei Precure!               02                     [GroupB] Meitantei Precure! - 02 (1080p).mkv   │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ queued 1 from Meitantei Precure! (2 in queue)

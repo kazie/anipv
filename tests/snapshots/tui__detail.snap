@@ -1,0 +1,33 @@
+---
+source: tests/tui.rs
+assertion_line: 84
+expression: s
+---
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
+╭ Series ────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Meitantei Precure!  following  watched 1/48  on disk 3  ep 4 in 4d (TV)                                     │
+│meitantei precure                                                                                           │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Episodes · x shows 3 extras ───────────────────────────────────────────────────────────────────────────────╮
+│ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                │
+│▌· 02                                           [GroupB] Meitantei Precure! - 02 (1080p).mkv                │
+│ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  M metadata  esc back  ? help

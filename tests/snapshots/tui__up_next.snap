@@ -1,0 +1,32 @@
+---
+source: tests/tui.rs
+expression: s
+---
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
+╭ Up next ───────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                         Next         New      Watched    Seen   Airing              │
+│▌Dandadan S2                                    06           3        5/12       7d     ep 9 in 1d 7h       │
+│ Meitantei Precure!                             02           2        1/48       3d     ep 4 in 4d          │
+│ One Piece                                      1181         2        11/?       10d    ep 1183 in 5d 2h    │
+│ Ranma 1-2 2024 S3                              01 ◐42%      2        0/12       2d     ep 3 in 6d          │
+│ Sousou no Frieren                              29           3        28/38      12d    ep 32 in 3d 5h      │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+│                                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ space queue next  a queue all new  ⏎ open  w mark next seen  P paused  ? help

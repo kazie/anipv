@@ -1,0 +1,10 @@
+/target
+*.snap.new
+/assets/demo-home
+/.claude/
+.env
+lcov.info
+*.profraw
+*.orig
+*.rej
+/anipv.1

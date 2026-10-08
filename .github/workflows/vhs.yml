@@ -1,0 +1,38 @@
+name: README recordings
+
+# Re-records the README GIF from assets/tapes/all.tape against the demo
+# library and opens a pull request with the result. Run it by hand from the
+# Actions tab; locally, `just record` does the same.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  vhs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      # The tape runs `anipv` from PATH.
+      - run: cargo install --path . --locked
+      # Same preparation as `just record`.
+      - name: Demo library
+        run: just demo-home
+      - name: Record
+        uses: charmbracelet/vhs-action@v2
+        with:
+          path: assets/tapes/all.tape
+          install-fonts: true
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          branch: vhs/update-recordings
+          title: "docs: update README recordings"
+          commit-message: "docs: update README recordings"
+          add-paths: assets/img/*
