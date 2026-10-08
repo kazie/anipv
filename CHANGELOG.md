@@ -10,13 +10,23 @@ project uses [Semantic Versioning](https://semver.org/).
 
 - `meta link` also fetches the series from AniList (with network metadata
   on), like linking in the TUI.
-- Every CLI command that writes (`status`, `merge`, `import-fish`, `meta
-  link`, …) completes finished, fully watched series, like the TUI.
+- Every CLI command that writes (`mark`, `merge`, `import-fish`, `meta
+  link`, …) completes followed series that are finished and fully watched,
+  like the TUI (except a `status` you set on a series that was already
+  finished).
+- The TUI header's "offline" warning for a media root that isn't mounted comes
+  from the scan (started at launch, so it shows once the scan has reached the
+  root), not from a check while loading; a scan that fails to record its
+  result no longer counts as offline.
 - Quitting the TUI with `q` or Ctrl-C always asks first; `q`, `y` or Enter
-  confirms, any other key cancels.
+  confirms, any other key cancels. Ctrl-C with any other popup
+  open closes it (like Esc) instead of asking, so a typed draft isn't lost.
 
 ### Fixed
 
+- A status chosen for a series that is already finished and fully watched
+  stays (e.g. following it for a rewatch) instead of being completed again
+  at once, until you change the status again. Older versions ignore the new `keep` field in the event log.
 - Progress on the playing episode is kept when the connection to mpv breaks
   (e.g. mpv crashes).
 - The position of each new episode in a queue shows up right away.

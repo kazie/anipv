@@ -115,6 +115,10 @@ pub struct RootScan {
     pub root: String,
     /// Counts, if the scan ran.
     pub stats: Result<ScanStats>,
+    /// The root itself could not be scanned (not a directory we can reach:
+    /// missing, unmounted or inaccessible), as opposed to failing to record
+    /// the scan in the database.
+    pub offline: bool,
     /// Directories that failed to list.
     pub errors: Vec<String>,
 }
@@ -167,13 +171,11 @@ impl Ctx {
         Ok(Index::new(&self.cfg, self.db.files()?, self.meta_cache()?))
     }
 
-    /// [`Ctx::index`] after a scan: only the files are read again, and those
-    /// that `old` has keep their classification. The metadata, which a scan
-    /// does not change, is moved over from `old`.
-    pub fn index_from(&self, old: &mut Index) -> Result<Index> {
-        let files = self.db.files()?;
-        let meta = std::mem::take(&mut old.meta);
-        Ok(Index::with_known(&self.cfg, files, meta, old))
+    /// [`Ctx::index`] after a scan: the files that `old` has keep their
+    /// classification, so only new ones are parsed. The metadata is read again
+    /// (another anipv process may have updated it meanwhile).
+    pub fn index_from(&self, old: &Index) -> Result<Index> {
+        Ok(Index::with_known(&self.cfg, self.db.files()?, self.meta_cache()?, old))
     }
 
     /// The metadata part of [`Ctx::index`], for after metadata updates.
@@ -314,8 +316,21 @@ impl Ctx {
     }
 
     /// Set a series' status. Returns the recorded event.
-    pub fn set_status(&self, series: &str, status: SeriesStatus, note: Option<String>) -> Result<Recorded> {
-        self.record([EventBody::status(series, status, note)])
+    ///
+    /// A status other than completed chosen for a series that is already
+    /// finished and fully watched (in `lib`, which is what the user is
+    /// looking at, so actions need not read anything again) is kept: it is
+    /// not auto-completed (see [`Ctx::auto_complete`]) until the status
+    /// changes again, so the series can be followed for a rewatch.
+    pub fn set_status(
+        &self,
+        lib: &Library,
+        series: &str,
+        status: SeriesStatus,
+        note: Option<String>,
+    ) -> Result<Recorded> {
+        let keep = status != SeriesStatus::Completed && lib.get(series).is_some_and(Series::is_done);
+        self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep }])
     }
 
     /// Mark followed series that are finished and fully watched as completed.
@@ -332,6 +347,7 @@ impl Ctx {
             status: SeriesStatus::Completed,
             note: Some(format!("all {} episodes watched", s.whole_watched_count())),
             auto: true,
+            keep: false,
         }))?;
         Ok((recorded, done.iter().map(|s| s.title.clone()).collect()))
     }
@@ -381,6 +397,7 @@ pub fn scan_all(
         }
         let ts = crate::events::now();
         let res = scan_root(cfg, root, &|n| progress(&root.name, n));
+        let offline = res.is_err();
         let (stats, errors) = match res {
             Ok(r) => {
                 let complete = r.complete();
@@ -388,7 +405,7 @@ pub fn scan_all(
             }
             Err(e) => (Err(e), Vec::new()),
         };
-        out.push(RootScan { root: root.name.clone(), stats, errors });
+        out.push(RootScan { root: root.name.clone(), stats, offline, errors });
     }
     if let (Some(o), true) = (only, out.is_empty()) {
         bail!("no root named {o:?} (roots: {})", names.join(", "));
@@ -628,6 +645,23 @@ mod tests {
         assert!(!fits_socket_path(&p(MAX_SOCKET_PATH + 1)));
     }
 
+    /// A scan's new index has the metadata written since the old one was
+    /// read, by this process or another.
+    #[test]
+    fn index_from_reads_the_metadata_again() {
+        use crate::index::db::MatchAttempt;
+        let (_dir, ctx) = crate::demo::ctx();
+        let old = ctx.index().unwrap();
+        assert!(old.meta.attempts.is_empty());
+        let attempt =
+            MatchAttempt { series: "yuru camp".into(), db_version: "v1".into(), at: 1, result: "none".into() };
+        ctx.db.put_match_results(&[], &[attempt]).unwrap();
+        ctx.db.set_kv(OFFLINE_DB_VERSION, "v1").unwrap();
+        let new = ctx.index_from(&old).unwrap();
+        assert_eq!(new.meta.attempts.len(), 1);
+        assert_eq!(new.files().len(), old.files().len());
+    }
+
     #[test]
     fn attempts_from_an_older_offline_db_are_ignored() {
         use crate::index::db::MatchAttempt;
@@ -648,7 +682,7 @@ mod tests {
         // Yuru Camp: 12 episodes, finished airing (demo metadata).
         let lib = ctx.library().unwrap();
         let yc = lib.get("yuru camp").unwrap();
-        ctx.set_status("yuru camp", SeriesStatus::Following, None).unwrap();
+        ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Following, None).unwrap();
         ctx.mark(yc, &parse_episode_list("1-11").unwrap(), true).unwrap();
         assert!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1.is_empty(), "one episode left");
 
@@ -661,9 +695,37 @@ mod tests {
         assert_eq!(yc.note.as_deref(), Some("all 12 episodes watched"));
 
         // The user puts it back to following: anipv doesn't override that.
-        ctx.set_status("yuru camp", SeriesStatus::Following, None).unwrap();
+        ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Following, None).unwrap();
         assert!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1.is_empty());
         assert_eq!(ctx.library().unwrap().get("yuru camp").unwrap().status, SeriesStatus::Following);
+    }
+
+    /// A status chosen once the series is finished and fully watched stays:
+    /// it is not completed again, so it can be followed for a rewatch.
+    #[test]
+    fn status_chosen_on_a_finished_series_is_not_overridden() {
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        ctx.mark(lib.get("yuru camp").unwrap(), &parse_episode_list("1-12").unwrap(), true).unwrap();
+        for status in [SeriesStatus::Following, SeriesStatus::Paused, SeriesStatus::Following] {
+            ctx.set_status(&ctx.library().unwrap(), "yuru camp", status, None).unwrap();
+            assert!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1.is_empty());
+            assert_eq!(ctx.library().unwrap().get("yuru camp").unwrap().status, status);
+        }
+        let events = ctx.log.load_all().unwrap().events;
+        let kept = |e: &crate::events::Event| matches!(e.body, EventBody::SeriesStatus { keep: true, .. });
+        assert_eq!(events.iter().filter(|e| kept(e)).count(), 3);
+        // Choosing a status again while it is not finished is not "keeping": it
+        // completes when it is finished (the series is back to following).
+        let lib = ctx.library().unwrap();
+        ctx.mark(lib.get("yuru camp").unwrap(), &parse_episode_list("12").unwrap(), false).unwrap();
+        ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Following, None).unwrap();
+        let lib = ctx.library().unwrap();
+        ctx.mark(lib.get("yuru camp").unwrap(), &parse_episode_list("12").unwrap(), true).unwrap();
+        assert_eq!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1, vec!["Yuru Camp"]);
+        // Completing is not "keeping".
+        ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Completed, None).unwrap();
+        assert_eq!(ctx.log.load_all().unwrap().events.iter().filter(|e| kept(e)).count(), 3);
     }
 
     #[test]
@@ -683,7 +745,7 @@ mod tests {
     fn library_completed_rebuilds_with_the_completions() {
         let (_dir, ctx) = crate::demo::ctx();
         let lib = ctx.library().unwrap();
-        ctx.set_status("yuru camp", SeriesStatus::Following, None).unwrap();
+        ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Following, None).unwrap();
         ctx.mark(lib.get("yuru camp").unwrap(), &parse_episode_list("1-12").unwrap(), true).unwrap();
         let mut index = ctx.index().unwrap();
         let mut log = ctx.log.load_cached().unwrap();
@@ -704,7 +766,7 @@ mod tests {
     fn auto_complete_note_counts_whole_episodes() {
         let (_dir, ctx) = crate::demo::ctx();
         let lib = ctx.library().unwrap();
-        ctx.set_status("yuru camp", SeriesStatus::Following, None).unwrap();
+        ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Following, None).unwrap();
         let mut eps = parse_episode_list("1-12").unwrap();
         eps.push(ItemKey::episode("12.5".parse().unwrap()));
         ctx.mark(lib.get("yuru camp").unwrap(), &eps, true).unwrap();
@@ -849,6 +911,27 @@ mod tests {
         ctx.migrated_library(&mut index, &mut ctx.log.load_cached().unwrap()).unwrap();
         assert_eq!(rows(&index), sorted(meta_rows(&ctx)));
         assert!(rows(&index).contains(&baka) && no_legacy_row(&ctx));
+    }
+
+    /// Only a root that cannot be scanned is offline: one that scans but whose
+    /// result is not recorded is not.
+    #[test]
+    fn only_unreachable_roots_are_offline() {
+        use crate::config::{Root, RootKind};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("here")).unwrap();
+        let cfg = Config {
+            roots: vec![
+                Root::test("here", dir.path().join("here"), RootKind::Archive),
+                Root::test("gone", dir.path().join("gone"), RootKind::Archive),
+            ],
+            ..Config::default()
+        };
+        let mut db = Db::open_in_memory().unwrap();
+        let scans = scan_all(&cfg, &mut db, None, &|_, _| {}).unwrap();
+        let offline: Vec<(&str, bool, bool)> =
+            scans.iter().map(|r| (r.root.as_str(), r.offline, r.stats.is_err())).collect();
+        assert_eq!(offline, [("here", false, false), ("gone", true, true)]);
     }
 
     /// A rescan classifies only the files it did not know: the others keep

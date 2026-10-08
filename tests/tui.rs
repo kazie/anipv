@@ -188,7 +188,7 @@ fn paused_toggle_works_on_an_empty_up_next() {
     let (_d, mut app) = app();
     let following: Vec<String> = app.upnext_rows_in(0..usize::MAX).iter().map(|s| s.key.clone()).collect();
     for key in &following {
-        app.ctx.set_status(key, SeriesStatus::Paused, None).unwrap();
+        app.ctx.set_status(&app.lib, key, SeriesStatus::Paused, None).unwrap();
     }
     app.reload();
     app.press("1");
@@ -572,7 +572,7 @@ fn reload_keeps_selections_by_key() {
     let item = app.detail_rows()[app.detail_state.selected().unwrap()].key.clone();
     // Behind the TUI's back: skip the first inbox row, and a new (earlier)
     // Frieren episode arrives, adding rows before the selected file and episode.
-    app.ctx.set_status(&inbox[0], SeriesStatus::Skipped, None).unwrap();
+    app.ctx.set_status(&app.lib, &inbox[0], SeriesStatus::Skipped, None).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let new = d.path().join("media/Downloads/[GroupA] Sousou no Frieren - 26 (1080p) [ABCD0026].mkv");
     std::fs::write(&new, b"").unwrap();

@@ -81,7 +81,7 @@ impl EventBody {
 
     /// A status change made by the user.
     pub fn status(series: impl Into<String>, status: SeriesStatus, note: Option<String>) -> Self {
-        Self::SeriesStatus { series: series.into(), status, note, auto: false }
+        Self::SeriesStatus { series: series.into(), status, note, auto: false, keep: false }
     }
 
     /// `watched` for an item, without a file name.
@@ -142,6 +142,10 @@ pub enum EventBody {
         /// Set by anipv itself (e.g. completed after the last episode), not the user.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         auto: bool,
+        /// Chosen by the user for a series that was already finished and fully
+        /// watched: anipv must not complete it automatically afterwards.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep: bool,
     },
     /// Treat series `from` as part of series `to` (merging two names).
     Alias {
@@ -374,6 +378,12 @@ fn stamp(path: &Path) -> Option<Stamp> {
     Some((path.file_name()?.to_owned(), m.len(), m.modified().ok()))
 }
 
+/// How [`load_dir`] orders events: by `(ts, dev, file, line)`, the last two
+/// being the event's tag.
+fn log_order(a: (&Event, &(usize, usize)), b: (&Event, &(usize, usize))) -> std::cmp::Ordering {
+    (a.0.ts, a.0.dev.as_str(), a.1).cmp(&(b.0.ts, b.0.dev.as_str(), b.1))
+}
+
 /// Add events just appended to this device's log (the file named `own`) to
 /// `cache` where loading the log again would put them: ordered by
 /// `(ts, dev, file, line)` like [`load_dir`], as the next lines of `own`.
@@ -391,19 +401,37 @@ fn add_events(cache: &mut CachedLog, own: &std::ffi::OsStr, recorded: Vec<Event>
             fi
         }
     };
-    for ev in recorded {
-        let tag = (fi, cache.files[fi].1);
-        cache.files[fi].1 += 1;
-        let key = (ev.ts, ev.dev.as_str(), tag);
-        let at = cache
-            .events
-            .iter()
-            .zip(&cache.tags)
-            .rposition(|(e, t)| (e.ts, e.dev.as_str(), *t) <= key)
-            .map_or(0, |i| i + 1);
-        cache.events.insert(at, ev);
-        cache.tags.insert(at, tag);
+    let tagged: Vec<(Event, (usize, usize))> = recorded
+        .into_iter()
+        .map(|ev| {
+            let tag = (fi, cache.files[fi].1);
+            cache.files[fi].1 += 1;
+            (ev, tag)
+        })
+        .collect();
+    // Events recorded now are almost always the newest: just append them (in
+    // order among themselves; an import may bring them in any order).
+    let mut tagged = tagged;
+    tagged.sort_by(|(a, ta), (b, tb)| log_order((a, ta), (b, tb)));
+    let in_order = cache
+        .events
+        .last()
+        .zip(cache.tags.last())
+        .is_none_or(|newest| tagged.first().is_none_or(|(e, t)| log_order((e, t), newest).is_ge()));
+    if in_order {
+        for (ev, tag) in tagged {
+            cache.events.push(ev);
+            cache.tags.push(tag);
+        }
+        return;
     }
+    // Older timestamps (an import, a skewed clock): merge and sort once, not
+    // an insert per event.
+    let old_events = std::mem::take(&mut cache.events);
+    let old_tags = std::mem::take(&mut cache.tags);
+    let mut all: Vec<(Event, (usize, usize))> = old_events.into_iter().zip(old_tags).chain(tagged).collect();
+    all.sort_by(|(a, ta), (b, tb)| log_order((a, ta), (b, tb)));
+    (cache.events, cache.tags) = all.into_iter().unzip();
 }
 
 /// True for an empty file or one whose last byte is `\n`.
@@ -484,7 +512,7 @@ fn load_tagged(dir: &Path) -> Result<Tagged> {
         }
         out.files.push((path.file_name().unwrap_or_default().to_owned(), lines));
     }
-    out.events.sort_by(|(fa, la, a), (fb, lb, b)| (a.ts, &a.dev, fa, la).cmp(&(b.ts, &b.dev, fb, lb)));
+    out.events.sort_by(|(fa, la, a), (fb, lb, b)| log_order((a, &(*fa, *la)), (b, &(*fb, *lb))));
     Ok(out)
 }
 
@@ -524,6 +552,9 @@ pub struct SeriesState {
     /// anipv has completed this series automatically before (so it won't
     /// again after the user changes the status back).
     pub auto_completed: bool,
+    /// The latest status was chosen by the user once the series was already
+    /// finished and fully watched (so anipv doesn't complete it).
+    pub kept: bool,
     /// Manual episode total.
     pub episodes: Option<u32>,
 }
@@ -642,11 +673,12 @@ impl State {
                 EventBody::Unwatched { series, item, .. } => {
                     state.items.entry(canon(series)).or_default().insert(item.clone(), WatchState::Unwatched);
                 }
-                EventBody::SeriesStatus { series, status, note, auto } => {
+                EventBody::SeriesStatus { series, status, note, auto, keep } => {
                     let s = state.series.entry(canon(series)).or_default();
                     s.status = *status;
                     s.note.clone_from(note);
                     s.auto_completed |= *auto && *status == SeriesStatus::Completed;
+                    s.kept = *keep;
                 }
                 EventBody::Title { series, title } => {
                     state.series.entry(canon(series)).or_default().title = Some(title.clone());
@@ -963,6 +995,53 @@ mod tests {
             assert!(!desk.refresh(&mut cache).unwrap(), "own append {n}");
             assert_eq!(cache.events(), desk.load_all().unwrap().events, "append {n}");
         }
+    }
+
+    /// A batch of old timestamps (an import) lands where a fresh read puts
+    /// it, among newer events and those of other files.
+    #[test]
+    fn merged_bulk_events_with_old_timestamps_are_ordered_like_a_fresh_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let desk = EventLog::open(dir.path(), "desk").unwrap();
+        let now = now();
+        let line = |s: &str, ts| serde_json::to_string(&ev(ts, "desk", watched(s, 1))).unwrap() + "\n";
+        std::fs::write(
+            dir.path().join("zed.jsonl"),
+            (0..20).map(|d| line(&format!("z{d}"), now + d)).collect::<String>(),
+        )
+        .unwrap();
+        let mut cache = desk.load_cached().unwrap();
+        // Out of order on purpose, some sharing a second with existing events.
+        let batch: Vec<Event> = [now + 5, now - 1000, now + 5, now - 7, now + 30, now - 1000, now]
+            .iter()
+            .enumerate()
+            .map(|(i, ts)| ev(*ts, "desk", watched(&format!("old{i}"), 1)))
+            .collect();
+        let written = desk.append_events(&batch).unwrap();
+        desk.merge(&mut cache, Recorded { events: batch, written });
+        assert!(!desk.refresh(&mut cache).unwrap());
+        assert_eq!(cache.events(), desk.load_all().unwrap().events);
+    }
+
+    /// A batch that is all newer than the cache but not sorted itself (an
+    /// import) is ordered like a fresh read.
+    #[test]
+    fn merged_unsorted_newer_batch_is_ordered_like_a_fresh_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let desk = EventLog::open(dir.path(), "desk").unwrap();
+        let now = now();
+        let mut cache = desk.load_cached().unwrap();
+        let first = desk.append_events(&[ev(now, "desk", watched("a", 1))]).unwrap();
+        desk.merge(&mut cache, Recorded { events: vec![ev(now, "desk", watched("a", 1))], written: first });
+        let batch: Vec<Event> = [now + 300, now + 200, now + 250]
+            .iter()
+            .enumerate()
+            .map(|(i, ts)| ev(*ts, "desk", watched(&format!("n{i}"), 1)))
+            .collect();
+        let written = desk.append_events(&batch).unwrap();
+        desk.merge(&mut cache, Recorded { events: batch, written });
+        assert!(!desk.refresh(&mut cache).unwrap());
+        assert_eq!(cache.events(), desk.load_all().unwrap().events);
     }
 
     /// A half-written last line (crash, full disk) costs only itself: the

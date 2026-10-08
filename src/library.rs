@@ -110,6 +110,8 @@ pub struct Series {
     pub link: Link,
     /// anipv completed this series automatically before.
     pub auto_completed: bool,
+    /// The user's latest status was chosen once the series was finished.
+    pub kept: bool,
     /// `AniList` ids of this anime's prequels (`None` until fetched).
     pub prequels: Option<Vec<u64>>,
     /// Manual episode total (from events).
@@ -242,9 +244,10 @@ impl Series {
     }
 
     /// Followed, done, and not auto-completed before (so a user who set it back
-    /// to following isn't overridden).
+    /// to following isn't overridden), nor given its status by the user while
+    /// it was already done (until they change it again).
     pub fn should_auto_complete(&self) -> bool {
-        self.status == SeriesStatus::Following && !self.auto_completed && self.is_done()
+        self.status == SeriesStatus::Following && !self.auto_completed && !self.kept && self.is_done()
     }
 
     /// `watched/total`, with `?` for an unknown total. Counts only episodes
@@ -605,6 +608,7 @@ impl<'a> Lookups<'a> {
             items,
             link: st.link,
             auto_completed: st.auto_completed,
+            kept: st.kept,
             prequels: None,
             episodes_override: st.episodes,
             aliases,

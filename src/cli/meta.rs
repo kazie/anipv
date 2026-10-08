@@ -123,7 +123,8 @@ fn link(ctx: &Ctx, s: &mut Session, query: &str, anilist: u64, out: &mut impl Wr
     let id = (anilist != 0).then_some(anilist);
     let recorded = ctx.link(&s.lib, &key, id)?;
     s.add(ctx, recorded);
-    // The link is in the log and its cached rows are gone: sync on that.
+    // The link is in the log and its cached rows are gone: sync on that. (A
+    // rebuild is cheap, and `writing` rebuilds again for what the sync stores.)
     s.rebuild(ctx)?;
     let request = Request::Series(key.clone());
     let planned = crate::meta::plan(&s.lib, &ctx.cfg, &s.index.meta.anilist_checks, &request, now());

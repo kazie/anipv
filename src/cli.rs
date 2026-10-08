@@ -386,7 +386,7 @@ fn set_status(
     out: &mut impl Write,
 ) -> Result<()> {
     let series = find_series(&s.lib, query)?;
-    let recorded = ctx.set_status(&series.key, status, note)?;
+    let recorded = ctx.set_status(&s.lib, &series.key, status, note)?;
     let (ok, title, status) = (green("✓"), bold(&series.title), status_label(status));
     writeln!(out, "{ok} {title} is now {status}")?;
     s.add(ctx, recorded);

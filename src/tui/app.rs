@@ -453,7 +453,7 @@ impl App {
     /// Re-read the indexed files from the cache database (after a scan: files
     /// known before keep their classification), then reload.
     pub fn reload_index(&mut self) {
-        match self.ctx.index_from(&mut self.index) {
+        match self.ctx.index_from(&self.index) {
             Ok(index) => self.index = index,
             Err(e) => self.fail(format!("reading the index failed: {e:#}")),
         }
@@ -1123,8 +1123,16 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                // Like `q`, but a second Ctrl-C at the prompt quits anyway.
-                KeyCode::Char('c') => self.request_quit(),
+                // Like `q`, but a second Ctrl-C at the prompt quits anyway. Any
+                // other popup is closed first, like Esc (a draft is not lost
+                // to a quit prompt).
+                KeyCode::Char('c') => {
+                    if matches!(self.popup, None | Some(Popup::ConfirmQuit)) {
+                        self.request_quit();
+                    } else {
+                        self.popup = None;
+                    }
+                }
                 KeyCode::Char('r') => self.start_meta(MetaRequest::All),
                 _ => {}
             }
@@ -1247,7 +1255,7 @@ impl App {
             _ => return self.series_actions(key, key_s),
         };
         self.say(msg);
-        let res = self.ctx.set_status(&key_s, status, None);
+        let res = self.ctx.set_status(&self.lib, &key_s, status, None);
         self.after_write(res);
     }
 
@@ -1610,7 +1618,7 @@ impl App {
     fn set_status(&mut self, series: &str, status: SeriesStatus, note: Option<String>) {
         let title = self.lib.get(series).map_or_else(|| series.to_string(), |s| s.title.clone());
         self.say(format!("{title} → {status}"));
-        let res = self.ctx.set_status(series, status, note);
+        let res = self.ctx.set_status(&self.lib, series, status, note);
         self.after_write(res);
     }
 
@@ -1644,9 +1652,10 @@ impl App {
                     Err(e) => format!("{}: {e}", r.root),
                 })
                 .collect();
-            // Found here rather than on the UI thread: checking a root may
-            // block on a network mount.
-            let offline_roots = out.iter().filter(|r| r.stats.is_err()).map(|r| r.root.clone()).collect();
+            // Known from the scan itself rather than checked on the UI thread:
+            // looking at a root may block on a network mount. (A root whose
+            // scan could not be recorded is mounted, so not offline.)
+            let offline_roots = out.iter().filter(|r| r.offline).map(|r| r.root.clone()).collect();
             Ok(ScanSummary { text: parts.join(" · "), offline_roots })
         });
     }
@@ -1894,6 +1903,22 @@ mod tests {
                     app.quit = false;
                 }
             }
+        }
+    }
+
+    /// Ctrl-C closes any popup but the quit prompt (and a draft in it) like
+    /// Esc, rather than asking to quit; then it asks as usual.
+    #[test]
+    fn ctrl_c_closes_popups_with_something_to_lose() {
+        let (_dir, mut app) = demo_app();
+        for keys in ["?", "3s", "3m", "3R", "3/"] {
+            app.press(keys);
+            assert!(app.popup.is_some(), "{keys:?} opens a popup");
+            ctrl_c(&mut app);
+            assert!(app.popup.is_none() && !app.quit, "{keys:?}: Ctrl-C closes it");
+            ctrl_c(&mut app);
+            assert_eq!(app.popup, Some(Popup::ConfirmQuit), "then it asks");
+            app.press("n");
         }
     }
 

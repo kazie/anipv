@@ -97,10 +97,32 @@ fn show_mark_and_status() {
     anipv(d.path()).args(["status", "nonexistent-zzz", "following"]).assert().failure();
 }
 
-/// Following a finished show whose episodes are all watched completes it,
-/// as marking the last episode would.
+/// A followed show completes when its last episode is marked watched.
 #[test]
-fn every_write_completes_finished_series() {
+fn finishing_a_followed_series_completes_it() {
+    let d = demo();
+    anipv(d.path()).args(["status", "yuru camp", "following"]).assert().success();
+    anipv(d.path())
+        .args(["mark", "yuru camp", "1-11"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("completed").not());
+    anipv(d.path())
+        .args(["mark", "yuru camp", "12"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ Yuru Camp completed: all episodes watched"));
+    anipv(d.path())
+        .args(["ls", "--status", "completed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Yuru Camp"));
+}
+
+/// A status chosen for a show that is already finished and fully watched
+/// stays: anipv doesn't complete it behind the user's back (a rewatch).
+#[test]
+fn status_chosen_on_a_finished_series_is_kept() {
     let d = demo();
     anipv(d.path())
         .args(["mark", "yuru camp", "1-12"])
@@ -111,9 +133,9 @@ fn every_write_completes_finished_series() {
         .args(["status", "yuru camp", "following"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("✓ Yuru Camp completed: all episodes watched"));
+        .stdout(predicate::str::contains("completed").not());
     anipv(d.path())
-        .args(["ls", "--status", "completed"])
+        .args(["ls", "--status", "following"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Yuru Camp"));

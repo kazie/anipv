@@ -628,7 +628,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("M", "refresh metadata for the series under the cursor"),
             ("ctrl-r", "refresh all metadata now (updates the anime database if old)"),
             ("?", "this help"),
-            ("q / ctrl-c", "quit (asks first: q, y or ⏎ confirms)"),
+            ("q / ctrl-c", "quit (asks first: q, y or ⏎ confirms); ctrl-c closes an open popup first"),
         ],
     ),
     (
