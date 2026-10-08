@@ -6,8 +6,25 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `anilist_search = true` (off by default) and `anipv meta match --search`:
+  series the offline database has no match for are looked up on AniList by
+  title, so shows newer than the dataset can still get episode totals and
+  airing times. This sends those series' titles (parsed from your file and
+  folder names) to AniList. A series links
+  only when one answer goes by its name and can hold the episodes on disk;
+  ambiguous ones are listed and left alone.
+
 ### Changed
 
+- The offline anime database now comes from the community continuation
+  (`cedya77/anime-offline-database`) because the original manami-project
+  dataset was archived after its 2026-27 release (2026-07-04). The archived
+  original is the fallback when nothing is cached yet. New config key
+  `offline_db_url` picks another source; `anipv meta update` says when the
+  dataset it got is more than 90 days old. Series that couldn't be matched
+  are matched again after the first update.
 - `meta link` also fetches the series from AniList (with network metadata
   on), like linking in the TUI.
 - Every CLI command that writes (`mark`, `merge`, `import-fish`, `meta

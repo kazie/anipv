@@ -106,6 +106,10 @@ pub struct Series {
     /// Matching already ran against the current offline database and found
     /// nothing to link.
     pub match_checked: bool,
+    /// What the last match for the current offline database came to, when it
+    /// linked nothing from the database: `none` or `ambiguous` (the database),
+    /// or a title search's result (see [`crate::meta::is_search_attempt`]).
+    pub match_result: Option<String>,
     /// `AniList` link chosen by the user (from events).
     pub link: Link,
     /// anipv completed this series automatically before.
@@ -241,6 +245,23 @@ impl Series {
     /// [`Self::is_done`] compares with the total.
     pub fn whole_watched_count(&self) -> usize {
         self.items.iter().filter(|i| i.counts_toward_total() && i.state.is_watched()).count()
+    }
+
+    /// Its (automatic) link came from a title search on `AniList`, which the
+    /// offline database can't confirm (see [`SeriesMeta::search_linked`]).
+    pub fn search_linked(&self) -> bool {
+        self.link == Link::Auto && self.meta.as_ref().is_some_and(|m| m.search_linked)
+    }
+
+    /// A title search already ran for it (for the current offline database).
+    pub fn searched(&self) -> bool {
+        self.match_result.as_deref().is_some_and(crate::meta::is_search_attempt)
+    }
+
+    /// The offline database had no match and no title search has run since:
+    /// one is due when title search is on.
+    pub fn search_due(&self) -> bool {
+        self.match_result.as_deref() == Some("none")
     }
 
     /// Followed, done, and not auto-completed before (so a user who set it back
@@ -538,8 +559,8 @@ struct Lookups<'a> {
     legacy_of: &'a HashMap<String, Vec<String>>,
     /// Cached metadata rows by series key.
     meta_by: HashMap<&'a str, &'a SeriesMeta>,
-    /// Series keys with a "no match" result.
-    attempted: HashSet<&'a str>,
+    /// Series keys with a "no match" result, and what it was.
+    attempted: HashMap<&'a str, &'a str>,
     /// Canonical key → the keys merged into it.
     aliases_of: HashMap<&'a str, Vec<String>>,
 }
@@ -547,7 +568,7 @@ struct Lookups<'a> {
 impl<'a> Lookups<'a> {
     fn new(cfg: &'a Config, state: &'a State, index: &'a Index, legacy_of: &'a HashMap<String, Vec<String>>) -> Self {
         let meta_by = index.meta.rows.iter().map(|m| (m.series.as_str(), m)).collect();
-        let attempted = index.meta.attempts.iter().map(|a| a.series.as_str()).collect();
+        let attempted = index.meta.attempts.iter().map(|a| (a.series.as_str(), a.result.as_str())).collect();
         let mut aliases_of: HashMap<&str, Vec<String>> = HashMap::new();
         for from in state.aliases.keys() {
             // On an alias cycle the canonical key is itself a merged-away key:
@@ -597,10 +618,11 @@ impl<'a> Lookups<'a> {
             .map(|m| SeriesMeta { series: key.clone(), ..(*m).clone() });
         // A "no match" for the old key doesn't count: the new key is a
         // different title to match (`Ctx::migrated_library` drops those rows).
-        let match_checked = self.attempted.contains(key.as_str());
+        let attempt = self.attempted.get(key.as_str()).map(|r| (*r).to_string());
         let mut s = Series {
             meta,
-            match_checked,
+            match_checked: attempt.is_some(),
+            match_result: attempt,
             key,
             title,
             status: st.status,

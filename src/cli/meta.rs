@@ -22,6 +22,11 @@ pub enum MetaAction {
         /// Only report, don't link.
         #[arg(long)]
         dry_run: bool,
+        /// Also look series with no match up on AniList by title (sends those titles to AniList).
+        /// With `anilist_search = true` in the config this happens without the flag (but not with
+        /// `--dry-run`), and only for series not searched before.
+        #[arg(long)]
+        search: bool,
     },
     /// Link a series to an AniList id manually (0 to unlink).
     Link {
@@ -52,6 +57,15 @@ fn anilist_arg(s: &str) -> Result<u64, String> {
     anilist::parse_ref(s).ok_or_else(|| "expected an AniList id or https://anilist.co/anime/… URL".into())
 }
 
+/// Print things to tell the user that aren't failures (see
+/// [`SyncResult::notes`]).
+fn print_notes<'a>(out: &mut impl Write, notes: impl IntoIterator<Item = &'a String>) -> Result<()> {
+    for note in notes {
+        writeln!(out, "{warn} {note}", warn = yellow("!"))?;
+    }
+    Ok(())
+}
+
 /// The downloaded offline database, or an error saying how to get it.
 fn downloaded(ctx: &Ctx) -> Result<OfflineDb> {
     match OfflineDb::load(&ctx.paths.cache_dir)? {
@@ -64,15 +78,19 @@ fn downloaded(ctx: &Ctx) -> Result<OfflineDb> {
 pub(super) fn run(ctx: &Ctx, a: MetaAction, out: &mut impl Write) -> Result<()> {
     match a {
         MetaAction::Update => {
-            writeln!(out, "downloading {} …", dim(offline::URL))?;
-            let db = OfflineDb::download(&ctx.paths.cache_dir)?;
+            let urls = offline::source_urls(ctx.cfg.offline_db_url.as_deref());
+            writeln!(out, "downloading {} …", dim(&urls[0]))?;
+            let db = OfflineDb::download(&ctx.paths.cache_dir, &urls)?;
             ctx.store_sync(&SyncResult { db_version: db.version.clone(), ..SyncResult::default() })?;
             writeln!(out, "{ok} {n} anime with AniList ids", ok = green("✓"), n = db.entries.len())?;
+            print_notes(out, &offline::download_notes(&urls[0], db.source.as_deref(), db.version.as_deref(), now()))?;
             writeln!(out, "  next: {}", cyan("anipv meta match"))?;
             Ok(())
         }
-        MetaAction::Match { dry_run: true } => match_series(ctx, &ctx.library()?, true, out),
-        MetaAction::Match { dry_run: false } => writing(ctx, out, |s, out| match_series(ctx, &s.lib, false, out)),
+        MetaAction::Match { dry_run: true, search } => match_series(ctx, &ctx.library()?, true, search, out),
+        MetaAction::Match { dry_run: false, search } => {
+            writing(ctx, out, |s, out| match_series(ctx, &s.lib, false, search, out))
+        }
         MetaAction::Link { series, anilist } => writing(ctx, out, |s, out| link(ctx, s, &series, anilist, out)),
         MetaAction::Refresh { series, all } => {
             // Said here: with the network off, the plan below would just be empty.
@@ -91,16 +109,40 @@ pub(super) fn run(ctx: &Ctx, a: MetaAction, out: &mut impl Write) -> Result<()> 
 }
 
 /// `meta match`: match against the offline database, storing the links
-/// unless `dry_run`.
-fn match_series(ctx: &Ctx, lib: &Library, dry_run: bool, out: &mut impl Write) -> Result<()> {
+/// unless `dry_run`. With `search` (or `anilist_search` in the config), series
+/// the database has no match for are also looked up on `AniList` by title.
+fn match_series(ctx: &Ctx, lib: &Library, dry_run: bool, search: bool, out: &mut impl Write) -> Result<()> {
+    if search && !ctx.cfg.anilist {
+        bail!("network metadata is turned off (`anilist = false` in the config)");
+    }
     let db = downloaded(ctx)?;
-    let rep = crate::meta::match_library(lib, &db, now(), None);
+    let ts = now();
+    let mut rep = crate::meta::match_library(lib, &db, ts, None);
+    let (mut searched, mut found) = (None, crate::meta::SearchSummary::default());
+    // A dry run only searches when asked to, since the titles do go to AniList.
+    if search || (ctx.cfg.anilist && ctx.cfg.anilist_search && !dry_run) {
+        let before = rep.rows.len();
+        let version = db.version.clone().unwrap_or_default();
+        // `--search` asks again about series searched before.
+        found = crate::meta::add_title_search(&mut rep, lib, &anilist::Ureq, &version, ts, search);
+        searched = Some(rep.rows.len() - before);
+    }
     let matched = rep.rows.len();
     if !dry_run {
         let (rows, attempts, db_version) = (rep.rows, rep.attempts, db.version);
         ctx.store_sync(&SyncResult { rows, attempts, db_version, ..SyncResult::default() })?;
     }
     writeln!(out, "{ok} matched {matched} series", ok = green("✓"))?;
+    if let Some(n) = searched {
+        writeln!(out, "  {n} of them by title on AniList")?;
+    }
+    for e in &found.errors {
+        writeln!(out, "{warn} AniList: {e:#}", warn = yellow("!"))?;
+    }
+    print_notes(out, &found.notes)?;
+    if found.skipped > 0 {
+        writeln!(out, "  {n} more not searched this time; run again", n = found.skipped)?;
+    }
     if !rep.ambiguous.is_empty() {
         writeln!(out, "\n{} (link with {}):", bold("ambiguous"), cyan("anipv meta link <series> <anilist-id>"))?;
         for (k, c) in rep.ambiguous.iter().take(40) {
@@ -162,14 +204,16 @@ fn refresh(ctx: &Ctx, s: &Session, series: Option<&str>, all: bool, out: &mut im
     // Only `--all` updates the offline database.
     let opts = SyncOptions { update_offline: all, ..opts };
     let mut shown = Ok(());
+    let first_url = opts.offline_urls.first().map_or("", String::as_str);
     let http = Some(&anilist::Ureq as &dyn anilist::Http);
     let res = crate::meta::sync_with_progress(lib, &ctx.paths.cache_dir, http, &opts, now(), &mut |step| {
         if step == SyncStep::Downloading {
-            shown = writeln!(out, "downloading {} …", dim(offline::URL));
+            shown = writeln!(out, "downloading {} …", dim(first_url));
         }
     });
     shown?;
     ctx.store_sync(&res)?;
+    print_notes(out, &res.notes)?;
     // A failed download (with `--all`) or AniList error fails the command.
     if let Some(e) = res.errors.first() {
         bail!("{e}");

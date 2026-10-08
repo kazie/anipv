@@ -16,14 +16,15 @@ use super::scan::ScannedFile;
 
 /// Bump on any schema change; older caches are dropped and rebuilt (unless
 /// listed in `UPGRADABLE`).
-pub const SCHEMA_VERSION: i32 = 5;
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Older schema versions brought up to date in place rather than rebuilt:
 /// [`SCHEMA`] only adds to them (`CREATE … IF NOT EXISTS`), and [`upgrade`]
 /// fills what was added.
 ///
 /// * 4 → 5: the `anilist_checks` table, seeded from `prequels`.
-const UPGRADABLE: [i32; 1] = [4];
+/// * 5 → 6: `series_meta.search_linked`.
+const UPGRADABLE: [i32; 2] = [4, 5];
 
 /// `kv` key prefix (followed by the root name) remembering whether the root
 /// directory was a mount point at its last non-empty scan, and which
@@ -109,7 +110,8 @@ CREATE TABLE IF NOT EXISTS series_meta(
     year        INTEGER,
     next_ep     INTEGER,
     next_airing INTEGER,
-    refreshed_at INTEGER
+    refreshed_at INTEGER,
+    search_linked INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -205,6 +207,11 @@ pub struct SeriesMeta {
     /// Last refresh from `AniList`; `None` while the row only holds data from
     /// the offline database (which may predate the show airing).
     pub refreshed_at: Option<i64>,
+    /// The link came from a title search on `AniList`, which the offline
+    /// database can't confirm (see [`crate::meta::search_unmatched`]): a match
+    /// that finds nothing for the series keeps it. A row written for any other
+    /// reason (the database, a manual link) replaces it, and the mark with it.
+    pub search_linked: bool,
 }
 
 /// "Matching ran for this series against this offline database version and
@@ -461,8 +468,8 @@ impl Db {
         write_kv(&self.conn, k, v)
     }
 
-    /// Store the outcome of matching in one transaction: linked rows replace
-    /// any earlier attempt for their series; attempts record "nothing to link".
+    /// Store the outcome of matching in one transaction, as [`Db::store_sync`]
+    /// does.
     #[cfg(test)]
     pub fn put_match_results(&self, rows: &[SeriesMeta], attempts: &[MatchAttempt]) -> Result<()> {
         self.store_sync(rows, attempts, None, &[], &[], 0)
@@ -473,6 +480,9 @@ impl Db {
     /// asked about and found) in one transaction, so a failure part-way (e.g.
     /// the database busy during a scan) leaves no half state. `ts` is when the
     /// prequels and checks were fetched.
+    ///
+    /// A row replaces its series' attempt; an attempt drops its series' row
+    /// ("nothing to link").
     pub fn store_sync(
         &self,
         rows: &[SeriesMeta],
@@ -560,7 +570,8 @@ impl Db {
     /// A row already under the new key wins; the old row is deleted either
     /// way, so nothing stays behind for a later sync to miss. "No match"
     /// attempts under an old key are dropped rather than moved: the new key is
-    /// a different title, so it gets matched again.
+    /// a different title, so it gets matched again. (A row a title search
+    /// made keeps its mark, [`SeriesMeta::search_linked`], when it moves.)
     ///
     /// Pairs with no rows under the old key are looked up with reads only, and
     /// when no pair has any, no write transaction is started at all (callers
@@ -607,7 +618,8 @@ impl Db {
     /// All cached metadata.
     pub fn all_meta(&self) -> Result<Vec<SeriesMeta>> {
         let mut st = self.conn.prepare_cached(
-            "SELECT series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at FROM series_meta",
+            "SELECT series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked
+             FROM series_meta",
         )?;
         let rows = st.query_map([], |r| {
             Ok(SeriesMeta {
@@ -621,6 +633,7 @@ impl Db {
                 next_ep: r.get(7)?,
                 next_airing: r.get(8)?,
                 refreshed_at: r.get(9)?,
+                search_linked: r.get(10)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -642,6 +655,16 @@ fn upgrade(conn: &Connection, version: i32) -> Result<()> {
             [],
         )?;
     }
+    if version <= 5 {
+        let has: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('series_meta') WHERE name = 'search_linked')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has {
+            conn.execute_batch("ALTER TABLE series_meta ADD COLUMN search_linked INTEGER NOT NULL DEFAULT 0;")?;
+        }
+    }
     Ok(())
 }
 
@@ -659,8 +682,8 @@ fn write_kv(conn: &Connection, k: &str, v: &str) -> Result<()> {
 
 fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
     let mut put = conn.prepare_cached(
-        "INSERT OR REPLACE INTO series_meta(series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT OR REPLACE INTO series_meta(series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for m in rows {
         put.execute(params![
@@ -673,7 +696,8 @@ fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
             m.year,
             m.next_ep,
             m.next_airing,
-            m.refreshed_at
+            m.refreshed_at,
+            m.search_linked
         ])?;
     }
     Ok(())
@@ -927,6 +951,56 @@ mod tests {
         db.put_match_results(&[row], &[]).unwrap();
         assert_eq!(db.match_attempts().unwrap(), vec![attempt("b")]);
         assert_eq!(db.all_meta().unwrap().len(), 1);
+    }
+
+    /// The mark that a title search made a link is stored with the row, kept
+    /// by a re-key, and goes with the row ("no match" drops both).
+    #[test]
+    fn search_links_are_marked_on_their_row() {
+        let db = Db::open_in_memory().unwrap();
+        let row = |series: &str| SeriesMeta {
+            series: series.into(),
+            anilist: Some(5),
+            search_linked: true,
+            ..SeriesMeta::default()
+        };
+        let attempt =
+            |series: &str| MatchAttempt { series: series.into(), db_version: "v".into(), at: 1, result: "none".into() };
+        db.put_match_results(&[row("old")], &[]).unwrap();
+        assert_eq!(db.all_meta().unwrap(), vec![row("old")]);
+        db.put_match_results(&[], &[attempt("new")]).unwrap();
+        assert_eq!(db.rekey_legacy([("old", "new")]).unwrap(), 1);
+        assert_eq!(db.all_meta().unwrap(), vec![row("new")]);
+        // A row from elsewhere replaces it, mark and all.
+        let other = SeriesMeta { series: "new".into(), anilist: Some(6), ..SeriesMeta::default() };
+        db.put_match_results(std::slice::from_ref(&other), &[]).unwrap();
+        assert_eq!(db.all_meta().unwrap(), vec![other]);
+        db.put_match_results(&[], &[attempt("new")]).unwrap();
+        assert!(db.all_meta().unwrap().is_empty());
+    }
+
+    /// A version 5 cache gets the `search_linked` column, and keeps its rows.
+    #[test]
+    fn version_5_caches_are_upgraded_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE series_meta;
+                     CREATE TABLE series_meta(series TEXT PRIMARY KEY, anilist INTEGER, title TEXT, episodes INTEGER,
+                         status TEXT, format TEXT, year INTEGER, next_ep INTEGER, next_airing INTEGER, refreshed_at INTEGER);
+                     INSERT INTO series_meta(series, anilist) VALUES ('a', 5);",
+                )
+                .unwrap();
+            db.conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(!db.was_rebuilt());
+        let a = SeriesMeta { series: "a".into(), anilist: Some(5), ..SeriesMeta::default() };
+        assert_eq!(db.all_meta().unwrap(), vec![a]);
+        assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

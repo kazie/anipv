@@ -68,6 +68,12 @@ pub struct Config {
     pub specials_dirs: Vec<String>,
     /// Fetch next-airing info from `AniList` for followed series.
     pub anilist: bool,
+    /// Also look series the offline database can't match up on `AniList` by
+    /// title (sends those titles to `AniList`). Needs `anilist`.
+    pub anilist_search: bool,
+    /// Where to download the offline anime database from (an `http(s)` URL
+    /// of `anime-offline-database-minified.json`); the built-in sources when unset.
+    pub offline_db_url: Option<String>,
 }
 
 impl Default for Config {
@@ -101,6 +107,8 @@ impl Default for Config {
             .to_vec(),
             specials_dirs: ["Specials", "Special", "SP", "SPs", "OVA", "OVAs", "Omake"].map(String::from).to_vec(),
             anilist: true,
+            anilist_search: false,
+            offline_db_url: None,
         }
     }
 }
@@ -180,6 +188,11 @@ impl Config {
                 "`device` {d:?} must be non-empty and use only letters, digits, `-` and `_` \
                  (it names this device's event log file)"
             );
+        }
+        if let Some(u) = &self.offline_db_url
+            && !(u.starts_with("https://") || u.starts_with("http://"))
+        {
+            anyhow::bail!("`offline_db_url` {u:?} must be an http:// or https:// URL");
         }
         if let Some(d) = &self.events_dir
             && !is_absolute_or_tilde(d)
@@ -389,6 +402,19 @@ mod tests {
             assert!(cfg.validate().is_err(), "{bad}");
         }
         Config { watched_threshold: 1.0, ..Config::default() }.validate().unwrap();
+    }
+
+    #[test]
+    fn offline_db_url_must_be_http() {
+        for bad in ["", "ftp://x/db.json", "file:///etc/passwd", "/tmp/db.json", "cedya77/anime-offline-database"] {
+            let cfg = Config { offline_db_url: Some(bad.into()), ..Config::default() };
+            assert!(cfg.validate().is_err(), "{bad:?}");
+        }
+        for good in ["https://example.org/db.json", "http://localhost:8000/db.json"] {
+            Config { offline_db_url: Some(good.into()), ..Config::default() }.validate().unwrap();
+        }
+        let cfg: Config = toml::from_str("offline_db_url = \"https://example.org/db.json\"\n").unwrap();
+        assert_eq!(cfg.offline_db_url.as_deref(), Some("https://example.org/db.json"));
     }
 
     #[test]

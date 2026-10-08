@@ -1,5 +1,9 @@
-//! The manami-project *anime-offline-database*: a weekly JSON dump of ~40k
-//! anime with titles, synonyms, episode counts and cross-site ids.
+//! The *anime-offline-database*: a weekly JSON dump of ~40k anime with
+//! titles, synonyms, episode counts and cross-site ids.
+//!
+//! The original (manami-project) was archived after its `2026-27` release.
+//! By default the community continuation (cedya77, same file format) is
+//! downloaded, and the archived original only when nothing is cached yet.
 //!
 //! Downloaded once into the cache and queried locally; nothing about the
 //! user's library is ever sent anywhere.
@@ -15,8 +19,59 @@ use serde::Deserialize;
 use crate::identity::series_key;
 use crate::index::db::SeriesMeta;
 
-/// Release asset URL of the minified database.
-pub const URL: &str = "https://github.com/manami-project/anime-offline-database/releases/latest/download/anime-offline-database-minified.json";
+/// Release asset URLs of the minified database, in the order they are tried:
+/// the community continuation, then the archived original (frozen at
+/// `2026-27`, still downloadable).
+pub const DEFAULT_URLS: [&str; 2] = [
+    "https://github.com/cedya77/anime-offline-database/releases/latest/download/anime-offline-database-minified.json",
+    "https://github.com/manami-project/anime-offline-database/releases/latest/download/anime-offline-database-minified.json",
+];
+
+/// Where to download the database from: `configured` (`offline_db_url`) alone
+/// if set, else [`DEFAULT_URLS`].
+pub fn source_urls(configured: Option<&str>) -> Vec<String> {
+    configured.map_or_else(|| DEFAULT_URLS.map(String::from).to_vec(), |u| vec![u.to_string()])
+}
+
+/// How old a dataset may get before a download says its source looks
+/// unmaintained.
+pub const STALE_DATASET_DAYS: i64 = 90;
+
+/// What to tell the user after a download from `source` when `first` was
+/// tried first: that a fallback served it, and that the dataset (its
+/// `lastUpdate`, `version`) is older than [`STALE_DATASET_DAYS`] at `now`.
+/// The original database was archived in 2026-07, and a source that stops
+/// updating can't match newer shows.
+pub fn download_notes(first: &str, source: Option<&str>, version: Option<&str>, now: i64) -> Vec<String> {
+    let fallback = source.filter(|u| *u != first).map(|used| format!("{first} failed; downloaded from {used}"));
+    let stale = version.and_then(|v| {
+        let days = days_since(v, now).filter(|d| *d > STALE_DATASET_DAYS)?;
+        Some(format!(
+            "this dataset was last updated {v} ({days} days ago); its source may be unmaintained, \
+             see `offline_db_url` in docs/config.md"
+        ))
+    });
+    fallback.into_iter().chain(stale).collect()
+}
+
+/// Whole days from `date` (`YYYY-MM-DD`, a database's `lastUpdate`) until
+/// `now` (Unix seconds), or `None` if `date` doesn't parse.
+pub fn days_since(date: &str, now: i64) -> Option<i64> {
+    let mut parts = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if !(1..=12).contains(&m) || !(1..=month_days[usize::try_from(m - 1).ok()?]).contains(&d) {
+        return None;
+    }
+    // Days from the civil date to 1970-01-01 (Howard Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(now.div_euclid(86_400) - (era * 146_097 + doe - 719_468))
+}
 
 /// One anime entry (only the fields anipv uses).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -91,6 +146,7 @@ impl Entry {
             next_ep: None,
             next_airing: None,
             refreshed_at: None,
+            search_linked: false,
         }
     }
 }
@@ -107,6 +163,8 @@ struct File {
 pub struct OfflineDb {
     /// Release date of this database (`lastUpdate`), used to expire "no match" results.
     pub version: Option<String>,
+    /// The URL it was downloaded from (`None` when loaded from the cache).
+    pub source: Option<String>,
     /// All entries that have an `AniList` id.
     pub entries: Vec<Entry>,
     /// Normalized title/synonym → (entry index, is main title).
@@ -168,7 +226,7 @@ impl OfflineDb {
                 }
             }
         }
-        Self { version: None, entries, index, by_anilist }
+        Self { version: None, source: None, entries, index, by_anilist }
     }
 
     /// Load from the cache, if it has been downloaded.
@@ -181,26 +239,37 @@ impl OfflineDb {
         }
     }
 
-    /// Download the latest release into the cache. Returns the loaded database.
-    pub fn download(cache_dir: &Path) -> Result<Self> {
+    /// Download the latest release into the cache from `urls`, the first one
+    /// that works. Returns the loaded database.
+    ///
+    /// Only the first URL is tried when a copy is cached already: falling back
+    /// to the next one (an older, archived source) could replace the cached
+    /// copy with an older one. Without a cached copy every URL is tried, and
+    /// the error names each failure.
+    pub fn download(cache_dir: &Path, urls: &[String]) -> Result<Self> {
+        Self::download_with(cache_dir, urls, &fetch)
+    }
+
+    /// [`OfflineDb::download`] reading each URL through `fetch`.
+    fn download_with(cache_dir: &Path, urls: &[String], fetch: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Self> {
         std::fs::create_dir_all(cache_dir)?;
-        // A stalled connection must not keep a metadata update "running" forever.
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(std::time::Duration::from_secs(20)))
-            .timeout_global(Some(std::time::Duration::from_secs(600)))
-            .build()
-            .into();
-        let mut resp = agent.get(URL).call().context("downloading anime-offline-database")?;
-        let json = resp
-            .body_mut()
-            .with_config()
-            .limit(512 * 1024 * 1024)
-            .read_to_vec()
-            .context("downloading anime-offline-database")?;
-        // Validate before replacing the old copy.
-        let db = Self::from_slice(&json)?;
-        Self::store(cache_dir, &json)?;
-        Ok(db)
+        let cached = Self::path(cache_dir).exists();
+        let tried = if cached { &urls[..urls.len().min(1)] } else { urls };
+        let mut errors = Vec::new();
+        for url in tried {
+            // Validate before replacing the old copy.
+            match fetch(url).and_then(|json| Ok((Self::from_slice(&json)?, json))) {
+                Ok((db, json)) => {
+                    Self::store(cache_dir, &json)?;
+                    return Ok(Self { source: Some(url.clone()), ..db });
+                }
+                Err(e) => errors.push(format!("{url}: {e:#}")),
+            }
+        }
+        if errors.is_empty() {
+            anyhow::bail!("no download source for anime-offline-database");
+        }
+        anyhow::bail!("downloading anime-offline-database failed ({})", errors.join("; "))
     }
 
     /// Atomically replace the cached database with `json`.
@@ -275,6 +344,18 @@ impl OfflineDb {
     }
 }
 
+/// Read `url` over HTTP.
+fn fetch(url: &str) -> Result<Vec<u8>> {
+    // A stalled connection must not keep a metadata update "running" forever.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(20)))
+        .timeout_global(Some(std::time::Duration::from_secs(600)))
+        .build()
+        .into();
+    let mut resp = agent.get(url).call()?;
+    Ok(resp.body_mut().with_config().limit(512 * 1024 * 1024).read_to_vec()?)
+}
+
 /// The cached database once loaded, kept for later syncs in the same session
 /// while the file's modification time stays the same (parsing it takes a while).
 #[derive(Debug, Default)]
@@ -297,8 +378,8 @@ impl OfflineCache {
     }
 
     /// [`OfflineDb::download`], keeping the result for later loads.
-    pub fn download(&self, cache_dir: &Path) -> Result<Arc<OfflineDb>> {
-        let db = Arc::new(OfflineDb::download(cache_dir)?);
+    pub fn download(&self, cache_dir: &Path, urls: &[String]) -> Result<Arc<OfflineDb>> {
+        let db = Arc::new(OfflineDb::download(cache_dir, urls)?);
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = modified(cache_dir).map(|t| (t, Arc::clone(&db)));
         Ok(db)
     }
@@ -418,6 +499,107 @@ pub(crate) mod tests {
         assert_eq!(b.entries.len(), 5);
         std::fs::remove_file(OfflineDb::path(dir.path())).unwrap();
         assert!(cache.load(dir.path()).unwrap().is_none());
+    }
+
+    fn urls(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
+
+    /// Answers `a` with the sample database, `b` with an older one, and
+    /// anything else with an error; records what was asked.
+    fn fake(asked: &std::cell::RefCell<Vec<String>>) -> impl Fn(&str) -> Result<Vec<u8>> + '_ {
+        move |url: &str| {
+            asked.borrow_mut().push(url.to_string());
+            match url {
+                "a" => Ok(SAMPLE.as_bytes().to_vec()),
+                "b" => Ok(SAMPLE.replace("2026-07-04", "2026-01-01").into_bytes()),
+                _ => anyhow::bail!("connection refused"),
+            }
+        }
+    }
+
+    #[test]
+    fn download_falls_back_only_without_a_cached_copy() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        // Nothing cached: the second source serves it, and the error would name both.
+        let dir = tempfile::tempdir().unwrap();
+        let db = OfflineDb::download_with(dir.path(), &urls(&["down", "a"]), &fake(&asked)).unwrap();
+        assert_eq!(db.version.as_deref(), Some("2026-07-04"));
+        assert_eq!(db.source.as_deref(), Some("a"), "says which source served it");
+        assert_eq!(OfflineDb::load(dir.path()).unwrap().unwrap().source, None);
+        assert_eq!(*asked.borrow(), ["down", "a"]);
+        assert_eq!(OfflineDb::load(dir.path()).unwrap().unwrap().entries.len(), 5);
+
+        // Cached: only the first source is tried, and the cached copy stays.
+        asked.borrow_mut().clear();
+        let err = OfflineDb::download_with(dir.path(), &urls(&["down", "b"]), &fake(&asked)).unwrap_err();
+        assert_eq!(*asked.borrow(), ["down"]);
+        assert!(format!("{err:#}").contains("down: connection refused"), "{err:#}");
+        assert_eq!(OfflineDb::load(dir.path()).unwrap().unwrap().version.as_deref(), Some("2026-07-04"));
+
+        // Nothing cached and every source failing names each of them.
+        let dir = tempfile::tempdir().unwrap();
+        let err = OfflineDb::download_with(dir.path(), &urls(&["x", "y"]), &fake(&asked)).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("x: connection refused") && msg.contains("y: connection refused"), "{msg}");
+        assert!(OfflineDb::load(dir.path()).unwrap().is_none(), "nothing stored");
+        assert!(OfflineDb::download_with(dir.path(), &[], &fake(&asked)).is_err());
+    }
+
+    /// A source that answers with something that isn't the database is skipped.
+    #[test]
+    fn download_skips_a_source_that_sends_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let get = |url: &str| -> Result<Vec<u8>> {
+            Ok(if url == "html" { b"<html>rate limited</html>".to_vec() } else { SAMPLE.as_bytes().to_vec() })
+        };
+        let db = OfflineDb::download_with(dir.path(), &urls(&["html", "a"]), &get).unwrap();
+        assert_eq!(db.entries.len(), 5);
+    }
+
+    #[test]
+    fn sources_default_to_the_continuation_then_the_archive() {
+        let urls = source_urls(None);
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].contains("cedya77/") && urls[1].contains("manami-project/"), "{urls:?}");
+        assert!(urls.iter().all(|u| u.ends_with("/releases/latest/download/anime-offline-database-minified.json")));
+        // A configured URL is the only one.
+        assert_eq!(source_urls(Some("https://example.org/db.json")), ["https://example.org/db.json"]);
+    }
+
+    #[test]
+    fn downloads_say_when_a_fallback_served_them_and_when_they_are_old() {
+        let now = 1_791_417_600; // 2026-10-08
+        let notes = |source, version| download_notes("https://a/db.json", source, version, now);
+        assert!(notes(Some("https://a/db.json"), Some("2026-10-04")).is_empty(), "first source, fresh");
+        assert!(notes(None, Some("2026-07-10")).is_empty(), "90 days or less");
+        assert_eq!(
+            notes(Some("https://b/db.json"), Some("2026-10-04")),
+            ["https://a/db.json failed; downloaded from https://b/db.json"]
+        );
+        let old = notes(Some("https://a/db.json"), Some("2026-07-04"));
+        assert!(
+            old.len() == 1 && old[0].contains("2026-07-04 (96 days ago)") && old[0].contains("offline_db_url"),
+            "{old:?}"
+        );
+        assert!(notes(None, Some("unknown")).is_empty());
+    }
+
+    #[test]
+    fn dataset_age_in_days() {
+        // 2026-10-08T00:00:00Z
+        let now = 1_791_417_600;
+        assert_eq!(days_since("2026-10-08", now), Some(0));
+        assert_eq!(days_since("2026-10-04", now + 3600), Some(4));
+        assert_eq!(days_since("2026-07-04", now), Some(96));
+        assert_eq!(days_since("2025-10-08", now), Some(365));
+        assert_eq!(days_since("2026-10-09", now), Some(-1));
+        assert_eq!(days_since("2024-02-29", now), Some(952), "a leap day");
+        for bad in
+            ["", "2026", "2026-13-01", "2026-00-10", "x-y-z", "2026-10", "2026-02-29", "2026-02-31", "2026-04-31"]
+        {
+            assert_eq!(days_since(bad, now), None, "{bad:?}");
+        }
     }
 
     #[test]

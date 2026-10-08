@@ -1001,6 +1001,10 @@ impl App {
                 if let Some(msg) = self.meta_summary(&request, &res) {
                     self.say(msg);
                 }
+                // After the summary, so they are what shows.
+                for note in &res.notes {
+                    self.say(format!("! {note}"));
+                }
                 if let Some(next) = self.meta_pending.take() {
                     self.start_meta(next);
                 }

@@ -172,6 +172,7 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         next_ep: next.map(|n| n.0),
         next_airing: next.map(|n| n.1),
         refreshed_at: Some(ts),
+        search_linked: false,
     };
     ctx.db.put_metas(&[
         meta("sousou no frieren", 182_255, Some(38), "RELEASING", Some((32, ts + 3 * DAY + 5 * 3600))),

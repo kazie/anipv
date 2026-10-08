@@ -662,6 +662,43 @@ mod tests {
         assert_eq!(new.files().len(), old.files().len());
     }
 
+    /// In memory too, a search link's mark moves with its row.
+    #[test]
+    fn index_rekeying_keeps_search_links() {
+        let row = |series: &str| SeriesMeta {
+            series: series.into(),
+            anilist: Some(5),
+            search_linked: true,
+            ..SeriesMeta::default()
+        };
+        let attempt = |series: &str| crate::index::db::MatchAttempt {
+            series: series.into(),
+            db_version: "v".into(),
+            at: 1,
+            result: "none".into(),
+        };
+        let meta = MetaCache {
+            rows: vec![row("old")],
+            attempts: vec![attempt("old"), attempt("new")],
+            ..MetaCache::default()
+        };
+        let mut index = Index::new(&Config::default(), Vec::new(), meta);
+        index.rekey_legacy(&[("old", "new")]);
+        assert_eq!(index.meta.rows, vec![row("new")]);
+        assert_eq!(index.meta.attempts, vec![attempt("new")], "the old key's attempt is dropped");
+    }
+
+    /// A link a title search made is kept across database versions (unlike
+    /// "no match" attempts, which are matched again).
+    #[test]
+    fn search_links_outlive_the_database_version() {
+        let (_dir, ctx) = crate::demo::ctx();
+        let row = SeriesMeta { series: "a".into(), anilist: Some(5), search_linked: true, ..SeriesMeta::default() };
+        ctx.db.put_metas(std::slice::from_ref(&row)).unwrap();
+        ctx.db.set_kv(OFFLINE_DB_VERSION, "2026-10").unwrap();
+        assert!(ctx.index().unwrap().meta.rows.contains(&row));
+    }
+
     #[test]
     fn attempts_from_an_older_offline_db_are_ignored() {
         use crate::index::db::MatchAttempt;

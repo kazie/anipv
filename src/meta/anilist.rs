@@ -64,13 +64,27 @@ impl Http for Ureq {
             .header("User-Agent", concat!("anipv/", env!("CARGO_PKG_VERSION")))
             .send_json(body)
             .context("contacting AniList")?;
-        let status = resp.status();
-        // Errors (rate limits, proxies, outages) often come as HTML or plain
-        // text, so check the status before expecting JSON.
+        let status = resp.status().as_u16();
         let text = resp.body_mut().read_to_string().context("reading AniList response")?;
-        check_status(status.as_u16(), &text)?;
-        serde_json::from_str(&text).context("AniList sent a response that isn't JSON")
+        answer(status, &text)
     }
+}
+
+/// The JSON `AniList` answered with `status` and `text`. Errors (rate limits,
+/// proxies, outages) often come as HTML or plain text, so the status is checked
+/// before expecting JSON; but a query `AniList` rejects comes as a 4xx with a
+/// GraphQL `errors` body, which is handed on (see [`AnswerError`]) so it is
+/// told apart from a failed request.
+fn answer(status: u16, text: &str) -> Result<Value> {
+    if (400..500).contains(&status)
+        && status != 429
+        && let Ok(v) = serde_json::from_str::<Value>(text)
+        && v.get("errors").is_some_and(|e| !e.is_null())
+    {
+        return Ok(v);
+    }
+    check_status(status, text)?;
+    serde_json::from_str(text).context("AniList sent a response that isn't JSON")
 }
 
 /// Turn a non-success HTTP status into an error, with the start of the body.
@@ -103,6 +117,9 @@ pub struct Media {
     pub title: Titles,
     /// Next episode, while airing.
     pub next_airing_episode: Option<Airing>,
+    /// Alternative titles (searches only).
+    #[serde(default)]
+    pub synonyms: Vec<String>,
 }
 
 /// Title variants.
@@ -112,6 +129,8 @@ pub struct Titles {
     pub romaji: Option<String>,
     /// English title.
     pub english: Option<String>,
+    /// Native title (searches only).
+    pub native: Option<String>,
 }
 
 /// Next airing episode.
@@ -125,6 +144,20 @@ pub struct Airing {
 }
 
 impl Media {
+    /// Every name `AniList` knows this anime by: its titles and synonyms.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        let t = &self.title;
+        [&t.romaji, &t.english, &t.native].into_iter().flatten().chain(&self.synonyms).map(String::as_str)
+    }
+
+    /// One line about the anime: title, format, year and id.
+    pub fn describe(&self) -> String {
+        let title = self.title.romaji.as_deref().or(self.title.english.as_deref()).unwrap_or("?");
+        let year = self.season_year.map(|y| format!(" {y}")).unwrap_or_default();
+        let eps = self.episodes.map_or_else(|| "?".to_string(), |n| n.to_string());
+        format!("{title} ({}{year}, {eps} eps) anilist:{}", self.format.as_deref().unwrap_or("?"), self.id)
+    }
+
     /// Update a cache row with live data, keeping offline-db facts that `AniList` lacks.
     pub fn apply(&self, m: &mut SeriesMeta, now: i64) {
         m.anilist = Some(self.id);
@@ -216,12 +249,48 @@ fn query_media<T>(
 
 /// One batch of [`query_media`]: the page's `media` array.
 fn query_batch(http: &dyn Http, query: &str, ids: &[u64]) -> Result<Value> {
-    let body = json!({ "query": query, "variables": { "ids": ids } });
-    let v = http.post_json(ENDPOINT, &body)?;
+    page_media(http, &json!({ "query": query, "variables": { "ids": ids } }))
+}
+
+/// `AniList` answered, with an error about the query itself (as opposed to
+/// the connection failing or a rate limit): asking again won't help.
+#[derive(Debug)]
+pub struct AnswerError(pub String);
+
+impl std::fmt::Display for AnswerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AniList error: {}", self.0)
+    }
+}
+
+impl std::error::Error for AnswerError {}
+
+/// POST `body` and return the page's `media` array, or the error `AniList`
+/// sent (an [`AnswerError`]).
+fn page_media(http: &dyn Http, body: &Value) -> Result<Value> {
+    let v = http.post_json(ENDPOINT, body)?;
     if let Some(errs) = v.get("errors").filter(|e| !e.is_null()) {
-        bail!("AniList error: {errs}");
+        return Err(AnswerError(errs.to_string()).into());
     }
     Ok(v.pointer("/data/Page/media").cloned().unwrap_or(Value::Array(vec![])))
+}
+
+const SEARCH_QUERY: &str = "query ($q: String) {
+  Page(perPage: 10) {
+    media(search: $q, type: ANIME) {
+      id episodes status format seasonYear
+      title { romaji english native }
+      synonyms
+      nextAiringEpisode { episode airingAt }
+    }
+  }
+}";
+
+/// The anime `AniList` finds for `title`, best first (at most 10). Sends only
+/// the title text.
+pub fn search(http: &dyn Http, title: &str) -> Result<Vec<Media>> {
+    let media = page_media(http, &json!({ "query": SEARCH_QUERY, "variables": { "q": title } }))?;
+    serde_json::from_value(media).context("unexpected AniList response")
 }
 
 /// A fake `AniList` for tests: answers every query with the requested ids as
@@ -336,6 +405,20 @@ mod tests {
         ] {
             assert_eq!(parse_ref(bad), None, "{bad}");
         }
+    }
+
+    /// A rejected query (a 4xx with GraphQL errors) reaches the caller as an
+    /// answer, which makes an [`AnswerError`]; anything else is a failed request.
+    #[test]
+    fn rejected_queries_are_answers() {
+        let errors = r#"{"errors": [{"message": "Validation error", "status": 400}], "data": null}"#;
+        let rejected = answer(400, errors).unwrap();
+        let fake = Fake { calls: RefCell::new(vec![]), reply: rejected };
+        assert!(search(&fake, "x").unwrap_err().is::<AnswerError>());
+        assert!(answer(429, errors).unwrap_err().to_string().contains("rate limit"));
+        assert!(answer(500, errors).is_err(), "a server error is a failed request");
+        assert!(answer(400, "<html>Bad Request</html>").is_err());
+        assert_eq!(answer(200, "{}").unwrap(), json!({}));
     }
 
     #[test]

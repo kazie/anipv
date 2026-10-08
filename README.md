@@ -23,7 +23,7 @@ history. anipv replaces that:
 - **Your library, understood**: bracketed (`[Group] Show - 07 (1080p)`), dotted (`Show.S01E07.1080p…`), underscored and numbered file names, `v2` versions, `S02E01` / `1x05` markers, season folders (inside an archive series folder, `Season 1` and `Season 2` stay separate seasons of the same title), OVAs, openings/endings, previews, multi-episode files. Parsed and grouped, with a test corpus covering each naming convention.
 - **Statuses**: following, paused ("dropped too early, might resume"), dropped (with a note), completed, skipped. A status you set on a series you've already finished stays, so you can follow it again for a rewatch.
 - **Local first, multi-device**: history is an append-only log per device. Sync the folder however you like; merging is conflict-free.
-- **Optional metadata**: episode totals and airing dates from the offline [anime-offline-database] and anonymous [AniList] queries. No account needed, and nothing about your watching leaves your machine.
+- **Optional metadata**: episode totals and airing dates from the offline [anime-offline-database] (the community-maintained continuation of manami-project's archived dataset) and anonymous [AniList] queries. No account needed, and nothing about your watching leaves your machine.
 - **Bootstrap from fish**: imports the `mpv …` commands already in your fish history.
 
 ## Install
@@ -141,12 +141,17 @@ media folders ──scan──▶ index (SQLite cache)      events/<device>.json
 
 ### Privacy
 
-anipv makes two kinds of network requests, both optional:
+anipv makes two kinds of network requests by default, both optional, and a third that is off until you turn it on:
 
-1. `anipv meta update` downloads the public [anime-offline-database] JSON from GitHub.
+1. `anipv meta update` downloads the public [anime-offline-database] JSON from GitHub. The original [manami-project] dataset was archived in July 2026, so by default this comes from its community continuation (the archived original is the fallback when nothing is cached yet). Set `offline_db_url` to use another source.
 2. For series you *follow*, it asks [AniList]'s public API about the anime by id
    (`next airing episode`, `episode count`). No account or token is involved, and
    nothing is ever sent about what you watched. Set `anilist = false` to turn it off.
+3. **Off by default**: with `anilist_search = true` (or `anipv meta match --search`),
+   series the offline database can't match, such as shows newer than a stale
+   dataset, are looked up on AniList by title. What is sent is the titles anipv
+   shows for those series (parsed from your file and folder names), nothing
+   else: no paths, no watch history. Each series is asked about once per dataset.
 
 More: [configuration](docs/config.md) · [architecture](docs/architecture.md) · [event log](docs/events.md) · [keys](docs/keybindings.md)
 
@@ -176,5 +181,6 @@ just install          # install a release build to ~/.cargo/bin
 - CI runs fmt, clippy, tests on stable and MSRV, docs and `cargo-deny`.
   Dependabot keeps crates and actions current.
 
-[anime-offline-database]: https://github.com/manami-project/anime-offline-database
+[anime-offline-database]: https://github.com/cedya77/anime-offline-database
+[manami-project]: https://github.com/manami-project/anime-offline-database
 [AniList]: https://anilist.co
