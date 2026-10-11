@@ -2,7 +2,9 @@ name: README recordings
 
 # Re-records the README GIF from assets/tapes/all.tape against the demo
 # library and opens a pull request with the result. Run it by hand from the
-# Actions tab; locally, `just record` does the same.
+# Actions tab; locally, `just record` does the same. The pull request also
+# updates assets/tapes/all.txt, the recording as text: if it has no diff,
+# only timing or colors changed in the GIF.
 on:
   workflow_dispatch:
 
@@ -35,4 +37,6 @@ jobs:
           branch: vhs/update-recordings
           title: "docs: update README recordings"
           commit-message: "docs: update README recordings"
-          add-paths: assets/img/*
+          add-paths: |
+            assets/img/*
+            assets/tapes/all.txt

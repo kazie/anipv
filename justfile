@@ -64,9 +64,10 @@ screenshots:
     cargo build
     cargo run --example screenshots
 
-# Re-record the README GIF from assets/tapes/all.tape (needs vhs and ttyd).
+# Re-record the README GIF and its text, assets/tapes/all.txt (needs vhs and ttyd).
 record: _need-vhs demo-home
     PATH="{{justfile_directory()}}/target/debug:$PATH" vhs assets/tapes/all.tape
+    @if git ls-files --error-unmatch assets/tapes/all.txt >/dev/null 2>&1 && git diff --quiet -- assets/tapes/all.txt; then echo "assets/tapes/all.txt is unchanged, so the demo is too (only timing or colors can differ): git restore assets/img/demo.gif drops the new GIF"; fi
 
 # Fresh demo library in assets/demo-home, as the recordings expect.
 demo-home:

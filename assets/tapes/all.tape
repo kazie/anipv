@@ -1,6 +1,10 @@
 # Animated README demo. Record it with `just record` (needs vhs and ttyd), or
 # run the "README recordings" workflow; both prepare assets/demo-home first.
+# all.txt is the same recording as text, the screen after each step: the GIF
+# is never byte-identical between recordings, so `git diff` on all.txt shows
+# whether anything but timing or colors changed.
 Output assets/img/demo.gif
+Output assets/tapes/all.txt
 
 Set Shell "bash"
 Set FontSize 16

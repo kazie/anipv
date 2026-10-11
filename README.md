@@ -168,7 +168,7 @@ just check            # fmt, clippy, tests, docs and cargo-deny (needs cargo-den
 just ci               # check, then the MSRV build (Rust 1.89): the local version of CI
 just demo             # try the TUI against a throwaway demo library
 just screenshots      # regenerate the SVGs in this README
-just record           # re-record the demo GIF (needs vhs and ttyd)
+just record           # re-record the demo GIF and assets/tapes/all.txt (needs vhs and ttyd)
 just update-fixtures  # update golden files after an intentional change, then review
 just install          # install a release build to ~/.cargo/bin
 ```
@@ -180,6 +180,13 @@ just install          # install a release build to ~/.cargo/bin
   and review the diff.
 - `anipv doctor` lists files in your own library that parse without an episode
   number. Good candidates for new fixtures.
+- The SVG screenshots are drawn with a fixed clock, so `just screenshots`
+  changes them only when the screens change. The GIF is recorded in real time
+  and never comes out byte-identical; `just record` also writes
+  `assets/tapes/all.txt`, the screen as text after each step of the tape. If
+  `git diff assets/tapes/all.txt` shows nothing, the demo didn't change (only
+  timing or colors can differ) and `git restore assets/img/demo.gif` drops the
+  new GIF.
 - CI runs fmt, clippy, tests on stable and MSRV, docs and `cargo-deny`.
   Dependabot keeps crates and actions current.
 
