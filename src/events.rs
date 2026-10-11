@@ -11,10 +11,10 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ItemKey, SeriesStatus, WatchState};
+use crate::model::{ItemKey, ItemKind, SeriesStatus, WatchState};
 
 /// Current unix time in seconds.
 pub fn now() -> i64 {
@@ -50,6 +50,14 @@ impl EventBody {
     pub fn item(&self) -> Option<&ItemKey> {
         match self {
             Self::Watched { item, .. } | Self::Progress { item, .. } | Self::Unwatched { item, .. } => Some(item),
+            _ => None,
+        }
+    }
+
+    /// The file name an item event recorded, if any.
+    pub fn file(&self) -> Option<&str> {
+        match self {
+            Self::Watched { file, .. } | Self::Progress { file, .. } | Self::Unwatched { file, .. } => file.as_deref(),
             _ => None,
         }
     }
@@ -246,16 +254,15 @@ impl EventLog {
             .append(true)
             .open(&path)
             .with_context(|| format!("opening {}", path.display()))?;
-        let mut buf = String::new();
+        let written = lines.len() as u64;
         // A crash or a sync tool can leave half a line at the end; start on a
         // fresh line so the new events aren't glued onto it and lost with it.
         if !ends_with_newline(&mut f)? {
-            buf.push('\n');
+            lines.insert(0, '\n');
         }
-        buf.push_str(&lines);
-        f.write_all(buf.as_bytes())?;
+        f.write_all(lines.as_bytes())?;
         f.sync_data()?;
-        Ok(lines.len() as u64)
+        Ok(written)
     }
 
     /// Read and order all events from every device file.
@@ -267,18 +274,31 @@ impl EventLog {
     /// [`EventLog::refresh`] reads them again only when they change.
     pub fn load_cached(&self) -> Result<CachedLog> {
         // Stamped first: a change made while reading is seen by the next refresh.
-        let stamps = stamps(&self.dir)?;
-        let Tagged { events, errors, files } = load_tagged(&self.dir)?;
-        let (tags, events) = events.into_iter().map(|(f, l, e)| ((f, l), e)).unzip();
-        Ok(CachedLog { events, tags, files, errors, stamps })
+        let mut stamps = stamps(&self.dir)?;
+        let Tagged { events, errors, unreadable, files } = load_tagged(&self.dir)?;
+        // A file that could not be read is read again on every refresh until
+        // it can be: fixing its permissions changes neither its length nor its
+        // modification time. (One that becomes unreadable after it was read
+        // keeps what was read until it changes.)
+        stamps.retain(|s| !unreadable.iter().any(|(name, _)| *name == s.0));
+        let unreadable = unreadable.into_iter().map(|(_, error)| error).collect();
+        let (events, tags) = events.into_iter().unzip();
+        Ok(CachedLog { events, tags, files, errors, unreadable, stamps })
     }
 
     /// Read the log again if any log file changed since `cache` was read
     /// (another device's events arriving, another anipv process writing).
     /// Returns whether it did.
+    ///
+    /// A folder that is gone (an unmounted share, say) is an error, not an
+    /// empty history: the events read before are kept.
     pub fn refresh(&self, cache: &mut CachedLog) -> Result<bool> {
-        if stamps(&self.dir)? == cache.stamps {
+        let now = stamps(&self.dir)?;
+        if now == cache.stamps {
             return Ok(false);
+        }
+        if now.is_empty() && !self.dir.is_dir() {
+            bail!("the event log folder {} is missing", self.dir.display());
         }
         *cache = self.load_cached()?;
         Ok(true)
@@ -296,13 +316,9 @@ impl EventLog {
         // its stamp stays stale and the next refresh reads it.
         let own = self.own_file();
         let name = own.file_name().unwrap_or_default();
-        let now = stamp(&own);
-        match (cache.stamps.iter_mut().find(|s| s.0 == name), now) {
-            (Some(s), Some(now)) if s.1 + written == now.1 => *s = (name.to_owned(), now.1, now.2),
-            (None, Some(now)) if now.1 == written => {
-                cache.stamps.push((name.to_owned(), now.1, now.2));
-                cache.stamps.sort();
-            }
+        match (cache.stamps.binary_search_by(|s| s.0.as_os_str().cmp(name)), stamp(&own)) {
+            (Ok(i), Some(now)) if cache.stamps[i].1 + written == now.1 => cache.stamps[i] = now,
+            (Err(i), Some(now)) if now.1 == written => cache.stamps.insert(i, now),
             _ => {}
         }
         add_events(cache, name, recorded);
@@ -323,14 +339,17 @@ pub struct Recorded {
 #[derive(Debug, Clone, Default)]
 pub struct CachedLog {
     events: Vec<Event>,
-    /// `(file index, line)` of each event, as [`load_dir`] sorts by them.
-    tags: Vec<(usize, usize)>,
+    /// Where each event is in the log (see [`Tag`]).
+    tags: Vec<Tag>,
     /// `(file name, lines read)` of each log file, in path order (the order
     /// the file indices in `tags` follow).
     files: Vec<(std::ffi::OsString, usize)>,
-    /// Lines that could not be parsed, as [`Loaded::errors`].
+    /// What could not be read, as [`Loaded::errors`].
     errors: Vec<String>,
-    /// `(file name, length, modification time)` of each log file, by name.
+    /// The errors for whole files that could not be read (also in `errors`).
+    unreadable: Vec<String>,
+    /// `(file name, length, modification time)` of each log file, by name
+    /// (none for one that could not be read, see [`EventLog::load_cached`]).
     stamps: Vec<Stamp>,
 }
 
@@ -340,9 +359,15 @@ impl CachedLog {
         &self.events
     }
 
-    /// `file:line: error` for each malformed line when the log was read.
+    /// What could not be read when the log was read (see [`Loaded::errors`]).
     pub fn errors(&self) -> &[String] {
         &self.errors
+    }
+
+    /// The log files that could not be read at all (no permission, say), as
+    /// `file: error`: the history they hold is missing from [`CachedLog::events`].
+    pub fn unreadable(&self) -> &[String] {
+        &self.unreadable
     }
 }
 
@@ -378,10 +403,18 @@ fn stamp(path: &Path) -> Option<Stamp> {
     Some((path.file_name()?.to_owned(), m.len(), m.modified().ok()))
 }
 
+/// Where an event is in the log: `(file index in path order, line)`.
+type Tag = (usize, usize);
+
 /// How [`load_dir`] orders events: by `(ts, dev, file, line)`, the last two
 /// being the event's tag.
-fn log_order(a: (&Event, &(usize, usize)), b: (&Event, &(usize, usize))) -> std::cmp::Ordering {
+fn log_order(a: (&Event, &Tag), b: (&Event, &Tag)) -> std::cmp::Ordering {
     (a.0.ts, a.0.dev.as_str(), a.1).cmp(&(b.0.ts, b.0.dev.as_str(), b.1))
+}
+
+/// Put tagged events in log order (see [`log_order`]).
+fn sort_log(events: &mut [(Event, Tag)]) {
+    events.sort_by(|(a, ta), (b, tb)| log_order((a, ta), (b, tb)));
 }
 
 /// Add events just appended to this device's log (the file named `own`) to
@@ -401,7 +434,7 @@ fn add_events(cache: &mut CachedLog, own: &std::ffi::OsStr, recorded: Vec<Event>
             fi
         }
     };
-    let tagged: Vec<(Event, (usize, usize))> = recorded
+    let mut tagged: Vec<(Event, Tag)> = recorded
         .into_iter()
         .map(|ev| {
             let tag = (fi, cache.files[fi].1);
@@ -411,8 +444,7 @@ fn add_events(cache: &mut CachedLog, own: &std::ffi::OsStr, recorded: Vec<Event>
         .collect();
     // Events recorded now are almost always the newest: just append them (in
     // order among themselves; an import may bring them in any order).
-    let mut tagged = tagged;
-    tagged.sort_by(|(a, ta), (b, tb)| log_order((a, ta), (b, tb)));
+    sort_log(&mut tagged);
     let in_order = cache
         .events
         .last()
@@ -429,9 +461,33 @@ fn add_events(cache: &mut CachedLog, own: &std::ffi::OsStr, recorded: Vec<Event>
     // an insert per event.
     let old_events = std::mem::take(&mut cache.events);
     let old_tags = std::mem::take(&mut cache.tags);
-    let mut all: Vec<(Event, (usize, usize))> = old_events.into_iter().zip(old_tags).chain(tagged).collect();
-    all.sort_by(|(a, ta), (b, tb)| log_order((a, ta), (b, tb)));
+    let mut all: Vec<(Event, Tag)> = old_events.into_iter().zip(old_tags).chain(tagged).collect();
+    sort_log(&mut all);
     (cache.events, cache.tags) = all.into_iter().unzip();
+}
+
+/// Read the events of the log file `path` (number `fi`) into `out`, counting
+/// its lines in `lines`.
+fn read_log_file(path: &Path, fi: usize, lines: &mut usize, out: &mut Tagged) -> std::io::Result<()> {
+    // Read raw bytes: serde validates UTF-8, so a line cut off mid-character
+    // (e.g. by a sync tool) is reported and skipped like any malformed line.
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
+        }
+        let i = *lines;
+        *lines += 1;
+        if line.trim_ascii().is_empty() {
+            continue;
+        }
+        match serde_json::from_slice::<Event>(&line) {
+            Ok(ev) => out.events.push((ev, (fi, i))),
+            Err(e) => out.errors.push(format!("{file}:{line}: {e}", file = path.display(), line = i + 1)),
+        }
+    }
 }
 
 /// True for an empty file or one whose last byte is `\n`.
@@ -462,23 +518,26 @@ fn sanitize_device(d: &str) -> String {
 pub struct Loaded {
     /// Ordered events.
     pub events: Vec<Event>,
-    /// `file:line: error` for each malformed line.
+    /// `file:line: error` for each malformed line, `file: error` for a file
+    /// that couldn't be read.
     pub errors: Vec<String>,
 }
 
 /// Read every `*.jsonl` in `dir` and order events deterministically.
 pub fn load_dir(dir: &Path) -> Result<Loaded> {
     let Tagged { events, errors, .. } = load_tagged(dir)?;
-    Ok(Loaded { events: events.into_iter().map(|t| t.2).collect(), errors })
+    Ok(Loaded { events: events.into_iter().map(|(e, _)| e).collect(), errors })
 }
 
 /// [`load_dir`], keeping where each event came from.
 #[derive(Default)]
 struct Tagged {
-    /// `(file index in path order, line number, event)`, sorted by
-    /// `(ts, dev, file, line)`.
-    events: Vec<(usize, usize, Event)>,
+    /// The events with their [`Tag`]s, in log order (see [`sort_log`]).
+    events: Vec<(Event, Tag)>,
     errors: Vec<String>,
+    /// The name and error of each file that could not be read at all (the
+    /// error is in `errors` too).
+    unreadable: Vec<(std::ffi::OsString, String)>,
     /// `(file name, lines read)` per file, in path order.
     files: Vec<(std::ffi::OsString, usize)>,
 }
@@ -489,30 +548,19 @@ fn load_tagged(dir: &Path) -> Result<Tagged> {
     // `dev` (a Syncthing conflict copy, two machines with one name), so the
     // file keeps each file's events together.
     for (fi, path) in log_files(dir)?.into_iter().enumerate() {
-        let f = std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
-        // Read raw bytes: serde validates UTF-8, so a line cut off mid-character
-        // (e.g. by a sync tool) is reported and skipped like any malformed line.
-        let mut reader = BufReader::new(f);
-        let mut line = Vec::new();
+        // A file that can't be read (no permission, gone since it was listed)
+        // is reported like a malformed line, keeping what was read of it: the
+        // rest of the history still counts.
         let mut lines = 0;
-        loop {
-            line.clear();
-            if reader.read_until(b'\n', &mut line)? == 0 {
-                break;
-            }
-            let i = lines;
-            lines += 1;
-            if line.trim_ascii().is_empty() {
-                continue;
-            }
-            match serde_json::from_slice::<Event>(&line) {
-                Ok(ev) => out.events.push((fi, i, ev)),
-                Err(e) => out.errors.push(format!("{file}:{line}: {e}", file = path.display(), line = i + 1)),
-            }
+        let name = path.file_name().unwrap_or_default().to_owned();
+        if let Err(e) = read_log_file(&path, fi, &mut lines, &mut out) {
+            let error = format!("{}: {e}", path.display());
+            out.errors.push(error.clone());
+            out.unreadable.push((name.clone(), error));
         }
-        out.files.push((path.file_name().unwrap_or_default().to_owned(), lines));
+        out.files.push((name, lines));
     }
-    out.events.sort_by(|(fa, la, a), (fb, lb, b)| log_order((a, &(*fa, *la)), (b, &(*fb, *lb))));
+    sort_log(&mut out.events);
     Ok(out)
 }
 
@@ -586,6 +634,11 @@ pub fn resolve_alias<'a>(aliases: &'a HashMap<String, String>, key: &'a str) -> 
     }
 }
 
+/// Item keys recorded under a label that no file gives any more → the item
+/// their file gives now, per canonical series key (see
+/// [`State::replay_settled`]).
+pub type Relabelled = HashMap<String, HashMap<ItemKey, ItemKey>>;
+
 /// Result of replaying the event log.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
@@ -593,7 +646,8 @@ pub struct State {
     pub items: HashMap<String, HashMap<ItemKey, WatchState>>,
     /// Per-series state, keyed by resolved series key.
     pub series: HashMap<String, SeriesState>,
-    /// Alias map: merged-away key → target key (unresolved, as recorded).
+    /// Alias map: merged-away key → target key (unresolved, keys read through
+    /// the legacy map, see [`rekey`]).
     pub aliases: HashMap<String, String>,
     /// Last file name recorded per series, used as a title hint when the
     /// files themselves are gone.
@@ -629,40 +683,42 @@ impl State {
     /// spelling (see [`crate::identity::legacy_series_key`]) are treated as
     /// the current key they map to.
     pub fn replay_with(events: &[Event], map: &HashMap<String, String>) -> Self {
-        let mut aliases = HashMap::new();
-        for ev in events {
-            match &ev.body {
-                EventBody::Alias { from, to } => {
-                    let (from, to) = (rekey(map, from), rekey(map, to));
-                    if from != to {
-                        aliases.insert(from.to_string(), to.to_string());
-                    }
-                }
-                EventBody::Unalias { from } => {
-                    aliases.remove(rekey(map, from));
-                }
-                _ => {}
-            }
-        }
+        let aliases = settled_aliases(events, map);
+        let canonical = canonical_keys(map, &aliases);
+        Self::replay_settled(events, aliases, &canonical, &Relabelled::new())
+    }
 
+    /// [`State::replay_with`] with the merges settled already (`aliases`
+    /// from [`settled_aliases`], `canonical` from [`canonical_keys`]), and
+    /// every item event read through `relabelled`: an item recorded under a
+    /// label its file no longer has counts as the item the file gives now.
+    pub fn replay_settled(
+        events: &[Event],
+        aliases: HashMap<String, String>,
+        canonical: &HashMap<String, String>,
+        relabelled: &Relabelled,
+    ) -> Self {
         let mut state = Self::default();
-        let canon = |series: &str| resolve_alias(&aliases, rekey(map, series)).to_string();
         for ev in events {
             // An item of a kind from a newer version: the line stays in the
             // log, but means nothing here (no item, no watch state).
             if ev.body.item().is_some_and(|i| !i.kind.is_known()) {
                 continue;
             }
+            // Merges are settled above; every other event is about one series.
+            let Some(series) = ev.body.series() else { continue };
+            let key = rekey(canonical, series).to_string();
             match &ev.body {
-                EventBody::Watched { series, item, file } => {
-                    let key = canon(series);
+                EventBody::Watched { item, file, .. } => {
                     if let Some(f) = file {
                         state.file_hints.insert(key.clone(), f.clone());
                     }
-                    state.items.entry(key).or_default().insert(item.clone(), WatchState::Watched { at: ev.ts });
+                    let item = relabel(relabelled, &key, item).clone();
+                    state.items.entry(key).or_default().insert(item, WatchState::Watched { at: ev.ts });
                 }
-                EventBody::Progress { series, item, pos, dur, .. } => {
-                    let slot = state.items.entry(canon(series)).or_default().entry(item.clone()).or_default();
+                EventBody::Progress { item, pos, dur, .. } => {
+                    let item = relabel(relabelled, &key, item).clone();
+                    let slot = state.items.entry(key).or_default().entry(item).or_default();
                     // Re-watching doesn't un-watch.
                     if !slot.is_watched() {
                         // Older logs may carry a duration of 0 for "unknown".
@@ -670,21 +726,22 @@ impl State {
                         *slot = WatchState::Started { pos: *pos, dur, at: ev.ts };
                     }
                 }
-                EventBody::Unwatched { series, item, .. } => {
-                    state.items.entry(canon(series)).or_default().insert(item.clone(), WatchState::Unwatched);
+                EventBody::Unwatched { item, .. } => {
+                    let item = relabel(relabelled, &key, item).clone();
+                    state.items.entry(key).or_default().insert(item, WatchState::Unwatched);
                 }
-                EventBody::SeriesStatus { series, status, note, auto, keep } => {
-                    let s = state.series.entry(canon(series)).or_default();
+                EventBody::SeriesStatus { status, note, auto, keep, .. } => {
+                    let s = state.series.entry(key).or_default();
                     s.status = *status;
                     s.note.clone_from(note);
                     s.auto_completed |= *auto && *status == SeriesStatus::Completed;
                     s.kept = *keep;
                 }
-                EventBody::Title { series, title } => {
-                    state.series.entry(canon(series)).or_default().title = Some(title.clone());
+                EventBody::Title { title, .. } => {
+                    state.series.entry(key).or_default().title = Some(title.clone());
                 }
-                EventBody::Meta { series, anilist, episodes } => {
-                    let s = state.series.entry(canon(series)).or_default();
+                EventBody::Meta { anilist, episodes, .. } => {
+                    let s = state.series.entry(key).or_default();
                     if let Some(id) = anilist {
                         s.link = Link::Manual(*id);
                     }
@@ -692,8 +749,8 @@ impl State {
                         s.episodes = *episodes;
                     }
                 }
-                EventBody::Unlink { series } => {
-                    state.series.entry(canon(series)).or_default().link = Link::Off;
+                EventBody::Unlink { .. } => {
+                    state.series.entry(key).or_default().link = Link::Off;
                 }
                 EventBody::Alias { .. } | EventBody::Unalias { .. } | EventBody::Unknown => {}
             }
@@ -701,6 +758,50 @@ impl State {
         state.aliases = aliases;
         state
     }
+}
+
+/// `item` of series `key` as it is now (see [`Relabelled`]).
+fn relabel<'a>(relabelled: &'a Relabelled, key: &str, item: &'a ItemKey) -> &'a ItemKey {
+    // An episode has no label to change (and most item events are episodes).
+    if item.kind == ItemKind::Episode {
+        return item;
+    }
+    relabelled.get(key).and_then(|m| m.get(item)).unwrap_or(item)
+}
+
+/// Every key that names a series other than by its own key → that key:
+/// legacy spellings (`map`, see [`rekey`]) and merged-away keys (`aliases`,
+/// as settled, see [`resolve_alias`]), each followed through both. Any other
+/// key is its series' own.
+pub fn canonical_keys(map: &HashMap<String, String>, aliases: &HashMap<String, String>) -> HashMap<String, String> {
+    map.keys()
+        .chain(aliases.keys())
+        .filter_map(|k| {
+            let to = resolve_alias(aliases, rekey(map, k));
+            (to != k).then(|| (k.clone(), to.to_string()))
+        })
+        .collect()
+}
+
+/// The merges in effect after `events` (merged-away key → the key it was
+/// merged into), every key read through `map` (see [`rekey`]).
+pub fn settled_aliases(events: &[Event], map: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for ev in events {
+        match &ev.body {
+            EventBody::Alias { from, to } => {
+                let (from, to) = (rekey(map, from), rekey(map, to));
+                if from != to {
+                    aliases.insert(from.to_string(), to.to_string());
+                }
+            }
+            EventBody::Unalias { from } => {
+                aliases.remove(rekey(map, from));
+            }
+            _ => {}
+        }
+    }
+    aliases
 }
 
 #[cfg(test)]
@@ -1085,6 +1186,59 @@ mod tests {
         desk.merge(&mut cache, recorded);
         assert!(desk.refresh(&mut cache).unwrap(), "the other writer's line is read");
         assert_eq!(cache.events(), desk.load_all().unwrap().events);
+    }
+
+    /// A log file that can't be read is reported like a malformed line;
+    /// the rest of the history still loads.
+    #[test]
+    fn an_unreadable_log_file_does_not_hide_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let desk = EventLog::open(dir.path(), "desk").unwrap();
+        desk.append([watched("x", 1)]).unwrap();
+        std::fs::create_dir(dir.path().join("broken.jsonl")).unwrap();
+        let loaded = desk.load_all().unwrap();
+        assert_eq!(loaded.events.len(), 1);
+        assert!(loaded.errors.iter().any(|e| e.contains("broken.jsonl")), "{:?}", loaded.errors);
+        let cache = desk.load_cached().unwrap();
+        assert_eq!((cache.events().len(), cache.files.len()), (1, 2), "every file keeps its place");
+        assert_eq!(cache.unreadable().len(), 1, "{:?}", cache.unreadable());
+    }
+
+    /// A log file made readable again is read on the next refresh, although
+    /// fixing its permissions changes neither its length nor its contents.
+    #[test]
+    fn a_log_file_made_readable_again_is_read() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let desk = EventLog::open(dir.path(), "desk").unwrap();
+        let laptop = EventLog::open(dir.path(), "laptop").unwrap();
+        desk.append([watched("x", 1)]).unwrap();
+        laptop.append([watched("x", 2)]).unwrap();
+        let file = dir.path().join("laptop.jsonl");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&file).is_ok() {
+            return; // Running as root: nothing is unreadable.
+        }
+        let mut cache = desk.load_cached().unwrap();
+        assert_eq!((cache.events().len(), cache.unreadable().len()), (1, 1));
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(desk.refresh(&mut cache).unwrap());
+        assert_eq!((cache.events().len(), cache.unreadable().len()), (2, 0));
+    }
+
+    /// The log folder vanishing (an unmounted share) is an error on refresh,
+    /// not an empty history.
+    #[test]
+    fn a_vanished_log_folder_is_an_error() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("events");
+        let desk = EventLog::open(&dir, "desk").unwrap();
+        desk.append([watched("x", 1)]).unwrap();
+        let mut cache = desk.load_cached().unwrap();
+        std::fs::rename(&dir, parent.path().join("elsewhere")).unwrap();
+        let err = desk.refresh(&mut cache).unwrap_err();
+        assert!(err.to_string().contains("missing"), "{err}");
+        assert_eq!(cache.events().len(), 1, "what was read is kept");
     }
 
     #[test]

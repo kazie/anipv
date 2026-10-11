@@ -12,9 +12,11 @@ project uses [Semantic Versioning](https://semver.org/).
   series the offline database has no match for are looked up on AniList by
   title, so shows newer than the dataset can still get episode totals and
   airing times. This sends those series' titles (parsed from your file and
-  folder names) to AniList. A series links
-  only when one answer goes by its name and can hold the episodes on disk;
-  ambiguous ones are listed and left alone.
+  folder names) to AniList, at most 10 per update and each at most once a
+  month. A series links only when one answer goes by its name and can hold
+  the episodes on disk; ambiguous ones are listed and left alone. Without a
+  downloaded offline database every series without a link counts as
+  unmatched; a failed search keeps the answer from the last one.
 
 ### Changed
 
@@ -35,12 +37,59 @@ project uses [Semantic Versioning](https://semver.org/).
   from the scan (started at launch, so it shows once the scan has reached the
   root), not from a check while loading; a scan that fails to record its
   result no longer counts as offline.
+- Loading a large library (every CLI command, TUI start) parses file names
+  on several threads, each about 10% faster (the release group and checksum
+  tags, which nothing used, are no longer kept).
+- `export` writes its output buffered (about half the time on a large
+  library), `meta search` no longer keys every title in the offline database
+  first (about half its time), and `import-fish` compares paths faster when
+  many files share a name (`Season 1/01.mkv` in every show).
 - Quitting the TUI with `q` or Ctrl-C always asks first; `q`, `y` or Enter
   confirms, any other key cancels. Ctrl-C with any other popup
   open closes it (like Esc) instead of asking, so a typed draft isn't lost.
+- Files in an extras folder (`Extras`, `Bonus`, `NC`, …) are named without
+  the release group, checksum and release tags, and without the show's
+  name: `creditless ed 01` instead of `groupa show creditless ed 01 bdrip
+  1920x1080 hevc truehd`. Watch state recorded under the old name moves to
+  the new one, found by the file name the log recorded; the log itself is
+  not rewritten.
 
 ### Fixed
 
+- A special word after an episode number followed by more words is the
+  episode's title: `Show - 05 Special Training` is episode 5, not a special
+  (`Show - 05 OVA` still is one). Watch state recorded for such a file as a
+  special stays with the special.
+- `Show Movie 02` and `Show Movie 2` are the same movie.
+- A file without a title of its own in a show's folder keeps the season in
+  its name: in a download folder `Show/S02E05.mkv` is *Show S2* episode 5,
+  not episode 5 of season 1 (it already was in an archive folder).
+- Files in a `Season 0` / `S00` folder are specials, not episodes that
+  collide with season 1's (a season in the file name still wins: an
+  `S02E05` there is season 2; an `S00E05` in a `Season 2` folder stays a
+  special of season 2's series).
+- A range of specials (`Specials/Show - 01-02.mkv`) provides each of them.
+- A file linked from elsewhere in the same root is indexed once, under its
+  own path.
+- An empty scan of a folder that has become a mount since its last scan is
+  no longer believed (it may be an automounter's placeholder), so its files
+  aren't marked gone.
+- With mpv's `keep-open`, quitting on an episode's last frame counts it as
+  watched (it never did with `watched_threshold = 1.0`: no end of file is
+  reported then).
+- An event log file that can't be read (no permission, a folder named
+  `*.jsonl`) is a warning (in the TUI's status line, on stderr for CLI
+  commands) instead of stopping anipv from loading any history. While it
+  can't be read, nothing is completed automatically and CLI commands that
+  write refuse (what they'd decide from the rest may be wrong, and its
+  history may hold a status you chose since); the TUI reads it as soon as
+  it can. `doctor` lists it once, and says how many malformed lines it
+  didn't list.
+- If the event log folder disappears while the TUI runs (an unmounted
+  share), the history already loaded stays, with an error, instead of
+  turning into an empty library.
+- A custom offline database without a `lastUpdate` no longer makes every
+  start match the whole library again.
 - A status chosen for a series that is already finished and fully watched
   stays (e.g. following it for a rewatch) instead of being completed again
   at once, until you change the status again. Older versions ignore the new `keep` field in the event log.
@@ -52,6 +101,48 @@ project uses [Semantic Versioning](https://semver.org/).
 - `mark --unwatched` counts episodes anipv doesn't know separately ("2
   already were, 1 not known"), and an episode listed twice counts once.
 - fish shell completions load again (a status description broke them).
+- A CLI command that fails after recording something (e.g. `play` with
+  its output closed) still completes the series it finished.
+- `play -n 0` is an error instead of claiming there is nothing new.
+- `anipv export | head` no longer ends with "error: Broken pipe".
+- `anipv demo DIR` refuses a folder that isn't empty: run on an existing
+  home it replaced the config and added the demo's history to the logs.
+- Titles with emoji no longer push table columns out of line.
+- `init` never names two roots alike but for case, and `scan --root` takes
+  a root's exact name over one that differs only in case.
+- The config file is replaced whole when saved, never left half written.
+- An empty `NO_COLOR` keeps colors (no-color.org), and an empty or relative
+  `XDG_RUNTIME_DIR` is ignored.
+- `import-fish`:
+  - A shared folder like `Season 1` no longer counts as proof of the show:
+    another show's `Season 1/01.mkv` was imported as the indexed one's.
+  - A file that isn't indexed and has no title in its name or folders
+    (`01.mkv`) is skipped and listed, instead of becoming a series named
+    after the file.
+  - Plays behind fish's `and`, `or` and `not`, `prime-run` and
+    `gamemoderun`, and after a line continuation, are found; file names in
+    a `# comment` and brace expansions (`{01,02}.mkv`) are not imported.
+  - A relative or empty `XDG_DATA_HOME` is ignored when finding the
+    history, like the XDG spec says.
+- TUI:
+  - Every note of a metadata update shows (they replaced each other), and an
+    error from the same update no longer hides them.
+  - A warning that stays (a read-only events folder, say) shows when it
+    appears instead of on every reload, where it hid each action's message.
+  - A scan reports folders it could not read and roots it could not record,
+    also when new shows arrived (as an error; an unmounted root is still only
+    shown in the header).
+  - After a metadata update that only brought a new offline database, series
+    are matched against it without waiting for a rescan.
+  - Ctrl-C in the search box clears the search, like Esc.
+  - Tab and Shift-Tab in a series move on from the tab it was opened from.
+  - The merge picker lists every series (similarly named ones first), not
+    only those whose title shares the first word.
+  - `f` in the Series view ends a search first (a search lists every series,
+    so the filter did nothing), and the title says so.
+  - "the queue is unchanged" is only said when there is a queue.
+  - The queue scrolls like the other lists: after it shrinks while scrolled
+    down, it fills the view again instead of showing blank rows.
 
 ## [0.1.0] - 2026-10-08
 

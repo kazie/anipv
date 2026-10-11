@@ -5,7 +5,13 @@ use std::sync::OnceLock;
 
 fn color_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
+    *ON.get_or_init(|| !no_color(std::env::var_os("NO_COLOR").as_deref()) && std::io::stdout().is_terminal())
+}
+
+/// Whether a `NO_COLOR` of `value` turns colors off: only when it is not
+/// empty (no-color.org).
+fn no_color(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
 }
 
 fn paint(code: &str, s: &str) -> String {
@@ -93,26 +99,39 @@ pub fn clock(secs: f64) -> String {
 
 /// Truncate to `width` display columns (char-based), adding `…` (nothing at
 /// all for width 0, which has no room for it).
-pub fn trunc(s: &str, width: usize) -> String {
-    use unicode_width::UnicodeWidthStr;
+fn trunc(s: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     if s.width() <= width {
         return s.to_string();
     }
     if width == 0 {
         return String::new();
     }
-    let mut out = String::new();
-    let mut w = 0;
-    for c in s.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-        if w + cw + 1 > width {
+    // The characters' widths add up to a first cut. Measured as a string, like
+    // `pad` and the terminal do, it then moves on while the next character
+    // still fits, or back until it fits: a character can change how wide the
+    // one before it is (`☺` + U+FE0F is an emoji, two wide; `👨` + a skin
+    // tone is one emoji, not two).
+    let fits = |end: usize| s[..end].width() < width;
+    let mut end = 0;
+    let mut sum = 0;
+    for (i, c) in s.char_indices() {
+        sum += c.width().unwrap_or(0);
+        if sum >= width {
             break;
         }
-        out.push(c);
-        w += cw;
+        end = i + c.len_utf8();
     }
-    out.push('…');
-    out
+    if fits(end) {
+        while let Some(c) = s[end..].chars().next()
+            && fits(end + c.len_utf8())
+        {
+            end += c.len_utf8();
+        }
+    } else {
+        end = s[..end].char_indices().rev().map(|(i, _)| i).find(|&i| fits(i)).unwrap_or(0);
+    }
+    format!("{}…", &s[..end])
 }
 
 /// Pad (or truncate) to exactly `width` display columns.
@@ -126,6 +145,44 @@ pub fn pad(s: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_no_color_keeps_colors() {
+        assert!(no_color(Some("1".as_ref())));
+        assert!(!no_color(Some("".as_ref())) && !no_color(None));
+    }
+
+    /// Truncating measures the string as a whole, like padding does: an
+    /// emoji presentation selector makes the character before it two wide.
+    #[test]
+    fn truncated_text_fits_its_width() {
+        use unicode_width::UnicodeWidthStr;
+        let s = "ab\u{263A}\u{FE0F}cdefgh";
+        for width in 1..12 {
+            assert_eq!(pad(s, width).width(), width, "{width}");
+        }
+        assert_eq!(trunc(s, 4), "ab\u{263A}…", "the selector would make it five wide");
+        assert_eq!(trunc(s, 5), "ab\u{263A}\u{FE0F}…");
+    }
+
+    proptest::proptest! {
+        /// Whatever the text (emoji sequences, selectors, control characters),
+        /// the cut fits and is the start of the text.
+        #[test]
+        fn truncated_text_always_fits(
+            v in proptest::collection::vec(proptest::sample::select(vec![
+                'a', '日', '\u{263A}', '\u{FE0F}', '\u{FE0E}', '\u{301}', '\u{200D}', '\u{1F468}', '\u{1F3FB}',
+                '\u{1F1F8}', '\u{1F44D}', '\u{20E3}', '\u{1}', '\t',
+            ]), 0..16),
+            width in 0usize..22,
+        ) {
+            use unicode_width::UnicodeWidthStr;
+            let s: String = v.into_iter().collect();
+            let t = trunc(&s, width);
+            proptest::prop_assert!(t.width() <= width, "{s:?} at {width}: {t:?}");
+            proptest::prop_assert!(s.starts_with(t.trim_end_matches('…')));
+        }
+    }
 
     #[test]
     fn relative_times() {

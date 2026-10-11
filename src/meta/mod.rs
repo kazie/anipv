@@ -1,43 +1,80 @@
 //! Metadata: offline anime database matching and `AniList` airing info.
 //!
-//! * `offline` — manami *anime-offline-database*, downloaded on demand; used
-//!   to match series to `AniList` ids and learn episode totals.
-//! * `anilist` — anonymous GraphQL queries for followed series' next airing
-//!   episode.
+//! * `offline` — the *anime-offline-database* (a community continuation of
+//!   manami's), downloaded on demand; used to match series to `AniList` ids
+//!   and learn episode totals.
+//! * `anilist` — anonymous GraphQL queries: airing info and prequels by id,
+//!   and (only with `anilist_search`) title searches.
+//! * `search` — title search for series the offline database can't match;
+//!   the one place where text from the user's library (series titles) is
+//!   sent anywhere.
 //!
 //! Matches are cached locally in SQLite. Manual links are recorded as events
 //! so they sync between devices.
 
 pub mod anilist;
 pub mod offline;
+pub mod search;
+
+pub use search::{SearchOutcome, add_title_search, search_due, search_unmatched};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::events::Link;
-use crate::identity::series_key;
-use crate::index::db::{AnilistCheck, MatchAttempt, SeriesMeta};
+use crate::index::db::{AnilistCheck, MatchAttempt, MatchResult, SeriesMeta};
 use crate::library::{Library, Series};
 use crate::model::SeriesStatus;
 use offline::{Match, OfflineDb};
 
-/// Result of matching the library against the offline database.
+/// Result of matching the library against the offline database (and maybe by
+/// title, see [`add_title_search`]).
 #[derive(Debug, Default)]
 pub struct MatchReport {
     /// New or changed links.
     pub rows: Vec<SeriesMeta>,
-    /// Series that were checked and have nothing to link.
+    /// Results to record: new ones, and "nothing to link" for a cached link
+    /// that no longer matches (which drops it).
     pub attempts: Vec<MatchAttempt>,
-    /// Series with several candidates: (key, candidate titles).
-    pub ambiguous: Vec<(String, Vec<String>)>,
-    /// Series with no candidate.
-    pub unmatched: Vec<String>,
-    /// Of `ambiguous`, those a title search found several anime for earlier
-    /// (their candidates weren't kept: a forced search asks again).
-    pub searched_ambiguous: Vec<String>,
+    /// Every series matched with nothing to link, once each.
+    pub unlinked: Vec<Unlinked>,
+    /// Version of the offline database matched against (`""` without one).
+    pub db_version: String,
 }
 
-/// Listed for a series a title search found several anime for earlier.
+impl MatchReport {
+    /// The unlinked series with several candidates.
+    pub fn ambiguous(&self) -> impl Iterator<Item = &Unlinked> {
+        self.unlinked.iter().filter(|u| u.result.is_ambiguous())
+    }
+
+    /// The unlinked series with no candidate at all.
+    pub fn unmatched(&self) -> impl Iterator<Item = &Unlinked> {
+        self.unlinked.iter().filter(|u| !u.result.is_ambiguous())
+    }
+}
+
+/// A series matched with nothing to link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unlinked {
+    /// Series key.
+    pub series: String,
+    /// Why: no candidate, several, or a title search's answer.
+    pub result: MatchResult,
+    /// When ambiguous: the candidates, one line each (see [`describe_anime`]).
+    pub candidates: Vec<String>,
+}
+
+/// One line about an anime, for lists of candidates:
+/// `Yuru Camp (TV 2018, 12 eps) anilist:98444`, with `?` for what isn't known.
+pub fn describe_anime(title: &str, format: Option<&str>, year: Option<i32>, episodes: Option<u32>, id: u64) -> String {
+    let year = year.map(|y| format!(" {y}")).unwrap_or_default();
+    let episodes = episodes.map_or_else(|| "?".to_string(), |n| n.to_string());
+    format!("{title} ({format}{year}, {episodes} eps) anilist:{id}", format = format.unwrap_or("?"))
+}
+
+/// Listed for a series a title search found several anime for earlier (their
+/// candidates weren't kept).
 pub const SEARCHED_AMBIGUOUS_NOTE: &str =
     "several anime on AniList go by this name; `anipv meta match --search` lists them";
 
@@ -45,8 +82,7 @@ pub const SEARCHED_AMBIGUOUS_NOTE: &str =
 /// that are new or changed and "nothing to link" attempts. Manually linked
 /// series use their link; unlinked ones are skipped.
 pub fn match_library(lib: &Library, db: &OfflineDb, ts: i64, only: Option<&str>) -> MatchReport {
-    let mut rep = MatchReport::default();
-    let version = db.version.clone().unwrap_or_default();
+    let mut rep = MatchReport { db_version: db.version_key().to_string(), ..MatchReport::default() };
     for s in lib.series.iter().filter(|s| only.is_none_or(|k| s.key == k)) {
         let current = s.meta.as_ref().and_then(|m| m.anilist);
         match s.link {
@@ -65,7 +101,7 @@ pub fn match_library(lib: &Library, db: &OfflineDb, ts: i64, only: Option<&str>)
         let (episodes, max_ep) = episode_shape(s);
         let mut found = None;
         let mut amb = None;
-        for k in std::iter::once(&s.key).chain(&s.aliases) {
+        for k in s.names() {
             match db.match_key(k, &s.title, episodes, max_ep) {
                 Match::Unique(e) => {
                     found = Some(e);
@@ -83,26 +119,30 @@ pub fn match_library(lib: &Library, db: &OfflineDb, ts: i64, only: Option<&str>)
             // isn't undone by the database matching nothing, or several
             // entries: the database never could link it.
             None if s.search_linked() => {}
-            // A title search found several anime for it earlier: still ambiguous.
-            None if amb.is_none() && s.match_result.as_deref() == Some(SEARCH_AMBIGUOUS) => {
-                rep.ambiguous.push((s.key.clone(), vec![SEARCHED_AMBIGUOUS_NOTE.to_string()]));
-                rep.searched_ambiguous.push(s.key.clone());
-            }
             None => {
-                let result = if amb.is_some() { "ambiguous" } else { "none" };
-                // Record unless this version already said so (and no stale link is cached).
-                if s.meta.is_some() || !s.match_checked {
-                    rep.attempts.push(MatchAttempt {
-                        series: s.key.clone(),
-                        db_version: version.clone(),
-                        at: ts,
-                        result: result.into(),
-                    });
+                // While the database finds nothing, a title search's answer
+                // stands (it searched because of that); several candidates in
+                // the database replace it.
+                let prior = s.last_match;
+                let result = match (prior, &amb) {
+                    (_, Some(_)) => MatchResult::Ambiguous,
+                    (Some(p), None) if p.result.is_search() => p.result,
+                    (_, None) => MatchResult::None,
+                };
+                // Record what is new: a stale link to drop, another result than
+                // the one on record, or one now made with the current database
+                // (the time stays when the result is the same).
+                if s.meta.is_some() || prior.is_none_or(|p| p.result != result || !p.current) {
+                    let at = prior.filter(|p| p.result == result).map_or(ts, |p| p.at);
+                    let (series, db_version) = (s.key.clone(), rep.db_version.clone());
+                    rep.attempts.push(MatchAttempt { series, db_version, at, result });
                 }
-                match amb {
-                    Some(v) => rep.ambiguous.push((s.key.clone(), v.iter().map(|e| e.describe()).collect())),
-                    None => rep.unmatched.push(s.key.clone()),
-                }
+                let candidates = match (result, amb) {
+                    (MatchResult::Ambiguous, Some(v)) => v.iter().map(|e| e.describe()).collect(),
+                    (MatchResult::SearchAmbiguous, _) => vec![SEARCHED_AMBIGUOUS_NOTE.to_string()],
+                    _ => Vec::new(),
+                };
+                rep.unlinked.push(Unlinked { series: s.key.clone(), result, candidates });
             }
         }
     }
@@ -115,204 +155,6 @@ fn episode_shape(s: &Series) -> (usize, u32) {
     let episodes = s.episodes().count();
     let max_ep = s.episodes().filter_map(|i| i.key.ep).max().map_or(0, super::model::EpNo::whole);
     (episodes, max_ep)
-}
-
-/// How many series one sync looks up by title on `AniList` (one request each;
-/// `AniList` allows 90 requests a minute). The rest wait for the next run.
-pub const SEARCH_CAP: usize = 30;
-
-/// `MatchAttempt::result` of a title search that found nothing.
-pub const SEARCH_NONE: &str = "search-none";
-/// `MatchAttempt::result` of a title search with several equally good answers.
-pub const SEARCH_AMBIGUOUS: &str = "search-ambiguous";
-
-/// True for the `MatchAttempt::result` of a title search (one that linked
-/// nothing: a link is marked on its row, [`SeriesMeta::search_linked`]).
-pub fn is_search_attempt(result: &str) -> bool {
-    [SEARCH_NONE, SEARCH_AMBIGUOUS].contains(&result)
-}
-
-/// What `AniList` answered a title search with.
-#[derive(Debug, PartialEq, Eq)]
-enum SearchPick<'a> {
-    /// One anime goes by one of the series' names.
-    Unique(&'a anilist::Media),
-    /// Several do.
-    Ambiguous(Vec<&'a anilist::Media>),
-    /// None does.
-    None,
-}
-
-/// The anime among `found` that goes by one of `keys` (series keys, see
-/// [`series_key`]): its title or a synonym, normalized the same way. Never the
-/// "closest" one: a wrong link would put a series' history under another anime,
-/// and a season is an entry of its own ("… 2nd Season" is key `… s2`).
-///
-/// Of those, like [`OfflineDb::match_key`] but stricter, a finished anime with
-/// fewer episodes than the highest number on disk (`max_ep`) is never linked
-/// (a same-named movie for a TV series), and with more than one numbered
-/// episode (`episodes`) a TV or ONA entry ranks first, with exactly one a TV
-/// entry (with none, say a movie file, no format is preferred). Several
-/// equally good ones are ambiguous.
-fn pick_search_match<'a>(keys: &[&str], episodes: usize, max_ep: u32, found: &'a [anilist::Media]) -> SearchPick<'a> {
-    let fits = |m: &anilist::Media| {
-        let airing = matches!(m.status.as_deref(), Some("RELEASING" | "HIATUS" | "NOT_YET_RELEASED"));
-        airing || m.episodes.is_none_or(|n| n == 0 || max_ep <= n)
-    };
-    let rank = |m: &anilist::Media| {
-        let format = m.format.as_deref();
-        (episodes > 1 && matches!(format, Some("TV" | "ONA")), episodes == 1 && format == Some("TV"))
-    };
-    let mut hits: Vec<&anilist::Media> = found
-        .iter()
-        .filter(|m| m.names().any(|n| keys.contains(&series_key(n).as_str())))
-        .filter(|m| fits(m))
-        .collect();
-    if let Some(best) = hits.iter().map(|m| rank(m)).max() {
-        hits.retain(|m| rank(m) == best);
-    }
-    match hits.len() {
-        0 => SearchPick::None,
-        1 => SearchPick::Unique(hits.remove(0)),
-        _ => SearchPick::Ambiguous(hits),
-    }
-}
-
-/// Outcome of [`search_unmatched`].
-#[derive(Debug, Default)]
-pub struct SearchReport {
-    /// Links found (with `AniList`'s data applied).
-    pub rows: Vec<SeriesMeta>,
-    /// Series searched with no link: [`SEARCH_NONE`] or [`SEARCH_AMBIGUOUS`].
-    pub attempts: Vec<MatchAttempt>,
-    /// Series with several candidates: (key, candidate descriptions).
-    pub ambiguous: Vec<(String, Vec<String>)>,
-    /// Series that were not searched this time (over [`SEARCH_CAP`], or after a failure).
-    pub skipped: usize,
-    /// Why the search stopped early: a failed request (the series it failed
-    /// for gets no attempt, so it is searched again next time).
-    pub errors: Vec<anyhow::Error>,
-    /// Titles `AniList` answered with an error about the query (those series
-    /// count as searched).
-    pub notes: Vec<String>,
-}
-
-/// Look the series `keys` up on `AniList` by title, one request each (at most
-/// [`SEARCH_CAP`]), for series the offline database has no match for. Only the
-/// title text is sent. A series links only when exactly one answer goes by its
-/// key or an alias (its title or a synonym, normalized like a series key).
-/// Stops at the first failed request (a rate limit, no network): the rest
-/// would most likely fail too. An error `AniList` answers one title with
-/// doesn't stop it.
-pub fn search_unmatched(
-    lib: &Library,
-    http: &dyn anilist::Http,
-    keys: &[String],
-    db_version: &str,
-    ts: i64,
-) -> SearchReport {
-    let mut rep = SearchReport::default();
-    let attempt = |key: &str, result: &str| MatchAttempt {
-        series: key.to_string(),
-        db_version: db_version.to_string(),
-        at: ts,
-        result: result.to_string(),
-    };
-    let series = keys.iter().filter_map(|k| lib.get(k));
-    let mut stopped = false;
-    for (i, s) in series.enumerate() {
-        if i >= SEARCH_CAP || stopped {
-            rep.skipped += 1;
-            continue;
-        }
-        let found = match anilist::search(http, &s.title) {
-            Ok(found) => found,
-            // An error about this title: it won't search any better next
-            // time, so it counts as searched (and the queue moves on).
-            Err(e) if e.is::<anilist::AnswerError>() => {
-                rep.attempts.push(attempt(&s.key, SEARCH_NONE));
-                rep.notes.push(format!("searching {:?}: {e:#}", s.title));
-                continue;
-            }
-            Err(e) => {
-                rep.errors.push(e);
-                rep.skipped += 1;
-                stopped = true;
-                continue;
-            }
-        };
-        let names: Vec<&str> = std::iter::once(&s.key).chain(&s.aliases).map(String::as_str).collect();
-        let (episodes, max_ep) = episode_shape(s);
-        match pick_search_match(&names, episodes, max_ep, &found) {
-            SearchPick::Unique(m) => {
-                let mut row = SeriesMeta { series: s.key.clone(), search_linked: true, ..SeriesMeta::default() };
-                m.apply(&mut row, ts);
-                rep.rows.push(row);
-            }
-            SearchPick::Ambiguous(v) => {
-                rep.attempts.push(attempt(&s.key, SEARCH_AMBIGUOUS));
-                rep.ambiguous.push((s.key.clone(), v.iter().map(|m| m.describe()).collect()));
-            }
-            SearchPick::None => rep.attempts.push(attempt(&s.key, SEARCH_NONE)),
-        }
-    }
-    rep
-}
-
-/// Add a title search on `AniList` to a match against the offline database:
-/// the series it found nothing for (`rep.unmatched`) are looked up with
-/// [`search_unmatched`], except those already searched for this database
-/// (unless `force`). Links join `rep.rows`; series searched in vain get their
-/// plain "no match" attempt replaced by a search one (so they aren't asked
-/// again), and ones linked lose it (an attempt would unlink them). With
-/// `force`, series a search found ambiguous earlier are searched again too.
-pub fn add_title_search(
-    rep: &mut MatchReport,
-    lib: &Library,
-    http: &dyn anilist::Http,
-    db_version: &str,
-    ts: i64,
-    force: bool,
-) -> SearchSummary {
-    if force {
-        let earlier: HashSet<String> = rep.searched_ambiguous.drain(..).collect();
-        rep.ambiguous.retain(|(k, _)| !earlier.contains(k));
-        rep.unmatched.extend(earlier);
-    }
-    let searched = |k: &String| lib.get(k).is_some_and(Series::searched);
-    // Only series that matter, as for `needs_match`: on disk or tracked.
-    let wanted = |k: &String| lib.get(k).is_some_and(|s| s.present() || s.status != SeriesStatus::Untracked);
-    let mut keys: Vec<String> =
-        rep.unmatched.iter().filter(|k| wanted(k) && (force || !searched(k))).cloned().collect();
-    // With `force`, those not searched yet come first, so repeated runs get
-    // past the cap instead of asking about the same series again.
-    keys.sort_by_key(searched);
-    if keys.is_empty() {
-        return SearchSummary::default();
-    }
-    let found = search_unmatched(lib, http, &keys, db_version, ts);
-    let answered: HashSet<&str> =
-        found.rows.iter().map(|r| r.series.as_str()).chain(found.attempts.iter().map(|a| a.series.as_str())).collect();
-    rep.attempts.retain(|a| !answered.contains(a.series.as_str()));
-    // Still unmatched unless linked, or found ambiguous (listed with those).
-    let listed: HashSet<&str> =
-        found.rows.iter().map(|r| r.series.as_str()).chain(found.ambiguous.iter().map(|(k, _)| k.as_str())).collect();
-    rep.unmatched.retain(|k| !listed.contains(k.as_str()));
-    rep.attempts.extend(found.attempts);
-    rep.ambiguous.extend(found.ambiguous);
-    rep.rows.extend(found.rows);
-    SearchSummary { errors: found.errors, notes: found.notes, skipped: found.skipped }
-}
-
-/// What [`add_title_search`] has to say besides its links.
-#[derive(Debug, Default)]
-pub struct SearchSummary {
-    /// Why the search stopped early (a failed request).
-    pub errors: Vec<anyhow::Error>,
-    /// Titles `AniList` answered with an error (they count as searched).
-    pub notes: Vec<String>,
-    /// Series left for the next run.
-    pub skipped: usize,
 }
 
 /// Metadata for `s`, preferring rows not yet written to the library (when
@@ -427,19 +269,58 @@ pub fn apply_media(
         .collect()
 }
 
-/// True if some series lacks metadata or has a manual link not yet applied.
-///
-/// With `search` (title search on, see [`SyncOptions::search`]), also if a
-/// series the offline database had no match for hasn't been searched yet:
-/// one from before search was turned on, past [`SEARCH_CAP`], or whose search
-/// failed.
-pub fn needs_match(lib: &Library, search: bool) -> bool {
+/// True if some series needs matching against the offline database: it has
+/// no metadata and was never matched, or has a manual link not yet applied.
+pub fn needs_match(lib: &Library) -> bool {
     lib.series.iter().any(|s| {
-        let auto = s.meta.is_none() && s.link == Link::Auto;
-        let unchecked = auto && (!s.match_checked || (search && s.search_due()));
-        (unchecked && (s.present() || s.status != SeriesStatus::Untracked))
-            || (s.link.manual().is_some() && s.usable_meta(s.meta.as_ref()).is_none())
+        let unchecked = s.meta.is_none() && s.link == Link::Auto && s.last_match.is_none_or(|m| !m.current);
+        (unchecked && s.worth_matching()) || (s.link.manual().is_some() && s.usable_meta(s.meta.as_ref()).is_none())
     })
+}
+
+/// True if a title search is due at `ts` for some series that was matched
+/// with nothing to link (see [`search_due`]): one from before search was
+/// turned on, past [`search::SEARCH_CAP`], whose search failed, or whose last
+/// answer is old. Such searches don't need the offline database: the series
+/// are taken as matched last time.
+pub fn searches_due(lib: &Library, ts: i64) -> bool {
+    unlinked_series(lib).any(|s| search_due(s, ts))
+}
+
+/// Series with an automatic link and no metadata, worth searching.
+fn searchable(lib: &Library) -> impl Iterator<Item = &Series> {
+    lib.series.iter().filter(|s| s.meta.is_none() && s.link == Link::Auto && s.worth_searching())
+}
+
+/// [`searchable`] series matched against the current offline database with
+/// nothing to link.
+fn unlinked_series(lib: &Library) -> impl Iterator<Item = &Series> {
+    searchable(lib).filter(|s| s.last_match.is_some_and(|m| m.current))
+}
+
+/// A report of `series` for a title search without matching against the
+/// offline database (again): each as on record (a search's answer even from
+/// an older database, as [`match_library`] keeps it), else unmatched.
+fn report_of<'a>(lib: &Library, series: impl Iterator<Item = &'a Series>) -> MatchReport {
+    let unlinked = series
+        .map(|s| {
+            let on_record = s.last_match.filter(|m| m.current || m.result.is_search());
+            let result = on_record.map_or(MatchResult::None, |m| m.result);
+            let candidates = if result == MatchResult::SearchAmbiguous {
+                vec![SEARCHED_AMBIGUOUS_NOTE.to_string()]
+            } else {
+                Vec::new()
+            };
+            Unlinked { series: s.key.clone(), result, candidates }
+        })
+        .collect();
+    MatchReport { unlinked, db_version: lib.db_version.clone(), ..MatchReport::default() }
+}
+
+/// A report for a title search when there is no offline database to match
+/// with: every series without a link (or just `only`) is unmatched.
+pub fn unmatched_without_database(lib: &Library, only: Option<&str>) -> MatchReport {
+    report_of(lib, searchable(lib).filter(|s| only.is_none_or(|o| o == s.key)))
 }
 
 /// Outcome of [`sync`].
@@ -449,10 +330,12 @@ pub struct SyncResult {
     pub rows: Vec<SeriesMeta>,
     /// "Nothing to link" results to record.
     pub attempts: Vec<MatchAttempt>,
-    /// Version of the offline database used, if it was loaded.
+    /// Version of the offline database used, if it was loaded (see
+    /// [`OfflineDb::version_key`]).
     pub db_version: Option<String>,
     /// Things to tell the user that aren't failures: a fallback source served
-    /// the offline database, it is old, or `AniList` rejected a title search.
+    /// the offline database, it is old, or a title search stopped at a failed
+    /// request.
     pub notes: Vec<String>,
     /// `AniList` prequel ids fetched for inbox series (ids `AniList` knows).
     pub prequels: Vec<(u64, Vec<u64>)>,
@@ -527,7 +410,7 @@ impl Default for Refresh {
 
 /// What a [`sync`] should do: made by [`plan`], or [`SyncOptions::requested`]
 /// for matching alone.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[expect(clippy::struct_excessive_bools, reason = "independent switches of one update")]
 pub struct SyncOptions {
     /// Inbox series to fetch airing info and prequels for (see [`inbox_lookups`]).
@@ -544,15 +427,35 @@ pub struct SyncOptions {
     pub update_offline: bool,
     /// The offline database as loaded by earlier syncs (and updated by this one).
     pub offline: std::sync::Arc<offline::OfflineCache>,
-    /// Where an update downloads the offline database from, in order (see
-    /// [`offline::source_urls`]; [`plan`] fills it from the config).
+    /// Where an update downloads the offline database from, in order: the
+    /// built-in sources unless [`plan`] fills it from the config (see
+    /// [`offline::source_urls`]).
     pub offline_urls: Vec<String>,
     /// Network metadata is on (`anilist` in the config): without it, [`sync`]
     /// asks `AniList` nothing, whatever transport it is given.
     pub network: bool,
     /// Look series the offline database can't match up on `AniList` by title
     /// (`anilist_search` in the config, with `network`): their titles are sent.
+    /// Without `rematch`, the series are taken as matched last time (see
+    /// [`searches_due`]).
     pub search: bool,
+}
+
+impl Default for SyncOptions {
+    /// Nothing to do, from the built-in sources.
+    fn default() -> Self {
+        Self {
+            inbox: Vec::new(),
+            refresh: Refresh::default(),
+            rematch: false,
+            only: None,
+            update_offline: false,
+            offline: std::sync::Arc::default(),
+            offline_urls: offline::source_urls(None),
+            network: false,
+            search: false,
+        }
+    }
 }
 
 impl SyncOptions {
@@ -563,9 +466,10 @@ impl SyncOptions {
         Self { refresh: Refresh::Requested, rematch: true, only, ..Self::default() }
     }
 
-    /// True if the sync would ask `AniList` anything (given a connection).
+    /// True if the sync would ask `AniList` anything (given a connection):
+    /// inbox lookups, a refresh, or title searches.
     pub fn asks_anilist(&self) -> bool {
-        !self.inbox.is_empty() || !matches!(&self.refresh, Refresh::Stale { ids, .. } if ids.is_empty())
+        !self.inbox.is_empty() || !matches!(&self.refresh, Refresh::Stale { ids, .. } if ids.is_empty()) || self.search
     }
 }
 
@@ -588,8 +492,11 @@ pub fn plan(
     let only = match request {
         Request::Auto { max_age } => {
             let ids = if network { stale_ids(lib, checks, ts, *max_age) } else { Vec::new() };
-            let rematch = needs_match(lib, search);
-            if ids.is_empty() && inbox.is_empty() && !rematch {
+            let rematch = needs_match(lib);
+            // Searches run after a rematch (which may find series to search),
+            // or on their own when some are due.
+            let search = search && (rematch || searches_due(lib, ts));
+            if ids.is_empty() && inbox.is_empty() && !rematch && !search {
                 return None;
             }
             let refresh = Refresh::Stale { ids, max_age: *max_age, checks: checks.clone() };
@@ -633,6 +540,33 @@ pub fn sync(
     sync_with_progress(lib, cache_dir, http, opts, ts, &mut |_| {})
 }
 
+/// The offline database freshly downloaded, when `opts` asks for an update
+/// and the cached copy is missing or old. Notes and a failure go to `out`
+/// (the cached copy, if any, is used then).
+fn download_offline(
+    opts: &SyncOptions,
+    cache_dir: &Path,
+    out: &mut SyncResult,
+    progress: &mut dyn FnMut(SyncStep),
+) -> Option<std::sync::Arc<OfflineDb>> {
+    if !opts.update_offline || !OfflineDb::needs_update(cache_dir) {
+        return None;
+    }
+    progress(SyncStep::Downloading);
+    let res = opts.offline.download(cache_dir, &opts.offline_urls);
+    progress(SyncStep::Syncing);
+    match res {
+        Ok((db, notes)) => {
+            out.notes.extend(notes);
+            Some(db)
+        }
+        Err(e) => {
+            out.errors.push(format!("offline db download: {e:#}"));
+            None
+        }
+    }
+}
+
 /// [`sync`], telling `progress` when an offline database download starts and ends.
 pub fn sync_with_progress(
     lib: &Library,
@@ -646,39 +580,33 @@ pub fn sync_with_progress(
     let mut fresh: HashMap<String, SeriesMeta> = HashMap::new();
     let only = opts.only.as_deref();
     let inbox: Vec<(String, u64)> = opts.inbox.iter().filter(|(k, _)| only.is_none_or(|o| o == k)).cloned().collect();
-    let downloaded = if opts.update_offline && OfflineDb::needs_update(cache_dir) {
-        progress(SyncStep::Downloading);
-        let db = opts.offline.download(cache_dir, &opts.offline_urls);
-        progress(SyncStep::Syncing);
-        db.map_err(|e| out.errors.push(format!("offline db download: {e:#}"))).ok()
-    } else {
-        None
+    let downloaded = download_offline(opts, cache_dir, &mut out, progress);
+    let searching = http.filter(|_| opts.search && opts.network);
+    let db = match downloaded {
+        Some(db) => Some(Ok(Some(db))),
+        None => opts.rematch.then(|| opts.offline.load(cache_dir)),
     };
-    if let Some(db) = &downloaded {
-        let first = opts.offline_urls.first().map_or("", String::as_str);
-        out.notes.extend(offline::download_notes(first, db.source.as_deref(), db.version.as_deref(), ts));
-    }
-    if downloaded.is_some() || opts.rematch {
-        let db = match downloaded {
-            Some(db) => Ok(Some(db)),
-            None => opts.offline.load(cache_dir),
-        };
-        match db {
-            Ok(Some(db)) => {
-                let mut rep = match_library(lib, &db, ts, only);
-                if let (true, Some(http)) = (opts.search && opts.network, http) {
-                    let version = db.version.clone().unwrap_or_default();
-                    let found = add_title_search(&mut rep, lib, http, &version, ts, false);
-                    out.errors.extend(found.errors.iter().map(|e| format!("AniList: {e:#}")));
-                    out.notes.extend(found.notes);
-                }
-                fresh.extend(rep.rows.into_iter().map(|r| (r.series.clone(), r)));
-                out.attempts = rep.attempts;
-                out.db_version.clone_from(&db.version);
-            }
-            Ok(None) => {}
-            Err(e) => out.errors.push(format!("offline db: {e:#}")),
+    let report = match db {
+        Some(Ok(Some(db))) => {
+            out.db_version = Some(db.version_key().to_string());
+            Some(match_library(lib, &db, ts, only))
         }
+        // Nothing to match with: a title search still can.
+        Some(Ok(None)) => searching.map(|_| unmatched_without_database(lib, only)),
+        Some(Err(e)) => {
+            out.errors.push(format!("offline db: {e:#}"));
+            None
+        }
+        // Only searches are due: the series are as matched last time, so the
+        // offline database (tens of megabytes) needn't be loaded.
+        None => searching.map(|_| report_of(lib, unlinked_series(lib))),
+    };
+    if let Some(mut rep) = report {
+        if let Some(http) = searching {
+            out.notes.extend(add_title_search(&mut rep, lib, http, ts, false).stopped);
+        }
+        fresh.extend(rep.rows.into_iter().map(|r| (r.series.clone(), r)));
+        out.attempts = rep.attempts;
     }
     if let Some(http) = http.filter(|_| opts.network) {
         // A series whose cached link no longer matches is being unlinked: don't
@@ -711,7 +639,7 @@ pub fn sync_with_progress(
             for id in answered {
                 *checked.entry(id).or_default() |= got.contains(&id);
             }
-            out.errors.extend(errors.iter().map(|e| format!("AniList: {e:#}")));
+            out.errors.extend(errors.iter().map(|e| format!("{e:#}")));
         };
         if !pairs.is_empty() {
             let ids: Vec<u64> = pairs.iter().map(|p| p.1).collect();
@@ -742,11 +670,17 @@ mod tests {
     use crate::index::db::FileRow;
     use anilist::Echo;
 
-    fn lib(events: &[Event], meta: &[SeriesMeta]) -> Library {
+    pub(super) fn lib(events: &[Event], meta: &[SeriesMeta]) -> Library {
         lib_with(events, meta, &[])
     }
 
-    fn lib_with(events: &[Event], meta: &[SeriesMeta], attempts: &[MatchAttempt]) -> Library {
+    pub(super) fn lib_with(events: &[Event], meta: &[SeriesMeta], attempts: &[MatchAttempt]) -> Library {
+        lib_at("2026-07-04", events, meta, attempts)
+    }
+
+    /// [`lib_with`], with `version` the current offline database version
+    /// ([`lib_with`] has the sample database's).
+    pub(super) fn lib_at(version: &str, events: &[Event], meta: &[SeriesMeta], attempts: &[MatchAttempt]) -> Library {
         let cfg = cfg();
         let row = |rel: &str| FileRow::test("dl", rel);
         let files = vec![
@@ -755,7 +689,12 @@ mod tests {
             row("[A] Shared - 01.mkv"),
             row("[A] Zzz - 01.mkv"),
         ];
-        let meta = MetaCache { rows: meta.to_vec(), attempts: attempts.to_vec(), ..MetaCache::default() };
+        let meta = MetaCache {
+            rows: meta.to_vec(),
+            attempts: attempts.to_vec(),
+            db_version: version.into(),
+            ..MetaCache::default()
+        };
         Library::build(&cfg, events, &Index::new(&cfg, files, meta))
     }
 
@@ -766,17 +705,18 @@ mod tests {
         let keys: Vec<_> = rep.rows.iter().map(|r| (r.series.as_str(), r.anilist)).collect();
         assert!(keys.contains(&("one piece", Some(21))));
         assert!(keys.contains(&("grand blue s3", Some(199_111))));
-        assert_eq!(rep.ambiguous.len(), 1);
-        assert_eq!(rep.unmatched, vec!["zzz"]);
+        let unlinked: Vec<(&str, MatchResult)> = rep.unlinked.iter().map(|u| (u.series.as_str(), u.result)).collect();
+        assert_eq!(unlinked, [("shared", MatchResult::Ambiguous), ("zzz", MatchResult::None)]);
+        assert_eq!(rep.ambiguous().next().unwrap().candidates.len(), 2, "both twins listed");
         assert_eq!(rep.rows.len(), 2, "only real links become rows");
         // Unmatched/ambiguous series are recorded so they aren't retried every start.
-        let tried: Vec<(&str, &str, &str)> =
-            rep.attempts.iter().map(|a| (a.series.as_str(), a.result.as_str(), a.db_version.as_str())).collect();
-        assert!(tried.contains(&("zzz", "none", "2026-07-04")));
-        assert!(tried.contains(&("shared", "ambiguous", "2026-07-04")));
-        assert!(needs_match(&lib(&[], &rep.rows), false));
+        let tried: Vec<(&str, MatchResult, &str)> =
+            rep.attempts.iter().map(|a| (a.series.as_str(), a.result, a.db_version.as_str())).collect();
+        assert!(tried.contains(&("zzz", MatchResult::None, "2026-07-04")));
+        assert!(tried.contains(&("shared", MatchResult::Ambiguous, "2026-07-04")));
+        assert!(needs_match(&lib(&[], &rep.rows)));
         let after = lib_with(&[], &rep.rows, &rep.attempts);
-        assert!(!needs_match(&after, false));
+        assert!(!needs_match(&after));
         assert!(match_library(&after, &db, 6, None).attempts.is_empty(), "checked series aren't re-recorded");
     }
 
@@ -916,7 +856,7 @@ mod tests {
         let ids = stale_ids(l, &checks, ts, max_age);
         SyncOptions {
             refresh: Refresh::Stale { ids, max_age, checks },
-            rematch: needs_match(l, false),
+            rematch: needs_match(l),
             network: true,
             ..SyncOptions::default()
         }
@@ -954,175 +894,6 @@ mod tests {
         assert!(opts.rematch && !opts.asks_anilist());
     }
 
-    /// An `AniList` that answers title searches from a table (title → anime),
-    /// failing for titles it is told to, and counts the requests.
-    struct Search {
-        answers: HashMap<String, Vec<serde_json::Value>>,
-        fail: HashSet<String>,
-        /// Titles `AniList` answers with an error about the query.
-        refuse: HashSet<String>,
-        asked: std::cell::RefCell<Vec<String>>,
-        /// Ids asked about by id queries (airing refreshes, prequels).
-        ids: std::cell::RefCell<Vec<u64>>,
-    }
-
-    impl Search {
-        fn new(answers: &[(&str, Vec<serde_json::Value>)]) -> Self {
-            let answers = answers.iter().map(|(t, a)| ((*t).to_string(), a.clone())).collect();
-            Self {
-                answers,
-                fail: HashSet::new(),
-                refuse: HashSet::new(),
-                asked: std::cell::RefCell::default(),
-                ids: std::cell::RefCell::default(),
-            }
-        }
-    }
-
-    impl anilist::Http for Search {
-        fn post_json(&self, _url: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-            if let Some(ids) = body["variables"].get("ids") {
-                self.ids.borrow_mut().extend(serde_json::from_value::<Vec<u64>>(ids.clone()).unwrap_or_default());
-                return Ok(serde_json::json!({"data": {"Page": {"media": []}}}));
-            }
-            let q = body["variables"]["q"].as_str().expect("a title search").to_string();
-            self.asked.borrow_mut().push(q.clone());
-            if self.refuse.contains(&q) {
-                return Ok(serde_json::json!({"errors": [{"message": "Internal Server Error"}], "data": null}));
-            }
-            if self.fail.contains(&q) {
-                anyhow::bail!("AniList rate limit hit; try again in a minute");
-            }
-            let media = self.answers.get(&q).cloned().unwrap_or_default();
-            Ok(serde_json::json!({"data": {"Page": {"media": media}}}))
-        }
-    }
-
-    fn found(id: u64, romaji: &str, synonyms: &[&str]) -> serde_json::Value {
-        serde_json::json!({"id": id, "episodes": 12, "status": "FINISHED", "format": "TV", "seasonYear": 2026,
-            "title": {"romaji": romaji, "english": null, "native": null}, "synonyms": synonyms,
-            "nextAiringEpisode": null})
-    }
-
-    #[test]
-    fn a_search_links_only_an_exact_name() {
-        let l = lib(&[], &[]);
-        let keys = vec!["zzz".to_string()];
-        let title = l.get("zzz").unwrap().title.clone();
-        let one = |answers: Vec<serde_json::Value>| {
-            let http = Search::new(&[(title.as_str(), answers)]);
-            search_unmatched(&l, &http, &keys, "2026-10-04", 7)
-        };
-
-        // The title, or a synonym, normalizes to the series key: linked, with AniList's data.
-        for exact in [found(500, "Zzz", &[]), found(500, "Other", &["ZZZ"])] {
-            let rep = one(vec![found(9, "Zzz Movie", &[]), exact]);
-            assert_eq!(rep.rows.len(), 1, "{rep:?}");
-            assert_eq!((rep.rows[0].series.as_str(), rep.rows[0].anilist), ("zzz", Some(500)));
-            assert_eq!((rep.rows[0].episodes, rep.rows[0].refreshed_at), (Some(12), Some(7)));
-            assert!(rep.errors.is_empty() && rep.attempts.is_empty());
-            assert!(rep.rows[0].search_linked, "marked as a search's link");
-        }
-
-        // Close but not the same name, e.g. another season: nothing linked.
-        let rep = one(vec![found(1, "Zzz 2nd Season", &[]), found(2, "Zzz Zero", &[])]);
-        assert!(rep.rows.is_empty(), "{rep:?}");
-        assert_eq!(rep.attempts.len(), 1);
-        assert_eq!((rep.attempts[0].result.as_str(), rep.attempts[0].db_version.as_str()), (SEARCH_NONE, "2026-10-04"));
-
-        // Two anime by the same name: not linked, and listed.
-        let rep = one(vec![found(1, "Zzz", &[]), found(2, "Zzz", &[])]);
-        assert!(rep.rows.is_empty());
-        assert_eq!(rep.attempts[0].result, SEARCH_AMBIGUOUS);
-        assert_eq!(rep.ambiguous.len(), 1);
-        assert!(rep.ambiguous[0].1.iter().any(|d| d.contains("anilist:1")) && rep.ambiguous[0].1.len() == 2);
-    }
-
-    /// Runs a sync against the sample offline database with `opts`, `zzz`
-    /// being the series the database has no match for.
-    fn sync_with_search(l: &Library, http: &Search, opts: SyncOptions) -> SyncResult {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(OfflineDb::path(dir.path()), offline::tests::SAMPLE).unwrap();
-        sync(l, dir.path(), Some(http), &SyncOptions { rematch: true, ..opts }, 9)
-    }
-
-    #[test]
-    fn a_sync_searches_unmatched_series_only_when_asked() {
-        let l = lib(&[], &[]);
-        let title = l.get("zzz").unwrap().title.clone();
-        let http = Search::new(&[(title.as_str(), vec![found(500, "Zzz", &[])])]);
-
-        // On: zzz is looked up by title and linked; the others (matched, or
-        // ambiguous in the database) are not asked about.
-        let res = sync_with_search(&l, &http, SyncOptions { network: true, search: true, ..SyncOptions::default() });
-        assert_eq!(*http.asked.borrow(), std::slice::from_ref(&title));
-        assert!(res.errors.is_empty(), "{:?}", res.errors);
-        assert!(res.rows.iter().any(|r| r.series == "zzz" && r.anilist == Some(500)));
-        assert!(res.attempts.iter().all(|a| a.series != "zzz"), "no plain \"none\" that would unlink it");
-
-        // Off (the default), or without network: not a single request, and zzz is just unmatched.
-        for opts in [
-            SyncOptions { network: true, ..SyncOptions::default() },
-            SyncOptions { search: true, ..SyncOptions::default() },
-        ] {
-            let http = Search::new(&[(title.as_str(), vec![found(500, "Zzz", &[])])]);
-            let res = sync_with_search(&l, &http, opts);
-            assert!(http.asked.borrow().is_empty());
-            assert!(res.rows.iter().all(|r| r.series != "zzz"));
-            assert!(res.attempts.iter().any(|a| a.series == "zzz" && a.result == "none"));
-        }
-    }
-
-    /// A series searched in vain is not searched again for the same database.
-    #[test]
-    fn a_series_is_searched_once_per_database() {
-        let l = lib(&[], &[]);
-        let title = l.get("zzz").unwrap().title.clone();
-        let http = Search::new(&[]);
-        let opts = || SyncOptions { network: true, search: true, ..SyncOptions::default() };
-        let res = sync_with_search(&l, &http, opts());
-        assert_eq!(http.asked.borrow().len(), 1);
-        let attempt = res.attempts.iter().find(|a| a.series == "zzz").unwrap().clone();
-        assert_eq!(attempt.result, SEARCH_NONE, "replaces the plain attempt");
-        assert_eq!(res.attempts.iter().filter(|a| a.series == "zzz").count(), 1);
-
-        // Searched in vain, it still counts as unmatched in the report.
-        let db = OfflineDb::from_slice(offline::tests::SAMPLE.as_bytes()).unwrap();
-        let mut rep = match_library(&l, &db, 9, None);
-        assert!(rep.unmatched.contains(&"zzz".to_string()));
-        add_title_search(&mut rep, &l, &Search::new(&[]), "v", 9, false);
-        assert!(rep.unmatched.contains(&"zzz".to_string()), "{:?}", rep.unmatched);
-        let linked = Search::new(&[(title.as_str(), vec![found(500, "Zzz", &[])])]);
-        let mut rep = match_library(&l, &db, 9, None);
-        add_title_search(&mut rep, &l, &linked, "v", 9, false);
-        assert!(!rep.unmatched.contains(&"zzz".to_string()), "linked ones are matched");
-
-        // The attempt is in the cache now: the library knows, and nothing is asked.
-        let l = lib_with(&[], &[], &[attempt]);
-        assert!(l.get("zzz").unwrap().searched() && l.get("zzz").unwrap().match_checked);
-        let http = Search::new(&[(title.as_str(), vec![found(500, "Zzz", &[])])]);
-        let res = sync_with_search(&l, &http, opts());
-        assert!(http.asked.borrow().is_empty());
-        assert!(res.rows.iter().all(|r| r.series != "zzz"));
-        // A plain "no match" is not a search.
-        let plain =
-            MatchAttempt { series: "zzz".into(), db_version: "2026-07-04".into(), at: 1, result: "none".into() };
-        assert!(!lib_with(&[], &[], &[plain]).get("zzz").unwrap().searched());
-    }
-
-    /// A failed search is reported, leaves no attempt, and doesn't fail the sync.
-    #[test]
-    fn a_failed_search_is_reported_and_asked_again() {
-        let l = lib(&[], &[]);
-        let title = l.get("zzz").unwrap().title.clone();
-        let mut http = Search::new(&[]);
-        http.fail.insert(title);
-        let res = sync_with_search(&l, &http, SyncOptions { network: true, search: true, ..SyncOptions::default() });
-        assert!(res.errors.iter().any(|e| e.starts_with("AniList: ") && e.contains("rate limit")), "{:?}", res.errors);
-        assert!(res.attempts.iter().all(|a| a.result != SEARCH_NONE), "{:?}", res.attempts);
-        assert!(res.rows.iter().all(|r| r.series != "zzz"));
-    }
-
     #[test]
     fn plan_searches_only_with_the_key_and_the_network() {
         let l = lib(&[], &[]);
@@ -1154,98 +925,11 @@ mod tests {
         assert!(l.get("zzz").unwrap().search_linked());
         let rep = match_library(&l, &db, 9, None);
         assert!(rep.attempts.iter().all(|a| a.series != "zzz"), "{:?}", rep.attempts);
-        assert!(!rep.unmatched.contains(&"zzz".to_string()) && rep.rows.iter().all(|r| r.series != "zzz"));
+        assert!(rep.unlinked.iter().all(|u| u.series != "zzz") && rep.rows.iter().all(|r| r.series != "zzz"));
 
         // The same row without that mark is undone, as before.
         let rep = match_library(&lib(&[], &[linked(false)]), &db, 9, None);
-        assert!(rep.attempts.iter().any(|a| a.series == "zzz" && a.result == "none"));
-    }
-
-    /// `force` asks about series searched before again, but those not yet
-    /// searched go first, so repeating it gets past the cap.
-    #[test]
-    fn forced_searches_get_past_the_cap() {
-        let cfg = cfg();
-        let files: Vec<FileRow> =
-            (0..SEARCH_CAP + 5).map(|i| FileRow::test("dl", &format!("[A] Show {i:02} Name - 01.mkv"))).collect();
-        let none = |l: &Library| MatchReport {
-            unmatched: l.series.iter().map(|s| s.key.clone()).collect(),
-            ..MatchReport::default()
-        };
-        let l = Library::build(&cfg, &[], &Index::new(&cfg, files.clone(), MetaCache::default()));
-        let (mut rep, http) = (none(&l), Search::new(&[]));
-        add_title_search(&mut rep, &l, &http, "v", 1, true);
-        let first = http.asked.borrow().clone();
-        assert_eq!(first.len(), SEARCH_CAP);
-
-        // What the first run recorded is in the cache now.
-        let attempts = rep.attempts.clone();
-        let meta = MetaCache { attempts, ..MetaCache::default() };
-        let l = Library::build(&cfg, &[], &Index::new(&cfg, files, meta));
-        let (mut rep, http) = (none(&l), Search::new(&[]));
-        add_title_search(&mut rep, &l, &http, "v", 2, true);
-        let second = http.asked.borrow().clone();
-        let unsearched: Vec<_> = l.series.iter().filter(|s| !s.searched()).map(|s| s.title.clone()).collect();
-        assert_eq!(unsearched.len(), 5);
-        assert!(second[..5].iter().all(|t| unsearched.contains(t)), "{second:?}");
-    }
-
-    fn anime(id: u64, format: &str, episodes: Option<u32>, status: &str) -> anilist::Media {
-        serde_json::from_value(serde_json::json!({"id": id, "episodes": episodes, "status": status, "format": format,
-            "title": {"romaji": "Zzz"}, "nextAiringEpisode": null}))
-        .unwrap()
-    }
-
-    /// A same-named anime that can't hold the episodes on disk (a movie for a
-    /// TV series) is never linked; among those that can, a TV entry ranks first.
-    #[test]
-    fn searches_check_episodes_and_format() {
-        let id = |p: SearchPick<'_>| match p {
-            SearchPick::Unique(m) => Some(m.id),
-            SearchPick::None => None,
-            SearchPick::Ambiguous(v) => panic!("ambiguous: {v:?}"),
-        };
-        let movie = anime(1, "MOVIE", Some(1), "FINISHED");
-        let tv24 = anime(2, "TV", Some(24), "FINISHED");
-        let tv12 = anime(3, "TV", Some(12), "FINISHED");
-        let airing = anime(4, "TV", Some(12), "RELEASING");
-        let unknown = anime(5, "ONA", None, "FINISHED");
-        // Episodes 1 to 24 on disk.
-        let pick = |found: &[anilist::Media]| id(pick_search_match(&["zzz"], 24, 24, found));
-        assert_eq!(pick(std::slice::from_ref(&movie)), None, "a movie can't hold 24 episodes");
-        assert_eq!(pick(&[movie.clone(), tv24.clone()]), Some(2));
-        assert_eq!(pick(std::slice::from_ref(&tv12)), None, "finished with 12");
-        assert_eq!(pick(&[tv12, airing]), Some(4), "still airing: its count may grow");
-        assert_eq!(pick(std::slice::from_ref(&unknown)), Some(5), "unknown length fits");
-        // One episode on disk: the TV entry beats a same-named movie.
-        assert_eq!(id(pick_search_match(&["zzz"], 1, 1, &[movie.clone(), tv24])), Some(2));
-        assert_eq!(id(pick_search_match(&["zzz"], 1, 1, &[movie])), Some(1));
-    }
-
-    /// With title search on, a series the database had no match for and
-    /// that hasn't been searched makes an automatic sync match (and search).
-    #[test]
-    fn searches_due_trigger_a_match() {
-        let attempt = |series: &str, result: &str| MatchAttempt {
-            series: series.into(),
-            db_version: "v".into(),
-            at: 1,
-            result: result.into(),
-        };
-        // Every other series has been dealt with.
-        let lib_after = |zzz: &str| {
-            let mut attempts: Vec<MatchAttempt> =
-                ["one piece", "grand blue s3", "shared"].iter().map(|k| attempt(k, SEARCH_NONE)).collect();
-            attempts.push(attempt("zzz", zzz));
-            lib_with(&[], &[], &attempts)
-        };
-        let due = lib_after("none");
-        assert!(due.get("zzz").unwrap().search_due());
-        assert!(!needs_match(&due, false), "without search, a checked series is done");
-        assert!(needs_match(&due, true));
-        for done in [SEARCH_NONE, SEARCH_AMBIGUOUS, "ambiguous"] {
-            assert!(!needs_match(&lib_after(done), true), "{done}");
-        }
+        assert!(rep.attempts.iter().any(|a| a.series == "zzz" && a.result == MatchResult::None));
     }
 
     /// A newer database with several entries for a series' name doesn't
@@ -1262,21 +946,7 @@ mod tests {
         };
         let rep = match_library(&lib(&[], &[linked]), &db, 9, None);
         assert!(rep.attempts.iter().all(|a| a.series != "shared"), "{:?}", rep.attempts);
-        assert!(rep.ambiguous.iter().all(|(k, _)| k != "shared"));
-    }
-
-    /// A series a sync just linked by title is refreshed in the same sync,
-    /// not taken for one being unlinked.
-    #[test]
-    fn search_links_are_refreshed_in_the_same_sync() {
-        let follow = Event::new(1, "d", EventBody::status("zzz", SeriesStatus::Following, None));
-        let l = lib(&[follow], &[]);
-        let title = l.get("zzz").unwrap().title.clone();
-        let http = Search::new(&[(title.as_str(), vec![found(500, "Zzz", &[])])]);
-        let opts = SyncOptions { network: true, search: true, ..SyncOptions::requested(None) };
-        let res = sync_with_search(&l, &http, opts);
-        assert!(res.rows.iter().any(|r| r.series == "zzz" && r.anilist == Some(500)));
-        assert!(http.ids.borrow().contains(&500), "asked about by id too: {:?}", http.ids.borrow());
+        assert!(rep.unlinked.iter().all(|u| u.series != "shared"));
     }
 
     /// A search link is only one while it is an automatic link marked as
@@ -1301,138 +971,32 @@ mod tests {
         assert_eq!((op.anilist, op.search_linked), (Some(21), false));
     }
 
-    /// A series a title search found ambiguous stays listed as ambiguous on
-    /// later matches, and a forced search asks about it again.
+    /// A sync with title searches to do asks `AniList`, even with nothing else.
     #[test]
-    fn earlier_ambiguous_searches_stay_listed() {
+    fn searches_ask_anilist() {
+        assert!(SyncOptions { search: true, ..SyncOptions::default() }.asks_anilist());
+        assert!(!SyncOptions { rematch: true, ..SyncOptions::default() }.asks_anilist());
+    }
+
+    /// A database result that differs from the one on record is recorded; a
+    /// title search's answer stands for "none" (it searched because of one).
+    #[test]
+    fn changed_database_results_are_recorded() {
         let db = OfflineDb::from_slice(offline::tests::SAMPLE.as_bytes()).unwrap();
-        let earlier =
-            MatchAttempt { series: "zzz".into(), db_version: "v".into(), at: 1, result: SEARCH_AMBIGUOUS.into() };
-        let l = lib_with(&[], &[], &[earlier]);
-        let rep = match_library(&l, &db, 9, None);
-        assert!(!rep.unmatched.contains(&"zzz".to_string()));
-        assert!(rep.ambiguous.iter().any(|(k, c)| k == "zzz" && c == &[SEARCHED_AMBIGUOUS_NOTE]));
-        assert_eq!(rep.searched_ambiguous, ["zzz"]);
-
-        // Not again without `force`; with it, the new answer replaces the listing.
-        let http = Search::new(&[]);
-        let mut again = match_library(&l, &db, 9, None);
-        add_title_search(&mut again, &l, &http, "v", 9, false);
-        assert!(http.asked.borrow().is_empty());
-        let mut forced = match_library(&l, &db, 9, None);
-        add_title_search(&mut forced, &l, &http, "v", 9, true);
-        assert_eq!(http.asked.borrow().len(), 1);
-        assert!(forced.ambiguous.iter().all(|(k, _)| k != "zzz"), "found nothing this time");
-        assert!(forced.unmatched.contains(&"zzz".to_string()));
-        assert!(forced.attempts.iter().any(|a| a.series == "zzz" && a.result == SEARCH_NONE));
-    }
-
-    /// `AniList` answering one title with an error marks just that series as
-    /// searched; the others are still searched.
-    #[test]
-    fn an_error_for_one_title_does_not_stop_the_search() {
-        let l = lib(&[], &[]);
-        let keys: Vec<String> = ["grand blue s3", "zzz"].map(String::from).to_vec();
-        let mut http = Search::new(&[]);
-        http.refuse.insert(l.get("grand blue s3").unwrap().title.clone());
-        let rep = search_unmatched(&l, &http, &keys, "v", 1);
-        assert_eq!(http.asked.borrow().len(), 2, "went on to the next title");
-        let results: Vec<(&str, &str)> = rep.attempts.iter().map(|a| (a.series.as_str(), a.result.as_str())).collect();
-        assert_eq!(results, [("grand blue s3", SEARCH_NONE), ("zzz", SEARCH_NONE)]);
-        assert_eq!((rep.errors.len(), rep.notes.len(), rep.skipped), (0, 1, 0));
-        assert!(rep.notes[0].contains("Internal Server Error"), "{:?}", rep.notes);
-
-        // In a sync it is a note, not a failure (which would fail `meta refresh`).
-        let mut http = Search::new(&[]);
-        http.refuse.insert(l.get("zzz").unwrap().title.clone());
-        let res = sync_with_search(&l, &http, SyncOptions { network: true, search: true, ..SyncOptions::default() });
-        assert!(res.errors.is_empty(), "{:?}", res.errors);
-        assert_eq!(res.notes.len(), 1, "{:?}", res.notes);
-    }
-
-    /// Series that aren't on disk and aren't tracked aren't searched (their
-    /// titles aren't sent, and they don't use up the cap).
-    #[test]
-    fn absent_untracked_series_are_not_searched() {
-        let watched = Event::new(
-            1,
-            "d",
-            EventBody::watched("gone show", crate::model::ItemKey::episode(crate::model::EpNo::new(1))),
-        );
-        let l = lib(&[watched], &[]);
-        let gone = l.get("gone show").unwrap();
-        assert!(!gone.present() && gone.status == SeriesStatus::Untracked);
-        let mut rep = MatchReport { unmatched: vec!["gone show".into(), "zzz".into()], ..MatchReport::default() };
-        let http = Search::new(&[]);
-        add_title_search(&mut rep, &l, &http, "v", 1, true);
-        assert_eq!(*http.asked.borrow(), [l.get("zzz").unwrap().title.clone()]);
-    }
-
-    /// Without numbered episodes (a movie file, say) no format is preferred:
-    /// a same-named movie and TV series are ambiguous.
-    #[test]
-    fn no_episodes_prefer_no_format() {
-        let found = [anime(1, "MOVIE", Some(1), "FINISHED"), anime(2, "TV", Some(12), "FINISHED")];
-        assert!(matches!(pick_search_match(&["zzz"], 0, 0, &found), SearchPick::Ambiguous(v) if v.len() == 2));
-    }
-
-    /// A season is an anime of its own: the season 1 key doesn't take season 2's entry.
-    #[test]
-    fn seasons_are_told_apart() {
-        let s2 = found(7, "Frieren 2nd Season", &[]);
-        let keys = [series_key("Frieren"), series_key("Frieren 2nd Season")];
-        let media: Vec<anilist::Media> =
-            serde_json::from_value(serde_json::json!([found(1, "Frieren", &[]), s2])).unwrap();
-        let pick = |key: &str| match pick_search_match(&[key], 0, 0, &media) {
-            SearchPick::Unique(m) => m.id,
-            other => panic!("{other:?}"),
+        let attempt = |series: &str, result| MatchAttempt {
+            series: series.into(),
+            db_version: "2026-07-04".into(),
+            at: 1,
+            result,
         };
-        assert_eq!((pick(&keys[0]), pick(&keys[1])), (1, 7));
-        assert_eq!(pick_search_match(&["frieren s3"], 0, 0, &media), SearchPick::None);
-    }
-
-    /// Titles are searched one request each, only up to the cap; the failure
-    /// of a request stops the rest and leaves no attempt for what wasn't answered.
-    #[test]
-    fn searches_stop_at_the_cap_and_at_a_failure() {
-        let l = lib(&[], &[]);
-        let keys: Vec<String> = ["one piece", "grand blue s3", "shared", "zzz"].map(String::from).to_vec();
-        let titles: Vec<String> = keys.iter().map(|k| l.get(k).unwrap().title.clone()).collect();
-
-        // Nothing found anywhere: one attempt each, one request each.
-        let http = Search::new(&[]);
-        let rep = search_unmatched(&l, &http, &keys, "v", 1);
-        assert_eq!(*http.asked.borrow(), titles);
-        assert_eq!(rep.attempts.len(), 4);
-        assert_eq!(rep.skipped, 0);
-
-        // The second request fails: the first is answered, the others wait.
-        let mut http = Search::new(&[]);
-        http.fail.insert(titles[1].clone());
-        let rep = search_unmatched(&l, &http, &keys, "v", 1);
-        assert_eq!(http.asked.borrow().len(), 2, "stopped after the failure");
-        assert_eq!(rep.attempts.iter().map(|a| a.series.as_str()).collect::<Vec<_>>(), [keys[0].as_str()]);
-        assert_eq!((rep.errors.len(), rep.skipped), (1, 3));
-
-        // Unknown keys are ignored.
-        let http = Search::new(&[]);
-        let rep = search_unmatched(&l, &http, &["no such series".to_string()], "v", 1);
-        assert!(http.asked.borrow().is_empty() && rep.attempts.is_empty());
-    }
-
-    #[test]
-    fn the_search_cap_is_respected() {
-        // More series than the cap, built from files.
-        let cfg = cfg();
-        let files: Vec<FileRow> =
-            (0..SEARCH_CAP + 5).map(|i| FileRow::test("dl", &format!("[A] Show {i:02} Name - 01.mkv"))).collect();
-        let l = Library::build(&cfg, &[], &Index::new(&cfg, files, MetaCache::default()));
-        let keys: Vec<String> = l.series.iter().map(|s| s.key.clone()).collect();
-        assert!(keys.len() > SEARCH_CAP);
-        let http = Search::new(&[]);
-        let rep = search_unmatched(&l, &http, &keys, "v", 1);
-        assert_eq!(http.asked.borrow().len(), SEARCH_CAP);
-        assert_eq!((rep.attempts.len(), rep.skipped), (SEARCH_CAP, keys.len() - SEARCH_CAP));
+        // "shared" is ambiguous in the database, "zzz" unknown to it.
+        let l = lib_with(&[], &[], &[attempt("shared", MatchResult::None), attempt("zzz", MatchResult::SearchNone)]);
+        let rep = match_library(&l, &db, 9, None);
+        let recorded: Vec<(&str, MatchResult)> = rep.attempts.iter().map(|a| (a.series.as_str(), a.result)).collect();
+        assert_eq!(recorded, [("shared", MatchResult::Ambiguous)]);
+        // The search's answer stands for zzz, and is what it is listed as.
+        let zzz = rep.unlinked.iter().find(|u| u.series == "zzz").unwrap();
+        assert_eq!(zzz.result, MatchResult::SearchNone);
     }
 
     /// The planned update downloads from the configured source, or from the
@@ -1445,6 +1009,8 @@ mod tests {
         let own = Config { offline_db_url: Some("https://example.org/db.json".into()), ..cfg() };
         let planned = plan(&l, &own, &Checks::new(), &Request::All, 100).unwrap();
         assert_eq!(planned.offline_urls, ["https://example.org/db.json"]);
+        // Options made without a plan download from the built-in sources.
+        assert_eq!(SyncOptions::requested(None).offline_urls, offline::source_urls(None));
     }
 
     /// A series matched by the sync itself is refreshed from `AniList` in the
@@ -1531,7 +1097,7 @@ mod tests {
     }
 
     /// One download root, `dl`.
-    fn cfg() -> Config {
+    pub(super) fn cfg() -> Config {
         Config { roots: vec![Root::test("dl", "/dl", RootKind::Ongoing)], ..Config::default() }
     }
 

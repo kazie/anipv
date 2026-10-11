@@ -1,20 +1,21 @@
 //! Application context shared by the CLI and the TUI.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, Paths};
-use std::collections::HashSet;
-
 use crate::events::{CachedLog, EventBody, EventLog, Recorded};
 use crate::index::Db;
 use crate::index::FileRow;
-use crate::index::classify::{Classified, FileClass, classify_row, classify_rows};
-use crate::index::db::{OFFLINE_DB_VERSION, ScanStats, SeriesMeta};
+use crate::index::classify::{Classified, FileClass, classify_rows};
+use crate::index::db::{AnilistCheck, MatchAttempt, OFFLINE_DB_VERSION, ScanStats, SeriesMeta};
 use crate::index::scan::scan_root;
 use crate::library::{Library, Series};
 use crate::model::{ItemKey, SeriesStatus, WatchState};
+use crate::mpv::{Outcome, PlayFile, outcome};
 
 /// Start of the message for a failed event log write.
 pub const WRITE_FAILED: &str = "could not write event log";
@@ -49,62 +50,64 @@ pub struct Index {
 pub struct MetaCache {
     /// Cached metadata rows.
     pub rows: Vec<SeriesMeta>,
-    /// "No match" results for the current offline database version.
-    pub attempts: Vec<crate::index::db::MatchAttempt>,
+    /// The last match of each series that linked nothing, by the offline
+    /// database (with the version it was made with) or by title.
+    pub attempts: Vec<MatchAttempt>,
+    /// The current offline database version (`lastUpdate`, `""` without one):
+    /// an attempt made with another version is not current.
+    pub db_version: String,
     /// `AniList` prequel ids by `AniList` id.
-    pub prequels: std::collections::HashMap<u64, Vec<u64>>,
+    pub prequels: HashMap<u64, Vec<u64>>,
     /// When `AniList` was last asked about each id, and whether it knew it.
-    pub anilist_checks: std::collections::HashMap<u64, crate::index::db::AnilistCheck>,
+    pub anilist_checks: HashMap<u64, AnilistCheck>,
 }
 
 impl Index {
     /// An index of `files`, classified under `cfg` (the configuration the
     /// library is then built with), and `meta`.
     pub fn new(cfg: &Config, files: Vec<FileRow>, meta: MetaCache) -> Self {
-        Self { classes: classify_rows(cfg, &files), files, meta }
+        Self { classes: classify_rows(cfg, &files, |_| None), files, meta }
     }
 
     /// [`Index::new`], reusing the classifications of `old` (made under the
     /// same `cfg`) for files it has too: after a scan, only new files are parsed.
     fn with_known(cfg: &Config, files: Vec<FileRow>, meta: MetaCache, old: &Self) -> Self {
-        let known: std::collections::HashMap<(&str, &std::path::Path), &FileClass> =
+        let known: HashMap<(&str, &Path), &FileClass> =
             old.files.iter().zip(&old.classes).map(|(f, c)| ((f.root.as_str(), f.rel.as_path()), c)).collect();
-        let kinds: std::collections::HashMap<&str, crate::config::RootKind> =
-            cfg.roots.iter().map(|r| (r.name.as_str(), r.kind)).collect();
-        let classes = files
-            .iter()
-            .map(|f| match known.get(&(f.root.as_str(), f.rel.as_path())) {
-                Some(&c) => c.clone(),
-                None => classify_row(cfg, &kinds, f),
-            })
-            .collect();
+        let classes = classify_rows(cfg, &files, |f| known.get(&(f.root.as_str(), f.rel.as_path())).copied());
         Self { files, classes, meta }
-    }
-
-    /// All indexed files.
-    pub fn files(&self) -> &[FileRow] {
-        &self.files
     }
 
     /// Each file under a configured root with its classification.
     pub fn classified(&self) -> impl Iterator<Item = (&FileRow, crate::config::RootKind, &Classified)> {
         self.files.iter().zip(&self.classes).filter_map(|(row, c)| c.as_ref().map(|(kind, c)| (row, *kind, c)))
     }
+}
 
-    /// Move metadata rows cached under legacy keys to the current ones, as
-    /// [`Db::rekey_legacy`] does in the database.
-    fn rekey_legacy(&mut self, pairs: &[(&str, &str)]) {
-        for &(old, new) in pairs {
-            let taken = self.meta.rows.iter().any(|m| m.series == new);
-            self.meta.rows.retain_mut(|m| {
-                if m.series != old {
-                    return true;
-                }
-                m.series = new.to_string();
-                !taken
-            });
-            self.meta.attempts.retain(|a| a.series != old);
-        }
+/// A library with the index and event log it was built from, so rebuilding
+/// it after a write reads and classifies nothing again (see [`Ctx::loaded`]).
+pub struct Session {
+    /// The cached index.
+    pub index: Index,
+    /// The event log as read.
+    pub log: CachedLog,
+    /// The library.
+    pub lib: Library,
+}
+
+impl Session {
+    /// Keep events just recorded, without reading the log again.
+    pub fn add(&mut self, ctx: &Ctx, recorded: Recorded) {
+        ctx.log.merge(&mut self.log, recorded);
+    }
+
+    /// Rebuild the library with the events recorded and metadata cached since
+    /// (anything recorded but not [`Session::add`]ed is read from the log).
+    pub fn rebuild(&mut self, ctx: &Ctx) -> Result<()> {
+        ctx.log.refresh(&mut self.log)?;
+        self.index.meta = ctx.meta_cache()?;
+        self.lib = ctx.migrated_library(&mut self.index, &mut self.log)?;
+        Ok(())
     }
 }
 
@@ -156,13 +159,26 @@ impl Ctx {
     /// Any [`Library::warnings`] are printed to stderr: only the CLI builds the
     /// library this way (the TUI uses [`Ctx::library_completed`] and shows
     /// them itself).
-    #[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
     pub fn library(&self) -> Result<Library> {
-        let lib = self.migrated_library(&mut self.index()?, &mut self.log.load_cached()?)?;
-        for w in &lib.warnings {
+        Ok(self.loaded()?.lib)
+    }
+
+    /// [`Ctx::library`], with the index and event log it was built from.
+    #[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
+    pub fn loaded(&self) -> Result<Session> {
+        let s = self.session()?;
+        for w in &s.lib.warnings {
             eprintln!("warning: {w}");
         }
-        Ok(lib)
+        Ok(s)
+    }
+
+    /// [`Ctx::loaded`] without printing the warnings.
+    pub fn session(&self) -> Result<Session> {
+        let mut index = self.index()?;
+        let mut log = self.log.load_cached()?;
+        let lib = self.migrated_library(&mut index, &mut log)?;
+        Ok(Session { index, log, lib })
     }
 
     /// The cached index (files and metadata), which only changes on scans and
@@ -179,17 +195,20 @@ impl Ctx {
     }
 
     /// The metadata part of [`Ctx::index`], for after metadata updates.
+    ///
+    /// Every match attempt is read, with the current offline database version
+    /// (a database without a `lastUpdate` is version `""`): one made with an
+    /// older version is not current (see [`crate::library::LastMatch::current`]),
+    /// so the series is matched against the newer database again.
     pub fn meta_cache(&self) -> Result<MetaCache> {
-        // Attempts made against an older offline database don't count: a newer
-        // database may know the series, so it gets matched again.
-        let version = self.db.get_kv(OFFLINE_DB_VERSION)?;
-        let attempts =
-            self.db.match_attempts()?.into_iter().filter(|a| Some(&a.db_version) == version.as_ref()).collect();
-        Ok(MetaCache {
-            rows: self.db.all_meta()?,
-            attempts,
-            prequels: self.db.prequels()?,
-            anilist_checks: self.db.anilist_checks()?,
+        self.db.snapshot(|db| {
+            Ok(MetaCache {
+                rows: db.all_meta()?,
+                attempts: db.match_attempts()?,
+                prequels: db.prequels()?,
+                anilist_checks: db.anilist_checks()?,
+                db_version: db.get_kv(OFFLINE_DB_VERSION)?.unwrap_or_default(),
+            })
         })
     }
 
@@ -229,15 +248,20 @@ impl Ctx {
     /// library is returned anyway with a message in [`Library::warnings`]: it
     /// already reads those keys and rows as the current ones, and the next
     /// build tries again.
+    ///
+    /// Log files that could not be read are a warning each, and make the
+    /// library a [`Library::partial_history`] (no aliases are recorded then).
     pub fn migrated_library(&self, index: &mut Index, log: &mut CachedLog) -> Result<Library> {
         let mut lib = Library::build(&self.cfg, log.events(), index);
+        let mut warnings: Vec<String> =
+            log.unreadable().iter().map(|e| format!("event log file left out, it could not be read: {e}")).collect();
+        lib.partial_history = !warnings.is_empty();
         let legacy = lib.legacy_keys();
-        let mut warnings = Vec::new();
         if !legacy.is_empty() {
             // Under the legacy mapping these aliases change nothing, so the
             // library just built stays as it is, and a failed write (e.g. a
             // read-only events folder) only means the next build tries again.
-            match self.log.append(lib.legacy_aliases()) {
+            match self.log.append(if lib.partial_history { Vec::new() } else { lib.legacy_aliases() }) {
                 Ok(recorded) => self.log.merge(log, recorded),
                 Err(e) => warnings.push(format!("could not record the current series keys in the event log: {e:#}")),
             }
@@ -256,9 +280,14 @@ impl Ctx {
                 .map(|(old, new)| (old.as_str(), new.as_str()))
                 .collect();
             if !pairs.is_empty() {
+                // The library already reads them as moved; the index reads
+                // the moved rows again (if another process hasn't moved them).
                 match self.db.rekey_legacy(pairs.iter().copied()) {
-                    // The library already reads them as moved.
-                    Ok(_) => index.rekey_legacy(&pairs),
+                    Ok(0) => {}
+                    Ok(_) => match self.meta_cache() {
+                        Ok(meta) => index.meta = meta,
+                        Err(e) => warnings.push(format!("could not read the moved metadata again: {e:#}")),
+                    },
                     Err(e) => {
                         warnings.push(format!("could not move cached metadata to the current series keys: {e:#}"));
                     }
@@ -333,15 +362,21 @@ impl Ctx {
         self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep }])
     }
 
-    /// Mark followed series that are finished and fully watched as completed.
-    /// Returns the recorded events and the series' titles.
+    /// Mark followed series that are finished and fully watched as completed
+    /// (none while part of the history is unreadable, see
+    /// [`Library::partial_history`]). Returns the recorded events and the
+    /// series' titles.
     ///
     /// Due after anything that changes watch state, statuses or metadata: the
     /// TUI runs it on every reload ([`Ctx::library_completed`], which also
     /// returns the library with them completed), the CLI after every command
     /// that writes.
     pub fn auto_complete(&self, lib: &Library) -> Result<(Recorded, Vec<String>)> {
-        let done: Vec<&crate::library::Series> = lib.series.iter().filter(|s| s.should_auto_complete()).collect();
+        let done: Vec<&Series> = if lib.partial_history {
+            Vec::new()
+        } else {
+            lib.series.iter().filter(|s| s.should_auto_complete()).collect()
+        };
         let recorded = self.log.append(done.iter().map(|s| EventBody::SeriesStatus {
             series: s.key.clone(),
             status: SeriesStatus::Completed,
@@ -368,7 +403,7 @@ impl Ctx {
         let items: Vec<&ItemKey> = items.iter().filter(|&k| seen.insert(k) && changes(k)).collect();
         self.record(items.iter().map(|&item| {
             let (series, item, file) =
-                (s.key.clone(), item.clone(), s.item(item).and_then(super::library::Item::file_name));
+                (s.key.clone(), item.clone(), s.item(item).and_then(crate::library::Item::file_name));
             if watched {
                 EventBody::Watched { series, item, file }
             } else {
@@ -389,10 +424,14 @@ pub fn scan_all(
         bail!("no media roots configured; run `anipv init` first");
     }
     let names: Vec<&str> = cfg.roots.iter().map(|r| r.name.as_str()).collect();
+    // `--root` names a root in any case, but an exact name wins (roots named
+    // `Anime` and `anime` in a hand-written config).
+    let exact = only.is_some_and(|o| names.contains(&o));
+    let picked = |name: &str| only.is_none_or(|o| if exact { o == name } else { o.eq_ignore_ascii_case(name) });
     db.retain_roots(&names)?;
     let mut out = Vec::new();
     for root in &cfg.roots {
-        if only.is_some_and(|o| !o.eq_ignore_ascii_case(&root.name)) {
+        if !picked(&root.name) {
             continue;
         }
         let ts = crate::events::now();
@@ -421,7 +460,7 @@ pub struct QueueEntry {
     /// Item to play.
     pub item: ItemKey,
     /// File chosen for it.
-    pub file: std::path::PathBuf,
+    pub file: PathBuf,
 }
 
 impl Ctx {
@@ -429,17 +468,17 @@ impl Ctx {
     ///
     /// Each file is played once, even if the queue holds several of its
     /// episodes (multi-episode files): watching it marks all of them.
-    pub fn play_files(&self, lib: &Library, queue: &[QueueEntry]) -> Vec<crate::mpv::PlayFile> {
-        let mut seen = std::collections::HashSet::new();
+    pub fn play_files(&self, lib: &Library, queue: &[QueueEntry]) -> Vec<PlayFile> {
+        let mut seen = HashSet::new();
         queue
             .iter()
             .filter(|q| seen.insert(&q.file))
             .map(|q| {
                 let start = lib.get(&q.series).and_then(|s| s.item(&q.item)).and_then(|i| match i.state {
-                    crate::model::WatchState::Started { pos, .. } => Some(pos),
+                    WatchState::Started { pos, .. } => Some(pos),
                     _ => None,
                 });
-                crate::mpv::PlayFile { path: q.file.clone(), start }
+                PlayFile { path: q.file.clone(), start }
             })
             .collect()
     }
@@ -447,7 +486,7 @@ impl Ctx {
     /// Fresh IPC socket path for a new mpv instance (its directory is created
     /// by [`Paths::ensure`]). When that path is too long for a Unix socket, it
     /// is in a private `anipv-<uid>` directory in the temporary directory instead.
-    pub fn socket_path(&self) -> std::path::PathBuf {
+    pub fn socket_path(&self) -> PathBuf {
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
         let name = format!("anipv-{}-{n}.sock", std::process::id());
         let path = self.paths.runtime_dir.join(&name);
@@ -457,33 +496,31 @@ impl Ctx {
         short_socket_dir(&self.paths.runtime_dir).map_or(path, |dir| dir.join(name))
     }
 
-    /// Record the result of a finished file; returns what was recorded
-    /// (series, items, outcome, and the events).
+    /// Record the result of a finished file, merging what is recorded into
+    /// `log`. Returns a label for what was played (see [`Library::label`])
+    /// and the outcome.
     pub fn record_playback(
         &self,
         lib: &Library,
-        path: &std::path::Path,
+        log: &mut CachedLog,
+        path: &Path,
         pos: f64,
         dur: Option<f64>,
         eof: bool,
-    ) -> Result<(String, Vec<ItemKey>, crate::mpv::Outcome, Recorded)> {
-        use crate::mpv::{Outcome, outcome};
+    ) -> Result<(String, Outcome)> {
         let (series, items) = lib.identify(&self.cfg, path);
         let file = Some(crate::library::file_name_lossy(path)).filter(|f| !f.is_empty());
         let out = outcome(pos, dur, eof, self.cfg.watched_threshold);
-        let bodies: Vec<EventBody> = match out {
-            Outcome::Watched => items
-                .iter()
-                .map(|i| EventBody::Watched { series: series.clone(), item: i.clone(), file: file.clone() })
-                .collect(),
-            Outcome::Partial { pos, dur } => items
-                .iter()
-                .map(|i| EventBody::Progress { series: series.clone(), item: i.clone(), pos, dur, file: file.clone() })
-                .collect(),
-            Outcome::Nothing => Vec::new(),
-        };
-        let recorded = self.record(bodies)?;
-        Ok((series, items, out, recorded))
+        let recorded = self.record(items.iter().filter_map(|i| {
+            let (series, item, file) = (series.clone(), i.clone(), file.clone());
+            match out {
+                Outcome::Watched => Some(EventBody::Watched { series, item, file }),
+                Outcome::Partial { pos, dur } => Some(EventBody::Progress { series, item, pos, dur, file }),
+                Outcome::Nothing => None,
+            }
+        }))?;
+        self.log.merge(log, recorded);
+        Ok((lib.label(&series, &items), out))
     }
 }
 
@@ -509,7 +546,7 @@ pub fn find_series<'a>(lib: &'a Library, query: &str) -> Result<&'a Series> {
     // Equally good matches: prefer a series you follow or have watched over,
     // say, a new season sitting untouched in the inbox.
     let tied: Vec<&Series> = ranked.iter().take_while(|(_, s)| *s == best_score).map(|(s, _)| *s).collect();
-    let rank = |s: &Series| (s.status == crate::model::SeriesStatus::Following, s.engaged());
+    let rank = |s: &Series| (s.status == SeriesStatus::Following, s.engaged());
     let top = tied.iter().map(|s| rank(s)).max().unwrap_or_default();
     let best: Vec<&Series> = tied.into_iter().filter(|s| rank(s) == top).collect();
     if let [one] = best[..] {
@@ -581,30 +618,21 @@ pub fn parse_episode_list(spec: &str) -> Result<Vec<ItemKey>> {
 const MAX_SOCKET_PATH: usize = 100;
 
 /// Whether `path` is short enough for a Unix socket address.
-fn fits_socket_path(path: &std::path::Path) -> bool {
+fn fits_socket_path(path: &Path) -> bool {
     path.as_os_str().len() <= MAX_SOCKET_PATH
 }
 
 /// A short private directory for IPC sockets: `anipv-<uid>` in the temporary
 /// directory, created with mode 0700. `None` if it can't be created or isn't
 /// private (a symlink, another user's, not mode 0700).
-fn short_socket_dir(runtime_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-        let uid = std::fs::metadata(runtime_dir).ok()?.uid();
-        let dir = std::env::temp_dir().join(format!("anipv-{uid}"));
-        // Already existing is fine if it passes the checks below.
-        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-        let m = std::fs::symlink_metadata(&dir).ok()?;
-        (m.is_dir() && m.uid() == uid && m.mode() & 0o777 == 0o700).then_some(dir)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = runtime_dir;
-        let dir = std::env::temp_dir().join(format!("anipv-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok().map(|()| dir)
-    }
+fn short_socket_dir(runtime_dir: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let uid = std::fs::metadata(runtime_dir).ok()?.uid();
+    let dir = std::env::temp_dir().join(format!("anipv-{uid}"));
+    // Already existing is fine if it passes the checks below.
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    let m = std::fs::symlink_metadata(&dir).ok()?;
+    (m.is_dir() && m.uid() == uid && m.mode() & 0o777 == 0o700).then_some(dir)
 }
 
 #[cfg(test)]
@@ -628,7 +656,7 @@ mod tests {
     #[test]
     fn opening_creates_all_directories() {
         let dir = tempfile::tempdir().unwrap();
-        let mut paths = crate::demo::paths(dir.path());
+        let mut paths = crate::config::Paths::under(dir.path());
         paths.runtime_dir = dir.path().join("not/yet/there");
         let ctx = Ctx::open(Config::default(), paths).unwrap();
         assert!(ctx.socket_path().parent().unwrap().is_dir());
@@ -639,7 +667,7 @@ mod tests {
     /// `XDG_RUNTIME_DIR` or cache directory) moves to a short directory.
     #[test]
     fn long_socket_paths_are_not_used() {
-        let p = |n: usize| std::path::PathBuf::from(format!("/{}", "x".repeat(n - 1)));
+        let p = |n: usize| PathBuf::from(format!("/{}", "x".repeat(n - 1)));
         assert!(fits_socket_path(&p(30)));
         assert!(fits_socket_path(&p(MAX_SOCKET_PATH)));
         assert!(!fits_socket_path(&p(MAX_SOCKET_PATH + 1)));
@@ -649,43 +677,19 @@ mod tests {
     /// read, by this process or another.
     #[test]
     fn index_from_reads_the_metadata_again() {
-        use crate::index::db::MatchAttempt;
         let (_dir, ctx) = crate::demo::ctx();
         let old = ctx.index().unwrap();
         assert!(old.meta.attempts.is_empty());
-        let attempt =
-            MatchAttempt { series: "yuru camp".into(), db_version: "v1".into(), at: 1, result: "none".into() };
+        let attempt = MatchAttempt {
+            series: "yuru camp".into(),
+            db_version: "v1".into(),
+            at: 1,
+            result: crate::index::db::MatchResult::None,
+        };
         ctx.db.put_match_results(&[], &[attempt]).unwrap();
-        ctx.db.set_kv(OFFLINE_DB_VERSION, "v1").unwrap();
         let new = ctx.index_from(&old).unwrap();
         assert_eq!(new.meta.attempts.len(), 1);
-        assert_eq!(new.files().len(), old.files().len());
-    }
-
-    /// In memory too, a search link's mark moves with its row.
-    #[test]
-    fn index_rekeying_keeps_search_links() {
-        let row = |series: &str| SeriesMeta {
-            series: series.into(),
-            anilist: Some(5),
-            search_linked: true,
-            ..SeriesMeta::default()
-        };
-        let attempt = |series: &str| crate::index::db::MatchAttempt {
-            series: series.into(),
-            db_version: "v".into(),
-            at: 1,
-            result: "none".into(),
-        };
-        let meta = MetaCache {
-            rows: vec![row("old")],
-            attempts: vec![attempt("old"), attempt("new")],
-            ..MetaCache::default()
-        };
-        let mut index = Index::new(&Config::default(), Vec::new(), meta);
-        index.rekey_legacy(&[("old", "new")]);
-        assert_eq!(index.meta.rows, vec![row("new")]);
-        assert_eq!(index.meta.attempts, vec![attempt("new")], "the old key's attempt is dropped");
+        assert_eq!(new.classified().count(), old.classified().count());
     }
 
     /// A link a title search made is kept across database versions (unlike
@@ -699,18 +703,27 @@ mod tests {
         assert!(ctx.index().unwrap().meta.rows.contains(&row));
     }
 
+    /// Every attempt is read, and is current only under the offline database
+    /// version it was made with (`""` for none on record): a newer database
+    /// matches the series again.
     #[test]
-    fn attempts_from_an_older_offline_db_are_ignored() {
-        use crate::index::db::MatchAttempt;
+    fn attempts_are_current_under_their_own_version() {
+        use crate::index::db::MatchResult;
         let (_dir, ctx) = crate::demo::ctx();
-        let attempt =
-            MatchAttempt { series: "yuru camp".into(), db_version: "2026-07".into(), at: 1, result: "none".into() };
-        ctx.db.put_match_results(&[], &[attempt]).unwrap();
+        let attempt = |series: &str, version: &str| MatchAttempt {
+            series: series.into(),
+            db_version: version.into(),
+            at: 1,
+            result: MatchResult::None,
+        };
+        ctx.db.put_match_results(&[], &[attempt("yuru camp", "2026-07"), attempt("one piece", "")]).unwrap();
+        let current = |key| ctx.library().unwrap().get(key).unwrap().last_match.unwrap().current;
+        assert_eq!(ctx.index().unwrap().meta.attempts.len(), 2);
+        assert!(!current("yuru camp") && current("one piece"), "no version on record: \"\"");
         ctx.db.set_kv(OFFLINE_DB_VERSION, "2026-07").unwrap();
-        assert_eq!(ctx.index().unwrap().meta.attempts.len(), 1);
-        assert!(ctx.library().unwrap().get("yuru camp").unwrap().match_checked);
+        assert!(current("yuru camp") && !current("one piece"));
         ctx.db.set_kv(OFFLINE_DB_VERSION, "2026-10").unwrap();
-        assert!(ctx.index().unwrap().meta.attempts.is_empty(), "a newer database re-matches");
+        assert!(!current("yuru camp"), "a newer database re-matches");
     }
 
     #[test]
@@ -763,6 +776,36 @@ mod tests {
         // Completing is not "keeping".
         ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Completed, None).unwrap();
         assert_eq!(ctx.log.load_all().unwrap().events.iter().filter(|e| kept(e)).count(), 3);
+    }
+
+    /// An event log file that can't be read is a warning, and nothing is
+    /// completed automatically from the rest of the history: the missing
+    /// part may hold a status chosen since. Once readable, all is as usual.
+    #[test]
+    fn an_unreadable_log_file_is_a_warning_and_completes_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        ctx.set_status(&lib, "yuru camp", SeriesStatus::Following, None).unwrap();
+        ctx.mark(lib.get("yuru camp").unwrap(), &parse_episode_list("1-12").unwrap(), true).unwrap();
+        let other = ctx.paths.events_dir.join("laptop.jsonl");
+        std::fs::write(&other, "").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&other).is_ok() {
+            return; // Running as root: nothing is unreadable.
+        }
+        let lib = ctx.library().unwrap();
+        assert!(lib.partial_history, "{:?}", lib.warnings);
+        assert!(lib.warnings.iter().any(|w| w.contains("laptop.jsonl")), "{:?}", lib.warnings);
+        assert!(ctx.auto_complete(&lib).unwrap().1.is_empty());
+        let (lib, done) =
+            ctx.library_completed(&mut ctx.index().unwrap(), &mut ctx.log.load_cached().unwrap()).unwrap();
+        assert!(done.is_empty() && lib.get("yuru camp").unwrap().status == SeriesStatus::Following);
+
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let lib = ctx.library().unwrap();
+        assert!(!lib.partial_history && lib.warnings.is_empty(), "{:?}", lib.warnings);
+        assert_eq!(ctx.auto_complete(&lib).unwrap().1, vec!["Yuru Camp"]);
     }
 
     #[test]
@@ -831,7 +874,7 @@ mod tests {
     fn a_file_is_played_once_even_if_queued_for_several_episodes() {
         let (_dir, ctx) = crate::demo::ctx();
         let lib = ctx.library().unwrap();
-        let file = std::path::PathBuf::from("/m/Show - 001&002.mkv");
+        let file = PathBuf::from("/m/Show - 001&002.mkv");
         let entry = |n| QueueEntry {
             series: "show".into(),
             item: ItemKey::episode(crate::model::EpNo::new(n)),
@@ -843,7 +886,7 @@ mod tests {
     // ---- keys from before kana voiced marks were kept (`バカ` was `ハカ`) ----
 
     /// A demo context with `Anime/<name>/<name> - 01.mkv` on disk for each name.
-    fn with_shows(dir: &std::path::Path, names: &[&str]) -> Ctx {
+    fn with_shows(dir: &Path, names: &[&str]) -> Ctx {
         let mut ctx = crate::demo::setup(dir, 0).unwrap();
         add_shows(&mut ctx, names);
         ctx
@@ -858,8 +901,8 @@ mod tests {
         ctx.scan(None, &|_, _| {}).unwrap();
     }
 
-    fn meta(series: &str, anilist: u64) -> crate::index::db::SeriesMeta {
-        crate::index::db::SeriesMeta { series: series.into(), anilist: Some(anilist), ..Default::default() }
+    fn meta(series: &str, anilist: u64) -> SeriesMeta {
+        SeriesMeta { series: series.into(), anilist: Some(anilist), ..Default::default() }
     }
 
     /// `バカ` on disk, with an episode watched under its legacy key `ハカ`.
@@ -891,10 +934,14 @@ mod tests {
 
     #[test]
     fn legacy_keys_are_made_permanent_once() {
-        use crate::index::db::MatchAttempt;
         let (_dir, ctx) = legacy_ctx();
         let ep1 = ItemKey::episode(EpNo::new(1));
-        let attempt = |s: &str| MatchAttempt { series: s.into(), db_version: "v".into(), at: 1, result: "none".into() };
+        let attempt = |s: &str| MatchAttempt {
+            series: s.into(),
+            db_version: "v".into(),
+            at: 1,
+            result: crate::index::db::MatchResult::None,
+        };
         ctx.db.put_match_results(&[meta("ハカ", 1), meta("バカ", 2)], &[]).unwrap();
         ctx.db.put_match_results(&[], &[attempt("ハカ")]).unwrap();
         ctx.db.set_kv(OFFLINE_DB_VERSION, "v").unwrap();
@@ -906,7 +953,7 @@ mod tests {
         assert!(meta_rows(&ctx).contains(&("バカ".into(), Some(2))));
         assert!(no_legacy_row(&ctx), "{:?}", meta_rows(&ctx));
         assert!(ctx.db.match_attempts().unwrap().iter().all(|a| a.series != "ハカ"), "dropped, not moved");
-        assert!(!lib.get("バカ").unwrap().match_checked, "so the new key gets matched");
+        assert!(lib.get("バカ").unwrap().last_match.is_none(), "so the new key gets matched");
 
         // Idempotent across rebuilds, and a second device sharing the log
         // sees the alias instead of writing its own.
@@ -969,6 +1016,30 @@ mod tests {
         let offline: Vec<(&str, bool, bool)> =
             scans.iter().map(|r| (r.root.as_str(), r.offline, r.stats.is_err())).collect();
         assert_eq!(offline, [("here", false, false), ("gone", true, true)]);
+    }
+
+    /// `scan --root` takes a root's exact name over one that differs only in
+    /// case (a hand-written config can have both), else any case.
+    #[test]
+    fn scanning_one_root_prefers_its_exact_name() {
+        use crate::config::{Root, RootKind};
+        let dir = tempfile::tempdir().unwrap();
+        for d in ["a", "b"] {
+            std::fs::create_dir(dir.path().join(d)).unwrap();
+        }
+        let cfg = Config {
+            roots: vec![
+                Root::test("Anime", dir.path().join("a"), RootKind::Archive),
+                Root::test("anime", dir.path().join("b"), RootKind::Archive),
+            ],
+            ..Config::default()
+        };
+        let mut db = Db::open_in_memory().unwrap();
+        let scanned = |db: &mut Db, only| -> Vec<String> {
+            scan_all(&cfg, db, Some(only), &|_, _| {}).unwrap().into_iter().map(|r| r.root).collect()
+        };
+        assert_eq!(scanned(&mut db, "anime"), ["anime"]);
+        assert_eq!(scanned(&mut db, "ANIME"), ["Anime", "anime"]);
     }
 
     /// A rescan classifies only the files it did not know: the others keep
@@ -1067,7 +1138,6 @@ mod tests {
 
     /// Unmerging works from the library already loaded: the log is not read
     /// again (here another device's log has become unreadable since).
-    #[cfg(unix)]
     #[test]
     fn unmerging_does_not_read_the_log_again() {
         use std::os::unix::fs::PermissionsExt as _;

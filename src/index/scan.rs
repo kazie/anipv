@@ -3,8 +3,9 @@
 //! Network mounts (rclone, SMB) are latency bound, so top-level directories
 //! are listed by a small pool of threads.
 
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::fs::{DirEntry, Metadata};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -27,7 +28,7 @@ pub struct ScannedFile {
 }
 
 /// Result of walking one root.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ScanResult {
     /// Video files found.
     pub files: Vec<ScannedFile>,
@@ -48,22 +49,12 @@ impl ScanResult {
 
 const WORKERS: usize = 8;
 
-/// Whether `dir` is a mount point: on unix, its device differs from its
-/// parent's. `None` when that can't be told (stat fails, or not unix). Two
-/// stats, so cheap even on a network mount.
-pub fn is_mount_point(dir: &Path) -> Option<bool> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let here = std::fs::metadata(dir).ok()?;
-        let parent = std::fs::metadata(dir.join("..")).ok()?;
-        Some(here.dev() != parent.dev())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = dir;
-        None
-    }
+/// Whether `dir` (whose metadata is `meta`) is a mount point: its device
+/// differs from its parent's. `None` when the parent can't be stat'ed. One
+/// stat, so cheap even on a network mount.
+fn is_mount_point(dir: &Path, meta: &Metadata) -> Option<bool> {
+    let parent = std::fs::metadata(dir.join("..")).ok()?;
+    Some(meta.dev() != parent.dev())
 }
 
 /// Walk `root`, calling `progress` with the running file count.
@@ -73,22 +64,21 @@ pub fn is_mount_point(dir: &Path) -> Option<bool> {
 ///
 /// Folder symlinks are walked in rounds by how many were followed to reach
 /// them: first the real folders, then (in path order) the targets of the links
-/// found there, and so on. A target already walked (on unix: the same device
-/// and inode) is not walked again, so each linked folder is listed once, under
-/// the fewest links and then the smallest path, whichever thread is faster.
+/// found there, and so on. A target already walked (the same device and
+/// inode) is not walked again, so each linked folder is listed once, under the
+/// fewest links and then the smallest path, whichever thread is faster.
 ///
 /// # Panics
 ///
 /// Only if a scanner thread panicked (a poisoned lock), which is a bug.
 pub fn scan_root(cfg: &Config, root: &Root, progress: &(dyn Fn(usize) + Sync)) -> Result<ScanResult> {
     let base = root.resolved();
-    let Some(base_meta) = std::fs::metadata(&base).ok().filter(std::fs::Metadata::is_dir) else {
+    let Some(base_meta) = std::fs::metadata(&base).ok().filter(Metadata::is_dir) else {
         bail!("{} is not a directory (not mounted?)", base.display());
     };
     // Folders listed in earlier rounds.
-    let mut done: HashSet<FileId> = file_id(&base_meta).into_iter().collect();
+    let mut done: HashSet<FileId> = HashSet::from([file_id(&base_meta)]);
     let mut found = Partial::default();
-    let mut linked = false;
 
     // Round 0 lists the root itself here, so its subfolders spread over the threads.
     let walker = Walker { cfg, base: &base, done: &done };
@@ -112,74 +102,31 @@ pub fn scan_root(cfg: &Config, root: &Root, progress: &(dyn Fn(usize) + Sync)) -
         links.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         queue = links
             .into_iter()
-            .filter(|l| l.id.is_none_or(|id| !done.contains(&id) && chosen.insert(id)))
+            .filter(|l| !done.contains(&l.id) && chosen.insert(l.id))
             .map(|l| (l.path, l.chain))
             .collect();
-        linked |= !queue.is_empty();
     }
-    let Partial { files, errors, repeats, .. } = found;
-    let mut files =
-        if linked || repeats { dedupe(files) } else { files.into_iter().map(|f| f.file).collect::<Vec<_>>() };
-    files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
-    Ok(ScanResult { files, errors, mounted: is_mount_point(&base), base })
+    let Partial { files, errors, .. } = found;
+    Ok(ScanResult { files: dedupe(files), errors, mounted: is_mount_point(&base, &base_meta), base })
 }
 
-/// A file reached several ways (links to the same folder, hard links) is kept
-/// once, under the path with the fewest links followed, then the smallest:
-/// the same path every scan.
-fn dedupe(found: Vec<Found>) -> Vec<ScannedFile> {
-    let mut at: HashMap<FileId, usize> = HashMap::new();
-    let mut kept: Vec<Found> = Vec::with_capacity(found.len());
-    for f in found {
-        let Some(id) = f.id else {
-            kept.push(f);
-            continue;
-        };
-        match at.entry(id) {
-            Entry::Vacant(e) => {
-                e.insert(kept.len());
-                kept.push(f);
-            }
-            Entry::Occupied(e) => {
-                let k = &mut kept[*e.get()];
-                if (f.links, &f.file.path) < (k.links, &k.file.path) {
-                    *k = f;
-                }
-            }
-        }
-    }
-    kept.into_iter().map(|f| f.file).collect()
+/// The files found, in path order, each once: a file reached several ways
+/// (links to the same folder or to the file, hard links) is kept under the
+/// path with the fewest links followed, then the smallest, the same path every
+/// scan.
+fn dedupe(mut found: Vec<Found>) -> Vec<ScannedFile> {
+    found.sort_unstable_by(|a, b| (a.links, &a.file.path).cmp(&(b.links, &b.file.path)));
+    let mut seen = HashSet::with_capacity(found.len());
+    let mut files: Vec<ScannedFile> = found.into_iter().filter(|f| seen.insert(f.id)).map(|f| f.file).collect();
+    files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    files
 }
 
 /// A file's identity on disk (device, inode), whatever path led to it.
 type FileId = (u64, u64);
 
-#[cfg_attr(unix, expect(clippy::unnecessary_wraps, reason = "None where there are no inodes"))]
-fn file_id(meta: &std::fs::Metadata) -> Option<FileId> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some((meta.dev(), meta.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = meta;
-        None
-    }
-}
-
-/// True if the file has other hard links, i.e. other paths may lead to it.
-fn hard_linked(meta: &std::fs::Metadata) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        meta.nlink() > 1
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = meta;
-        false
-    }
+fn file_id(meta: &Metadata) -> FileId {
+    (meta.dev(), meta.ino())
 }
 
 /// The real folders in which links were followed on the way to a folder;
@@ -188,8 +135,8 @@ type Chain = Arc<[PathBuf]>;
 
 /// A video file found by a walk, before duplicates are dropped.
 struct Found {
-    id: Option<FileId>,
-    /// Folder symlinks followed to get here.
+    id: FileId,
+    /// Links followed to get here: folder links, and a link to the file itself.
     links: usize,
     file: ScannedFile,
 }
@@ -198,7 +145,7 @@ struct Found {
 struct Link {
     path: PathBuf,
     /// The target folder's identity.
-    id: Option<FileId>,
+    id: FileId,
     /// The chain to walk it with (see [`follow`]).
     chain: Chain,
 }
@@ -212,8 +159,6 @@ struct Partial {
     links: Vec<Link>,
     /// Real folders listed.
     walked: Vec<FileId>,
-    /// Whether any file found has other hard links.
-    repeats: bool,
 }
 
 impl Partial {
@@ -223,7 +168,6 @@ impl Partial {
         self.errors.append(&mut other.errors);
         self.links.append(&mut other.links);
         self.walked.append(&mut other.walked);
-        self.repeats |= other.repeats;
     }
 }
 
@@ -252,84 +196,105 @@ impl Walker<'_> {
         out: &mut Partial,
         subdir: &mut dyn FnMut(PathBuf, Chain),
     ) -> std::io::Result<()> {
-        let (cfg, base) = (self.cfg, self.base);
-        let failed = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
         // `dir` with links resolved, once there is a folder link to check.
         let mut here: Option<PathBuf> = None;
         for entry in std::fs::read_dir(dir)? {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(e) => {
-                    out.errors.push(failed(dir, &e));
-                    continue;
-                }
+            let res = match entry {
+                Ok(entry) => self.entry(&entry, dir, &mut here, chain, out, subdir),
+                Err(e) => Err(failed(dir, &e)),
             };
-            let path = entry.path();
-            let file_type = match entry.file_type() {
-                Ok(t) => t,
-                Err(e) => {
-                    out.errors.push(failed(&path, &e));
-                    continue;
-                }
-            };
-            // Only symlinks need a stat to learn what they point at.
-            let target = if file_type.is_symlink() {
-                match std::fs::metadata(&path) {
-                    Ok(m) => Some(m),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(e) => {
-                        out.errors.push(failed(&path, &e));
-                        continue;
-                    }
-                }
-            } else {
-                None
-            };
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let (is_dir, is_file) = match &target {
-                Some(m) => (m.is_dir(), m.is_file()),
-                None => (file_type.is_dir(), file_type.is_file()),
-            };
-            if is_dir {
-                if cfg.is_ignored_dir(&name) {
-                    continue;
-                }
-                if let Some(t) = &target {
-                    let resolved = match &here {
-                        Some(h) => Ok(h),
-                        None => std::fs::canonicalize(dir).map(|h| &*here.insert(h)),
-                    };
-                    match resolved.and_then(|h| follow(h, &path, chain)) {
-                        Ok(Some(chain)) => out.links.push(Link { path, id: file_id(t), chain }),
-                        Ok(None) => {}
-                        // Unknown: skip it, but record it so the scan counts as
-                        // incomplete and nothing below is marked as gone.
-                        Err(e) => out.errors.push(failed(&path, &e)),
-                    }
-                } else {
-                    // Relative to the open directory: no second full-path lookup on network mounts.
-                    let id = entry.metadata().ok().as_ref().and_then(file_id);
-                    if let Some(id) = id {
-                        if self.done.contains(&id) {
-                            continue;
-                        }
-                        out.walked.push(id);
-                    }
-                    subdir(path, Arc::clone(chain));
-                }
-            } else if is_file && is_video(&name) && !is_resource_fork(&name) {
-                match target.map_or_else(|| entry.metadata(), Ok) {
-                    Ok(m) => match scanned(base, path, &m) {
-                        Ok(file) => {
-                            out.repeats |= hard_linked(&m);
-                            out.files.push(Found { id: file_id(&m), links: chain.len(), file });
-                        }
-                        Err(e) => out.errors.push(e),
-                    },
-                    Err(e) => out.errors.push(failed(&path, &e)),
-                }
+            if let Err(e) = res {
+                out.errors.push(e);
             }
+        }
+        Ok(())
+    }
+
+    /// One entry of [`Walker::visit`]'s `dir`; a failure is returned, to be
+    /// recorded.
+    fn entry(
+        &self,
+        entry: &DirEntry,
+        dir: &Path,
+        here: &mut Option<PathBuf>,
+        chain: &Chain,
+        out: &mut Partial,
+        subdir: &mut dyn FnMut(PathBuf, Chain),
+    ) -> Result<(), String> {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| failed(&path, &e))?;
+        // Only symlinks need a stat to learn what they point at.
+        let target = if file_type.is_symlink() {
+            match std::fs::metadata(&path) {
+                Ok(m) => Some(m),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(failed(&path, &e)),
+            }
+        } else {
+            None
+        };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let (is_dir, is_file) =
+            target.as_ref().map_or_else(|| (file_type.is_dir(), file_type.is_file()), |m| (m.is_dir(), m.is_file()));
+        if is_dir {
+            if self.cfg.is_ignored_dir(&name) {
+                return Ok(());
+            }
+            if let Some(t) = &target {
+                return self.folder_link(dir, here, path, t, chain, out);
+            }
+            // Relative to the open directory: no second full-path lookup on network mounts.
+            if let Ok(m) = entry.metadata() {
+                let id = file_id(&m);
+                if self.done.contains(&id) {
+                    return Ok(());
+                }
+                out.walked.push(id);
+            }
+            subdir(path, Arc::clone(chain));
+        } else if is_file && is_video(&name) && !is_resource_fork(&name) {
+            // A link to a file is one more way to it: it counts as a link
+            // followed, so the file's own path wins (see `dedupe`).
+            let links = chain.len() + usize::from(target.is_some());
+            let meta = match target {
+                Some(m) => m,
+                None => entry.metadata().map_err(|e| failed(&path, &e))?,
+            };
+            let file = scanned(self.base, path, &meta)?;
+            out.files.push(Found { id: file_id(&meta), links, file });
+        }
+        Ok(())
+    }
+
+    /// A folder symlink `path` in `dir` (with metadata `target` of what it
+    /// points at): queued for the next round, unless its target was listed
+    /// already or walking it would loop. A link that can't be resolved (e.g.
+    /// a network mount hiccup) is a failure, so the scan counts as incomplete
+    /// and nothing below it is marked as gone.
+    fn folder_link(
+        &self,
+        dir: &Path,
+        here: &mut Option<PathBuf>,
+        path: PathBuf,
+        target: &Metadata,
+        chain: &Chain,
+        out: &mut Partial,
+    ) -> Result<(), String> {
+        let id = file_id(target);
+        // Listed in an earlier round: no need to resolve it (on a network
+        // mount, a lookup per path component).
+        if self.done.contains(&id) {
+            return Ok(());
+        }
+        let resolved = match here.take() {
+            Some(h) => h,
+            None => std::fs::canonicalize(dir).map_err(|e| failed(&path, &e))?,
+        };
+        let followed = follow(&resolved, &path, chain);
+        *here = Some(resolved);
+        if let Some(chain) = followed.map_err(|e| failed(&path, &e))? {
+            out.links.push(Link { path, id, chain });
         }
         Ok(())
     }
@@ -337,7 +302,7 @@ impl Walker<'_> {
     fn walk(&self, dir: &Path, chain: &Chain, out: &mut Partial) {
         let mut subdirs = Vec::new();
         if let Err(e) = self.visit(dir, chain, out, &mut |d, c| subdirs.push((d, c))) {
-            out.errors.push(format!("{}: {e}", dir.display()));
+            out.errors.push(failed(dir, &e));
         }
         for (d, c) in subdirs {
             self.walk(&d, &c, out);
@@ -368,6 +333,11 @@ impl Walker<'_> {
     }
 }
 
+/// A failure at `path`, as recorded in [`ScanResult::errors`].
+fn failed(path: &Path, e: &dyn std::fmt::Display) -> String {
+    format!("{}: {e}", path.display())
+}
+
 /// The `chain` to walk the directory symlink `link` with, or `None` if it
 /// points at an ancestor of `here` (the folder it is in, links resolved) or
 /// of a folder where a link was followed on the way here (`chain`): walking it
@@ -386,9 +356,9 @@ fn is_resource_fork(name: &str) -> bool {
     name.starts_with("._")
 }
 
-fn scanned(base: &Path, path: PathBuf, meta: &std::fs::Metadata) -> Result<ScannedFile, String> {
+fn scanned(base: &Path, path: PathBuf, meta: &Metadata) -> Result<ScannedFile, String> {
     let mtime = meta.modified().map_or(0, crate::events::unix_secs);
-    let rel = path.strip_prefix(base).map_err(|e| format!("{}: {e}", path.display()))?.to_path_buf();
+    let rel = path.strip_prefix(base).map_err(|e| failed(&path, &e))?.to_path_buf();
     Ok(ScannedFile { rel, path, size: meta.len(), mtime })
 }
 
@@ -439,7 +409,6 @@ mod tests {
         assert!(!out.errors.is_empty());
     }
 
-    #[cfg(unix)]
     #[test]
     fn follows_symlinks_without_looping() {
         use std::os::unix::fs::symlink;
@@ -465,7 +434,6 @@ mod tests {
     /// Two folders linking to each other: the walk stops instead of going on
     /// until the path gets too long, and each file is listed once, at its real
     /// path.
-    #[cfg(unix)]
     #[test]
     fn mutual_symlinks_do_not_loop() {
         use std::os::unix::fs::symlink;
@@ -483,7 +451,6 @@ mod tests {
     /// Regression: with several links to one folder, the path a file is indexed
     /// under depended on which thread got there first, so files flipped between
     /// scans. Now it is always the smallest.
-    #[cfg(unix)]
     #[test]
     fn links_to_the_same_folder_give_stable_paths() {
         use std::os::unix::fs::symlink;
@@ -502,7 +469,6 @@ mod tests {
 
     /// Links to a folder and to its parent, and a deeper link back to a linked
     /// folder: each file once, under the fewest links, then the smallest path.
-    #[cfg(unix)]
     #[test]
     fn nested_links_keep_the_shortest_way() {
         use std::os::unix::fs::symlink;
@@ -522,7 +488,6 @@ mod tests {
     }
 
     /// Hard links to one file are one file, under the smallest path.
-    #[cfg(unix)]
     #[test]
     fn hard_links_are_kept_once() {
         let lib = tempfile::tempdir().unwrap();
@@ -532,6 +497,20 @@ mod tests {
         let root = Root::test("r", lib.path().to_path_buf(), RootKind::Archive);
         let res = scan_root(&Config::default(), &root, &|_| {}).unwrap();
         assert_eq!(rels(&res), vec!["a/Show - 01.mkv"]);
+    }
+
+    /// A link to a file that is also in the root doesn't index it twice: the
+    /// file's own path is kept.
+    #[test]
+    fn linked_files_are_kept_once() {
+        use std::os::unix::fs::symlink;
+        let lib = tempfile::tempdir().unwrap();
+        touch(&lib.path().join("Show/Show - 01.mkv"));
+        std::fs::create_dir(lib.path().join("a")).unwrap();
+        symlink(lib.path().join("Show/Show - 01.mkv"), lib.path().join("a/Show - 01.mkv")).unwrap();
+        let root = Root::test("r", lib.path().to_path_buf(), RootKind::Ongoing);
+        let res = scan_root(&Config::default(), &root, &|_| {}).unwrap();
+        assert_eq!(rels(&res), vec!["Show/Show - 01.mkv"]);
     }
 
     #[test]
@@ -552,22 +531,24 @@ mod tests {
         assert_eq!(follow(&dir, &sibling, &[sibling.join("sub")]).unwrap(), None);
     }
 
-    #[cfg(unix)]
+    fn mounted(dir: &Path) -> Option<bool> {
+        is_mount_point(dir, &std::fs::metadata(dir).ok()?)
+    }
+
     #[test]
     fn plain_folders_are_not_mount_points() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
-        assert_eq!(is_mount_point(&dir.path().join("sub")), Some(false));
+        assert_eq!(mounted(&dir.path().join("sub")), Some(false));
         let root = Root::test("r", dir.path().to_path_buf(), RootKind::Ongoing);
         let res = scan_root(&Config::default(), &root, &|_| {}).unwrap();
         assert_eq!((res.base.as_path(), res.mounted), (dir.path(), Some(false)));
-        assert_eq!(is_mount_point(&dir.path().join("missing")), None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn proc_is_a_mount_point() {
-        assert_eq!(is_mount_point(Path::new("/proc")), Some(true));
+        assert_eq!(mounted(Path::new("/proc")), Some(true));
     }
 
     #[test]

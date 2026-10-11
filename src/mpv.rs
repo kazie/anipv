@@ -29,7 +29,7 @@ pub struct PlayFile {
 }
 
 /// mpv command-line arguments for a playlist.
-pub fn build_args(cfg: &Config, socket: Option<&Path>, files: &[PlayFile]) -> Vec<OsString> {
+fn build_args(cfg: &Config, socket: Option<&Path>, files: &[PlayFile]) -> Vec<OsString> {
     let mut args: Vec<OsString> = cfg.mpv_args.iter().map(OsString::from).collect();
     if let Some(s) = socket {
         let mut a = OsString::from("--input-ipc-server=");
@@ -56,7 +56,7 @@ pub fn build_args(cfg: &Config, socket: Option<&Path>, files: &[PlayFile]) -> Ve
 /// the quotes (`'it'\''s'`), because the shells disagree on escapes inside them.
 ///
 /// Works on bytes, so file names that aren't valid UTF-8 come through intact.
-pub fn shell_quote(s: &OsStr) -> Vec<u8> {
+fn shell_quote(s: &OsStr) -> Vec<u8> {
     const SAFE: &[u8] = b"-_./=+,:@%";
     let s = s.as_encoded_bytes();
     if !s.is_empty() && s.iter().all(|b| b.is_ascii_alphanumeric() || SAFE.contains(b)) {
@@ -86,7 +86,7 @@ pub fn command_line(cfg: &Config, files: &[PlayFile]) -> Vec<u8> {
 }
 
 /// Spawn mpv detached from the terminal (its output would garble the TUI).
-pub fn spawn(cfg: &Config, socket: &Path, files: &[PlayFile]) -> Result<Child> {
+fn spawn(cfg: &Config, socket: &Path, files: &[PlayFile]) -> Result<Child> {
     let _ = std::fs::remove_file(socket);
     Command::new(&cfg.mpv)
         .args(build_args(cfg, Some(socket), files))
@@ -174,23 +174,65 @@ struct Current {
 }
 
 impl Current {
-    /// The `Ended` event for this file, if it started playing.
-    fn finish(self, eof: bool) -> Option<PlayerEvent> {
-        let path = self.path.filter(|_| self.started)?;
-        Some(PlayerEvent::Ended { path, pos: self.max_pos, dur: self.dur, eof })
+    /// A `property-change` of the observed property `name` to `data`.
+    fn on_change(&mut self, name: Option<&str>, data: Option<&Value>, emit: &dyn Fn(PlayerEvent)) {
+        match name {
+            Some("path") => {
+                if let Some(p) = data.and_then(Value::as_str) {
+                    self.path = Some(PathBuf::from(p));
+                }
+            }
+            Some("time-pos") => {
+                if let Some(pos) = data.and_then(Value::as_f64)
+                    && let Some(path) = &self.path
+                {
+                    self.max_pos = self.max_pos.max(pos);
+                    if !self.started {
+                        self.started = true;
+                        emit(PlayerEvent::Started { path: path.clone() });
+                    }
+                    if self.last_sent.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
+                        self.last_sent = Some(Instant::now());
+                        emit(PlayerEvent::Progress { path: path.clone(), pos, dur: self.dur });
+                    }
+                }
+            }
+            Some("duration") => {
+                // mpv reports 0 (or nothing) when it can't tell; keep only
+                // usable durations so `None` means "unknown" downstream.
+                if let Some(d) = data.and_then(Value::as_f64).filter(|d| *d > 0.0) {
+                    self.dur = Some(d);
+                }
+            }
+            _ => {}
+        }
     }
+}
+
+/// Close the open file, if any, emitting its `Ended` event if it started playing.
+fn close(cur: &mut Option<Current>, eof: bool, emit: &dyn Fn(PlayerEvent)) {
+    if let Some(c) = cur.take()
+        && c.started
+        && let Some(path) = c.path
+    {
+        emit(PlayerEvent::Ended { path, pos: c.max_pos, dur: c.dur, eof });
+    }
+}
+
+/// Send one IPC command to mpv.
+fn send(stream: &mut impl Write, cmd: &Value) -> std::io::Result<()> {
+    writeln!(stream, "{cmd}")?;
+    stream.flush()
 }
 
 /// Read mpv IPC messages from `stream` until it closes, emitting events.
 ///
 /// Generic over the transport so tests can feed canned JSON.
-pub fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -> Result<()> {
+fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -> Result<()> {
     let mut reader = BufReader::new(stream);
     for (id, prop) in [(1, "path"), (2, "time-pos"), (3, "duration")] {
-        let cmd = serde_json::json!({ "command": ["observe_property", id, prop] });
-        writeln!(reader.get_mut(), "{cmd}")?;
+        send(reader.get_mut(), &serde_json::json!({ "command": ["observe_property", id, prop] }))?;
     }
-    reader.get_mut().flush()?;
 
     // The open file, if any. Property updates outside `start-file`..`end-file`
     // (a late position after a file ended) belong to no file and are dropped.
@@ -214,60 +256,26 @@ pub fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -
         match msg.get("event").and_then(Value::as_str) {
             Some("start-file") => {
                 // A missed `end-file` still closes the previous file.
-                if let Some(ev) = cur.take().and_then(|c| c.finish(false)) {
-                    emit(ev);
-                }
+                close(&mut cur, false, emit);
                 requests += 1;
                 let cmd = serde_json::json!({ "command": ["get_property", "path"], "request_id": requests });
                 // A closed socket shows up as the end of the stream below.
-                let _ = writeln!(reader.get_mut(), "{cmd}").and_then(|()| reader.get_mut().flush());
+                let _ = send(reader.get_mut(), &cmd);
                 cur = Some(Current { entry, path_request: requests, ..Current::default() });
             }
             Some("end-file") => {
                 // Only the open file's own `end-file` closes it (older mpv
                 // versions send no id: trust those).
                 if cur.as_ref().is_some_and(|c| entry.is_none() || c.entry.is_none() || c.entry == entry) {
-                    let eof = msg.get("reason").and_then(Value::as_str) == Some("eof");
-                    if let Some(ev) = cur.take().and_then(|c| c.finish(eof)) {
-                        emit(ev);
-                    }
+                    close(&mut cur, msg.get("reason").and_then(Value::as_str) == Some("eof"), emit);
                 }
                 if let Some(e) = msg.get("file_error").and_then(Value::as_str) {
                     emit(PlayerEvent::Error(format!("mpv could not play a file: {e}")));
                 }
             }
             Some("property-change") => {
-                let Some(c) = &mut cur else { continue };
-                let data = msg.get("data");
-                match msg.get("name").and_then(Value::as_str) {
-                    Some("path") => {
-                        if let Some(p) = data.and_then(Value::as_str) {
-                            c.path = Some(PathBuf::from(p));
-                        }
-                    }
-                    Some("time-pos") => {
-                        if let Some(pos) = data.and_then(Value::as_f64)
-                            && let Some(path) = &c.path
-                        {
-                            c.max_pos = c.max_pos.max(pos);
-                            if !c.started {
-                                c.started = true;
-                                emit(PlayerEvent::Started { path: path.clone() });
-                            }
-                            if c.last_sent.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
-                                c.last_sent = Some(Instant::now());
-                                emit(PlayerEvent::Progress { path: path.clone(), pos, dur: c.dur });
-                            }
-                        }
-                    }
-                    Some("duration") => {
-                        // mpv reports 0 (or nothing) when it can't tell; keep
-                        // only usable durations so `None` means "unknown" downstream.
-                        if let Some(d) = data.and_then(Value::as_f64).filter(|d| *d > 0.0) {
-                            c.dur = Some(d);
-                        }
-                    }
-                    _ => {}
+                if let Some(c) = &mut cur {
+                    c.on_change(msg.get("name").and_then(Value::as_str), msg.get("data"), emit);
                 }
             }
             // A reply to a command: the path asked for at `start-file`.
@@ -282,9 +290,7 @@ pub fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -
             _ => {}
         }
     };
-    if let Some(ev) = cur.and_then(|c| c.finish(false)) {
-        emit(ev);
-    }
+    close(&mut cur, false, emit);
     match read_error {
         Some(e) => Err(e.into()),
         None => Ok(()),
@@ -294,7 +300,7 @@ pub fn follow<S: std::io::Read + Write>(stream: S, emit: &dyn Fn(PlayerEvent)) -
 /// Connect to `socket` (waiting for mpv to create it), follow playback and
 /// report `Exited` (with the reason, if the session failed) when done. Runs
 /// until mpv quits; call from a thread.
-pub fn track(socket: &Path, mut child: Child, emit: &dyn Fn(PlayerEvent)) {
+fn track(socket: &Path, mut child: Child, emit: &dyn Fn(PlayerEvent)) {
     let played = std::cell::Cell::new(false);
     let emit_seen = |ev: PlayerEvent| {
         played.set(played.get() || matches!(ev, PlayerEvent::Started { .. }));
@@ -335,23 +341,25 @@ pub enum Outcome {
     Nothing,
 }
 
-/// How far (s) short of the duration a file that reached its end may stop
-/// and still count as played to the end (see [`outcome`]).
-pub const EOF_SLACK: f64 = 5.0;
+/// How far (s) short of the duration playback may stop and still count as
+/// played to the end (see [`outcome`]).
+const END_SLACK: f64 = 5.0;
 
 /// Decide what an `Ended` event means given the watched threshold.
 ///
 /// Reaching the end of the file only counts when playback got near the
 /// episode's duration: a file that is still downloading also "ends", after
 /// however many minutes are on disk. Without a known duration, the end is
-/// trusted. `dur` is a positive duration or `None` ([`follow`] drops zeros).
+/// trusted. `dur` is a positive duration or `None` (the IPC follower drops zeros).
 ///
 /// The last position mpv reports is the last frame's, a little short of the
-/// duration, so reaching the end within [`EOF_SLACK`] counts whatever the
-/// threshold (a threshold of `1.0` could never be reached otherwise).
+/// duration, so stopping within five seconds of the end counts whatever the
+/// threshold (a threshold of `1.0` could never be reached otherwise), also
+/// without an end of file: with `keep-open`, mpv stays on the last frame and
+/// the file ends when mpv is quit.
 pub fn outcome(pos: f64, dur: Option<f64>, eof: bool, threshold: f64) -> Outcome {
     match dur {
-        Some(d) if pos / d >= threshold || (eof && d - pos <= EOF_SLACK) => Outcome::Watched,
+        Some(d) if pos / d >= threshold || d - pos <= END_SLACK => Outcome::Watched,
         None if eof => Outcome::Watched,
         _ if pos >= 30.0 => Outcome::Partial { pos, dur },
         _ => Outcome::Nothing,
@@ -427,7 +435,9 @@ mod tests {
         assert_eq!(outcome(100.0, None, false, 0.85), Outcome::Partial { pos: 100.0, dur: None });
         // The last frame is a little short of the duration: a threshold of 1 is still reachable.
         assert_eq!(outcome(1439.96, Some(1440.02), true, 1.0), Outcome::Watched);
-        assert_eq!(outcome(1439.96, Some(1440.02), false, 1.0), Outcome::Partial { pos: 1439.96, dur: Some(1440.02) });
+        // `keep-open`: quit on the last frame, no end of file.
+        assert_eq!(outcome(1439.96, Some(1440.02), false, 1.0), Outcome::Watched);
+        assert_eq!(outcome(1430.0, Some(1440.02), false, 1.0), Outcome::Partial { pos: 1430.0, dur: Some(1440.02) });
     }
 
     /// Feed `msgs` to [`follow`] as mpv would and collect what it emits

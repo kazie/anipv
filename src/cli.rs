@@ -10,12 +10,11 @@ use anyhow::{Result, bail};
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 
-use crate::app::{Ctx, Index, find_series, parse_episode_list, queue_new};
+use crate::app::{Ctx, Session, find_series, parse_episode_list, queue_new};
 use crate::config::{Config, Paths, RootKind};
-use crate::events::{CachedLog, EventBody, Recorded, now};
+use crate::events::{EventBody, Recorded, now};
 use crate::fmt::{ago, ago_opt, bold, cyan, dim, green, magenta, pad, red, yellow};
-use crate::library::Library;
-use crate::model::{ItemKey, ItemKind, SeriesStatus, WatchState};
+use crate::model::{ItemKind, SeriesStatus, WatchState};
 
 const STYLES: Styles = Styles::styled()
     .header(AnsiColor::Yellow.on_default().effects(Effects::BOLD))
@@ -79,7 +78,7 @@ enum Cmd {
         #[arg(required = true)]
         series: Vec<String>,
         /// Episodes per series.
-        #[arg(short = 'n', long, default_value_t = 1)]
+        #[arg(short = 'n', long, default_value_t = 1, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         count: usize,
         /// Only print the mpv command line.
         #[arg(long)]
@@ -207,11 +206,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Show { series, all } => show(&Ctx::load()?, &series, all, &mut out),
         Cmd::Play { series, count, print } => {
             let ctx = Ctx::load()?;
-            if print {
-                play(&ctx, &mut Session::load(&ctx)?, &series, count, print, &mut out)
-            } else {
-                writing(&ctx, &mut out, |s, out| play(&ctx, s, &series, count, print, out))
-            }
+            writing_unless(print, &ctx, &mut out, |s, out| play(&ctx, s, &series, count, print, out))
         }
         Cmd::Mark { series, episodes, unwatched } => {
             let ctx = Ctx::load()?;
@@ -235,11 +230,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::ImportFish(a) => {
             let ctx = Ctx::load()?;
-            if a.dry_run {
-                import_fish(&ctx, &mut Session::load(&ctx)?, a, &mut out)
-            } else {
-                writing(&ctx, &mut out, |s, out| import_fish(&ctx, s, a, out))
-            }
+            writing_unless(a.dry_run, &ctx, &mut out, |s, out| import_fish(&ctx, s, a, out))
         }
         Cmd::Meta(m) => meta::run(&Ctx::load()?, m, &mut out),
         Cmd::Doctor => doctor(&Ctx::load()?, &mut out),
@@ -294,56 +285,57 @@ fn init(a: InitArgs, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-/// The library a command works on, with the index and event log it was
-/// built from, so rebuilding it after a write reads and classifies nothing
-/// again.
-struct Session {
-    index: Index,
-    log: CachedLog,
-    lib: Library,
-}
-
-impl Session {
-    /// Read the index and the event log and build the library (printing its
-    /// warnings, like [`Ctx::library`]).
-    #[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
-    fn load(ctx: &Ctx) -> Result<Self> {
-        let mut index = ctx.index()?;
-        let mut log = ctx.log.load_cached()?;
-        let lib = ctx.migrated_library(&mut index, &mut log)?;
-        for w in &lib.warnings {
-            eprintln!("warning: {w}");
-        }
-        Ok(Self { index, log, lib })
-    }
-
-    /// Keep events just recorded, without reading the log again.
-    fn add(&mut self, ctx: &Ctx, recorded: Recorded) {
-        ctx.log.merge(&mut self.log, recorded);
-    }
-
-    /// Rebuild the library with the events recorded and metadata cached since
-    /// (anything recorded but not [`Session::add`]ed is read from the log).
-    fn rebuild(&mut self, ctx: &Ctx) -> Result<()> {
-        ctx.log.refresh(&mut self.log)?;
-        self.index.meta = ctx.meta_cache()?;
-        self.lib = ctx.migrated_library(&mut self.index, &mut self.log)?;
-        Ok(())
-    }
-}
-
 /// Run a command that writes (watch state, statuses, merges, metadata) on a
 /// [`Session`], then complete followed series that are now finished and fully
 /// watched, and say so. Every writing command runs through here, so none
 /// leaves a finished series uncompleted.
+///
+/// Nothing is written while part of the event log can't be read: what a
+/// command decides from the rest (what is unwatched, which status to
+/// suggest) may be wrong, and a newer event would override what the missing
+/// part holds once it is back.
+#[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
 fn writing<W: Write>(ctx: &Ctx, out: &mut W, command: impl FnOnce(&mut Session, &mut W) -> Result<()>) -> Result<()> {
-    let mut s = Session::load(ctx)?;
-    command(&mut s, out)?;
-    s.rebuild(ctx)?;
-    for title in ctx.auto_complete(&s.lib)?.1 {
-        writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(&title))?;
+    let mut s = ctx.loaded()?;
+    if s.lib.partial_history {
+        bail!("part of the event log can't be read (see the warning above); nothing is changed until it can be");
     }
-    Ok(())
+    // Completing runs even if the command failed part way (output closed,
+    // say): what it recorded may have finished a series. What completing
+    // records is reported either way; the command's own error comes first.
+    let res = command(&mut s, out);
+    let done = complete(ctx, &mut s);
+    if let (Err(_), Err(e)) = (&res, &done) {
+        eprintln!("warning: {e:#}");
+    }
+    let reported = done.iter().flatten().try_for_each(|title| {
+        writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(title))
+    });
+    res?;
+    done?;
+    Ok(reported?)
+}
+
+/// [`writing`]'s second half: rebuild the library from what the command
+/// recorded (showing the warnings that are new) and complete what is done.
+#[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
+fn complete(ctx: &Ctx, s: &mut Session) -> Result<Vec<String>> {
+    let shown = std::mem::take(&mut s.lib.warnings);
+    s.rebuild(ctx)?;
+    for w in s.lib.warnings.iter().filter(|w| !shown.contains(w)) {
+        eprintln!("warning: {w}");
+    }
+    Ok(ctx.auto_complete(&s.lib)?.1)
+}
+
+/// [`writing`], or for a `dry_run` just the command on the library as loaded.
+fn writing_unless<W: Write>(
+    dry_run: bool,
+    ctx: &Ctx,
+    out: &mut W,
+    command: impl FnOnce(&mut Session, &mut W) -> Result<()>,
+) -> Result<()> {
+    if dry_run { command(&mut ctx.loaded()?, out) } else { writing(ctx, out, command) }
 }
 
 fn mark(ctx: &Ctx, s: &mut Session, query: &str, episodes: &str, unwatched: bool, out: &mut impl Write) -> Result<()> {
@@ -358,11 +350,10 @@ fn mark(ctx: &Ctx, s: &mut Session, query: &str, episodes: &str, unwatched: bool
         ok = green("✓"),
         title = bold(&series.title)
     )?;
-    // Each episode once; marking unwatched leaves alone (and counts apart)
-    // episodes anipv knows nothing about, while marking watched records them.
-    let unique: HashSet<&ItemKey> = items.iter().collect();
-    let unknown = if unwatched { unique.iter().filter(|k| series.item(k).is_none()).count() } else { 0 };
-    let already = unique.len() - changed - unknown;
+    // Marking unwatched leaves alone (and counts apart) episodes anipv knows
+    // nothing about, while marking watched records them.
+    let unknown = if unwatched { items.iter().filter(|k| series.item(k).is_none()).count() } else { 0 };
+    let already = items.len() - changed - unknown;
     let notes: Vec<String> = [(already, "already were"), (unknown, "not known")]
         .into_iter()
         .filter(|(n, _)| *n > 0)
@@ -645,7 +636,7 @@ fn show(ctx: &Ctx, query: &str, all: bool, out: &mut impl Write) -> Result<()> {
             ItemKind::Extra => dim(" extra"),
             ItemKind::Movie => cyan(" movie"),
         };
-        let file = it.best_file().map_or_else(|| red("(not on disk)"), super::library::FileRef::name);
+        let file = it.best_file().map_or_else(|| red("(not on disk)"), crate::library::FileRef::name);
         let extra = match it.state {
             WatchState::Started { .. } => it.state.percent().map(|p| yellow(&format!(" {p}"))).unwrap_or_default(),
             WatchState::Watched { at } => dim(&format!(" {}", ago(at, now))),
@@ -697,25 +688,21 @@ fn play_blocking(ctx: &Ctx, s: &mut Session, files: &[crate::mpv::PlayFile], out
                 let name = crate::library::file_name_lossy(&path);
                 writeln!(out, "{play} {name}", play = cyan("▶"))
             }
-            PlayerEvent::Ended { path, pos, dur, eof } => match ctx.record_playback(lib, &path, pos, dur, eof) {
+            PlayerEvent::Ended { path, pos, dur, eof } => match ctx.record_playback(lib, log, &path, pos, dur, eof) {
                 Err(e) => {
                     writeln!(out, "{fail} could not record {file}: {e:#}", fail = red("✗"), file = path.display())
                 }
-                Ok((series, items, o, recorded)) => {
-                    ctx.log.merge(log, recorded);
-                    let what = lib.label(&series, &items);
-                    match o {
-                        Outcome::Watched => {
-                            writeln!(out, "  {} watched {what}", state_glyph(&WatchState::Watched { at: 0 }))
-                        }
-                        Outcome::Partial { pos, .. } => {
-                            let (mark, at) =
-                                (state_glyph(&WatchState::Started { pos, dur: None, at: 0 }), crate::fmt::clock(pos));
-                            writeln!(out, "  {mark} stopped at {at} {what}")
-                        }
-                        Outcome::Nothing => writeln!(out, "  {} skipped {what}", state_glyph(&WatchState::Unwatched)),
+                Ok((what, o)) => match o {
+                    Outcome::Watched => {
+                        writeln!(out, "  {} watched {what}", state_glyph(&WatchState::Watched { at: 0 }))
                     }
-                }
+                    Outcome::Partial { pos, .. } => {
+                        let (mark, at) =
+                            (state_glyph(&WatchState::Started { pos, dur: None, at: 0 }), crate::fmt::clock(pos));
+                        writeln!(out, "  {mark} stopped at {at} {what}")
+                    }
+                    Outcome::Nothing => writeln!(out, "  {} skipped {what}", state_glyph(&WatchState::Unwatched)),
+                },
             },
             PlayerEvent::Error(e) => writeln!(out, "{} {e}", red("✗")),
             PlayerEvent::Exited { played, error } => {
@@ -738,7 +725,8 @@ fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) 
     use crate::import_fish::{already_imported, default_history_path, plan, read_history};
     let path = a.history.unwrap_or_else(default_history_path);
     let plays = read_history(&path)?;
-    let p = plan(&ctx.cfg, &s.lib, &plays, &already_imported(s.log.events()), now());
+    let now = now();
+    let p = plan(&ctx.cfg, &s.lib, &plays, &already_imported(s.log.events()), now);
     let matched = p.watches.iter().filter(|w| w.matched).count();
     writeln!(
         out,
@@ -748,16 +736,16 @@ fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) 
         green(&matched.to_string()),
         yellow(&(p.watches.len() - matched).to_string())
     )?;
-    let mut per_series: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    for w in &p.watches {
-        *per_series.entry(&w.series).or_default() += 1;
-    }
-    writeln!(out, "{} series touched", per_series.len())?;
-    if !p.ambiguous.is_empty() {
-        let n = p.ambiguous.len();
-        writeln!(out, "{} {n} ambiguous file name(s) skipped (several indexed files share the name)", yellow("!"))?;
+    let touched: HashSet<&str> = p.watches.iter().map(|w| w.series.as_str()).collect();
+    writeln!(out, "{} series touched", touched.len())?;
+    let skipped = [
+        (&p.ambiguous, "ambiguous file name(s) skipped (several indexed files share the name)"),
+        (&p.unidentified, "file name(s) skipped (nothing in the name or its folder says which show)"),
+    ];
+    for (names, why) in skipped.into_iter().filter(|(names, _)| !names.is_empty()) {
+        writeln!(out, "{} {n} {why}", yellow("!"), n = names.len())?;
         if a.dry_run {
-            for name in &p.ambiguous {
+            for name in names {
                 writeln!(out, "    {}", dim(name))?;
             }
         }
@@ -765,7 +753,7 @@ fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) 
     if !p.proposals.is_empty() {
         writeln!(out, "\n{}", bold("Suggested statuses (for untracked series):"))?;
         for pr in &p.proposals {
-            let (status, title, last) = (status_cell(pr.status, 10), pad(&pr.title, 50), dim(&ago(pr.last, now())));
+            let (status, title, last) = (status_cell(pr.status, 10), pad(&pr.title, 50), dim(&ago(pr.last, now)));
             writeln!(out, "  {status} {title}  {last}")?;
         }
     }
@@ -836,10 +824,19 @@ fn doctor(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
             dim(&last)
         )?;
     }
-    let Session { log, lib, .. } = Session::load(ctx)?;
+    // Warnings are part of this report, not printed on their own.
+    let Session { log, lib, .. } = ctx.session()?;
     writeln!(out, "{label} {n} events", label = bold("log:   "), n = log.events().len())?;
-    for e in log.errors().iter().take(10) {
+    for w in &lib.warnings {
+        writeln!(out, "  {} {w}", red("✗"))?;
+    }
+    // Unreadable files are among the warnings; these are the malformed lines.
+    let lines: Vec<&String> = log.errors().iter().filter(|e| !log.unreadable().contains(e)).collect();
+    for e in lines.iter().take(10) {
         writeln!(out, "  {} {e}", red("✗"))?;
+    }
+    if lines.len() > 10 {
+        writeln!(out, "  {}", dim(&format!("… and {} more malformed lines", lines.len() - 10)))?;
     }
     let mut odd: Vec<&crate::library::IndexedFile> = lib
         .files
@@ -893,14 +890,44 @@ fn export(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
             })
         })
         .collect();
-    serde_json::to_writer_pretty(&mut *out, &series)?;
-    writeln!(out)?;
+    // Buffered here: stdout flushes every line, and this is a lot of lines.
+    let mut buf = std::io::BufWriter::with_capacity(1 << 16, out);
+    // As an I/O error, so a closed pipe (`anipv export | head`) is recognized.
+    serde_json::to_writer_pretty(&mut buf, &series).map_err(std::io::Error::from)?;
+    writeln!(buf)?;
+    buf.flush()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command that fails after recording (its output closed, say) still
+    /// completes what it finished, and its error is what is returned.
+    #[test]
+    fn writing_completes_even_when_the_command_fails() {
+        let (_dir, ctx) = crate::demo::ctx();
+        ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Following, None).unwrap();
+        let mut out = Vec::new();
+        let res = writing(&ctx, &mut out, |s, _| {
+            let recorded = ctx.mark(s.lib.get("yuru camp").unwrap(), &parse_episode_list("1-12")?, true)?;
+            s.add(&ctx, recorded);
+            bail!("output closed")
+        });
+        assert_eq!(res.unwrap_err().to_string(), "output closed");
+        assert_eq!(ctx.library().unwrap().get("yuru camp").unwrap().status, SeriesStatus::Completed);
+        // ... and says so.
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("completed: all episodes watched"), "{text}");
+
+        // A failure while completing doesn't hide the command's own error.
+        let res = writing(&ctx, &mut Vec::new(), |_, _| {
+            std::fs::remove_dir_all(&ctx.paths.events_dir)?;
+            bail!("disk full")
+        });
+        assert_eq!(res.unwrap_err().to_string(), "disk full");
+    }
 
     #[test]
     fn cli_definition_is_valid() {

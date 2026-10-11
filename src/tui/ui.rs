@@ -1,4 +1,5 @@
-//! Rendering. Pure functions of `App` state → frame.
+//! Rendering: `App` state → frame. Drawing only writes back each list's
+//! scroll offset.
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -11,7 +12,7 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 
-use super::app::{App, InputPurpose, MergePicker, Popup, Severity, View};
+use super::app::{App, MergePicker, Popup, Severity, View};
 use crate::fmt::{ago, ago_opt, clock};
 use crate::library::Hint;
 use crate::library::{Item, Library, Series};
@@ -61,16 +62,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Queue => draw_queue(f, app, body),
         View::Detail => draw_detail(f, app, body),
     }
-    if app.playing.is_some() {
-        draw_playing(f, app, now_playing);
-    }
+    draw_playing(f, app, now_playing);
     draw_footer(f, app, footer);
 
     match &mut app.popup {
         Some(Popup::Help) => draw_help(f),
         Some(Popup::Status { series, idx }) => draw_status_popup(f, &app.lib, series, *idx),
         Some(Popup::Merge(picker)) => draw_merge(f, &app.lib, picker),
-        Some(Popup::Input { purpose, prompt, text }) => draw_input(f, purpose, prompt, text),
+        Some(Popup::Search) => draw_search(f, &app.query),
+        Some(Popup::Input { purpose, text, .. }) => draw_input(f, &purpose.prompt(), text),
         Some(Popup::ConfirmQuit) => draw_confirm(f, app.playing.is_some()),
         None => {}
     }
@@ -78,7 +78,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![Span::styled(" anipv ", Style::new().fg(Color::Black).bg(ACCENT).bold()), Span::raw(" ")];
-    let active = if app.view == View::Detail { app.back } else { app.view };
+    let active = app.tab();
     let (upnext_ready, inbox_len) = app.tab_counts();
     for (i, v) in View::TABS.iter().enumerate() {
         let (key, title) = (i + 1, v.title());
@@ -294,7 +294,7 @@ fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(9),
         Constraint::Length(5),
         Constraint::Length(16),
-        Constraint::Length(app.inbox_hint_width().min(48)),
+        Constraint::Length(cells(app.inbox_hint_width().min(48))),
     ];
     let title = format!(" Inbox · new in your download folders · {len} ");
     let table = list_table(rows, widths, Some(["Series", "On disk", "Added", "Airing", ""]), title);
@@ -334,7 +334,8 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let mut title = vec![
-        Span::raw(format!(" Series · {} ", app.filter.label())),
+        // A search lists every series, whatever the filter.
+        Span::raw(format!(" Series · {} ", if app.query.is_empty() { app.filter.label() } else { "all" })),
         Span::styled(format!("{len} "), Style::new().dark_gray()),
     ];
     if !app.query.is_empty() {
@@ -371,7 +372,7 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(ago(fi.file.added(), ts)).dark_gray(),
                 Cell::from(series.map(|s| s.title.clone()).unwrap_or_default())
                     .fg(if status == SeriesStatus::Untracked { Color::Reset } else { status_color(status) }),
-                Cell::from(fi.items.iter().map(super::super::model::ItemKey::describe).collect::<Vec<_>>().join(",")),
+                Cell::from(fi.items.iter().map(ItemKey::describe).collect::<Vec<_>>().join(",")),
                 Cell::from(fi.file.rel.to_string_lossy().into_owned()).dark_gray(),
             ])
         })
@@ -389,24 +390,24 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
-    let rows: Vec<Row> = app
-        .queue
+    let len = app.queue.len();
+    let window = Window::of_table(&app.queue_state, len, area, true);
+    let rows: Vec<Row> = app.queue[window.range.clone()]
         .iter()
-        .enumerate()
-        .map(|(i, q)| {
+        .zip(window.range.clone())
+        .map(|(q, i)| {
             let s = app.lib.get(&q.series);
             let st = s.and_then(|s| s.item(&q.item)).map(|i| i.state).unwrap_or_default();
             let resume = st.percent().map(|p| format!("resume {p}")).unwrap_or_default();
             Row::new(vec![
                 Cell::from(format!("{}", i + 1)).dark_gray(),
-                Cell::from(s.map_or_else(|| q.series.clone(), |s| s.title.clone())),
+                Cell::from(app.lib.title_of(&q.series).to_string()),
                 Cell::from(q.item.describe()).bold(),
                 Cell::from(resume).yellow(),
                 Cell::from(crate::library::file_name_lossy(&q.file)).dark_gray(),
             ])
         })
         .collect();
-    let empty = rows.is_empty();
     let widths = [
         Constraint::Length(3),
         Constraint::Percentage(30),
@@ -415,8 +416,8 @@ fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Fill(1),
     ];
     let table = list_table(rows, widths, Some(["#", "Series", "Item", "", "File"]), " Queue · plays in this order ");
-    f.render_stateful_widget(table, area, &mut app.queue_state);
-    if empty {
+    window.render(f, table, area, &mut app.queue_state);
+    if len == 0 {
         empty_hint(
             f,
             area,
@@ -438,9 +439,7 @@ fn position_text(pos: f64, dur: Option<f64>) -> String {
 }
 
 fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
-    // Hold our own handle so rows can borrow the series while `app` is borrowed mutably below.
-    let lib = std::sync::Arc::clone(&app.lib);
-    let Some(s) = app.detail_key.as_deref().and_then(|k| lib.get(k)) else {
+    let Some(s) = app.detail_series() else {
         f.render_widget(Paragraph::new("series not found").block(block(" Series ")), area);
         return;
     };
@@ -603,7 +602,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// A count of rows or characters as terminal cells (saturating).
-pub(super) fn cells(n: usize) -> u16 {
+fn cells(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
 }
 
@@ -634,7 +633,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Up next",
         &[
-            ("space", "queue next new episode (repeat for more)"),
+            ("space", "queue next new episode and move down"),
             ("a", "queue all new episodes"),
             ("w", "mark next episode watched without playing"),
             ("P", "include paused series"),
@@ -656,7 +655,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "Series",
         &[
             ("/", "fuzzy search"),
-            ("f", "cycle filter (on disk, following, paused, …)"),
+            ("f", "cycle filter (on disk, following, paused, …); ends a search"),
             ("m", "merge into another series"),
             ("U", "undo merges into this series"),
             ("R", "rename"),
@@ -696,13 +695,12 @@ fn draw_help(f: &mut Frame) {
 }
 
 fn draw_status_popup(f: &mut Frame, lib: &Library, series: &str, idx: usize) {
-    let title = lib.get(series).map_or_else(|| series.to_string(), |s| s.title.clone());
+    let title = lib.title_of(series);
     let rows: Vec<Line> = SeriesStatus::ALL
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let first = &s.as_str()[..1];
-            let rest = &s.as_str()[1..];
+            let (first, rest) = s.as_str().split_at(1);
             let st = if i == idx { highlight() } else { Style::new() };
             Line::from(vec![
                 Span::styled(if i == idx { "▌" } else { " " }, Style::new().fg(ACCENT)),
@@ -711,14 +709,14 @@ fn draw_status_popup(f: &mut Frame, lib: &Library, series: &str, idx: usize) {
             ])
         })
         .collect();
-    let title_width = unicode_width::UnicodeWidthStr::width(title.as_str());
+    let title_width = unicode_width::UnicodeWidthStr::width(title);
     let area = centered(f.area(), 40.max(cells(title_width).saturating_add(6)), cells(rows.len()).saturating_add(2));
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(rows).block(block(format!(" {title} "))), area);
 }
 
 fn draw_merge(f: &mut Frame, lib: &Library, picker: &mut MergePicker) {
-    let from_title = lib.get(&picker.from).map_or_else(|| picker.from.clone(), |s| s.title.clone());
+    let from_title = lib.title_of(&picker.from);
     let area = centered(f.area(), 70, 18);
     f.render_widget(Clear, area);
     let outer = block(format!(" Merge “{from_title}” into… "));
@@ -743,20 +741,21 @@ fn draw_merge(f: &mut Frame, lib: &Library, picker: &mut MergePicker) {
     window.render(f, table, list, &mut picker.state);
 }
 
-fn draw_input(f: &mut Frame, purpose: &InputPurpose, prompt: &str, text: &str) {
-    if *purpose == InputPurpose::Search {
-        let area = Rect { y: f.area().bottom().saturating_sub(1), height: 1, ..f.area() };
-        f.render_widget(Clear, area);
-        f.render_widget(
-            Line::from(vec![
-                Span::styled(" / ", Style::new().fg(ACCENT).bold()),
-                Span::raw(text.to_string()),
-                Span::raw("▏"),
-            ]),
-            area,
-        );
-        return;
-    }
+/// The search box, over the footer.
+fn draw_search(f: &mut Frame, query: &str) {
+    let area = Rect { y: f.area().bottom().saturating_sub(1), height: 1, ..f.area() };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Line::from(vec![
+            Span::styled(" / ", Style::new().fg(ACCENT).bold()),
+            Span::raw(query.to_string()),
+            Span::raw("▏"),
+        ]),
+        area,
+    );
+}
+
+fn draw_input(f: &mut Frame, prompt: &str, text: &str) {
     let area = centered(f.area(), 60, 3);
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(format!("{text}▏")).block(block(format!(" {prompt} "))), area);

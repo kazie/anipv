@@ -5,12 +5,13 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::app::Index;
 use crate::config::{Config, RootKind};
-use crate::events::{Event, EventBody, Link, State};
+use crate::events::{Event, EventBody, Link, Relabelled, State};
 use crate::index::classify::{Classified, classify};
-use crate::index::db::{FileRow, SeriesMeta};
+use crate::index::db::{FileRow, MatchResult, SeriesMeta};
 use crate::model::{EpNo, ItemKey, ItemKind, SeriesStatus, WatchState};
 
 /// A concrete file providing an item.
@@ -58,7 +59,7 @@ pub struct Item {
     /// Identity within the series.
     pub key: ItemKey,
     /// Files providing it (several copies/versions possible).
-    pub files: Vec<FileRef>,
+    pub files: Vec<Arc<FileRef>>,
     /// Watch state.
     pub state: WatchState,
 }
@@ -66,7 +67,11 @@ pub struct Item {
 impl Item {
     /// The file to play: present, highest version, most recently added.
     pub fn best_file(&self) -> Option<&FileRef> {
-        self.files.iter().filter(|f| f.present).max_by_key(|f| (f.version.unwrap_or(1), f.added(), f.size))
+        self.files
+            .iter()
+            .map(|f| &**f)
+            .filter(|f| f.present)
+            .max_by_key(|f| (f.version.unwrap_or(1), f.added(), f.size))
     }
 
     /// True if any file is on disk.
@@ -77,7 +82,7 @@ impl Item {
     /// A file name for this item (the one to play, else any known), recorded in
     /// events as evidence of what was watched.
     pub fn file_name(&self) -> Option<String> {
-        self.best_file().or_else(|| self.files.first()).map(FileRef::name)
+        self.best_file().or_else(|| self.files.first().map(|f| &**f)).map(FileRef::name)
     }
 
     /// One of the numbered episodes an episode total counts: a whole number
@@ -87,8 +92,22 @@ impl Item {
     }
 }
 
+/// What a series' last match that linked nothing came to, and when (see
+/// [`crate::index::db::MatchAttempt`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastMatch {
+    /// What it came to.
+    pub result: MatchResult,
+    /// When it ran.
+    pub at: i64,
+    /// It ran with the current offline database version. A title search's
+    /// answer from an older version still stands, but the newer database is
+    /// asked again (see [`crate::meta::needs_match`]).
+    pub current: bool,
+}
+
 /// A series with its items and user state.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Series {
     /// Canonical key.
     pub key: String,
@@ -103,13 +122,9 @@ pub struct Series {
     pub items: Vec<Item>,
     /// Cached metadata for the linked anime.
     pub meta: Option<SeriesMeta>,
-    /// Matching already ran against the current offline database and found
-    /// nothing to link.
-    pub match_checked: bool,
-    /// What the last match for the current offline database came to, when it
-    /// linked nothing from the database: `none` or `ambiguous` (the database),
-    /// or a title search's result (see [`crate::meta::is_search_attempt`]).
-    pub match_result: Option<String>,
+    /// The last match that linked nothing, by the offline database or by
+    /// title, and whether it still stands (see [`LastMatch::current`]).
+    pub last_match: Option<LastMatch>,
     /// `AniList` link chosen by the user (from events).
     pub link: Link,
     /// anipv completed this series automatically before.
@@ -122,8 +137,9 @@ pub struct Series {
     pub episodes_override: Option<u32>,
     /// Other keys merged into this one.
     pub aliases: Vec<String>,
-    /// What fuzzy search matches against (see [`Series::search_text`]).
-    search: String,
+    /// What fuzzy search matches against (see [`Series::search_text`]),
+    /// made when first asked for.
+    search: std::sync::OnceLock<String>,
 }
 
 impl Series {
@@ -205,8 +221,7 @@ impl Series {
     /// You have a relationship with this series: following, paused or
     /// completed it, or watched at least one episode.
     pub fn engaged(&self) -> bool {
-        matches!(self.status, SeriesStatus::Following | SeriesStatus::Paused | SeriesStatus::Completed)
-            || self.watched_count() > 0
+        self.status.is_tracked() || self.watched_count() > 0
     }
 
     /// Items `ordered_items(extras, false)` leaves out that `missing` would
@@ -253,15 +268,16 @@ impl Series {
         self.link == Link::Auto && self.meta.as_ref().is_some_and(|m| m.search_linked)
     }
 
-    /// A title search already ran for it (for the current offline database).
-    pub fn searched(&self) -> bool {
-        self.match_result.as_deref().is_some_and(crate::meta::is_search_attempt)
+    /// Worth matching to an anime in the offline database: on disk, or with
+    /// a status. A series known only from history isn't.
+    pub fn worth_matching(&self) -> bool {
+        self.present() || self.status != SeriesStatus::Untracked
     }
 
-    /// The offline database had no match and no title search has run since:
-    /// one is due when title search is on.
-    pub fn search_due(&self) -> bool {
-        self.match_result.as_deref() == Some("none")
+    /// Worth looking up on `AniList` by title (which sends the title): on
+    /// disk, or tracked. Not a show dropped or skipped and gone from disk.
+    pub fn worth_searching(&self) -> bool {
+        self.present() || self.status.is_tracked()
     }
 
     /// Followed, done, and not auto-completed before (so a user who set it back
@@ -290,10 +306,15 @@ impl Series {
 
     /// What fuzzy search matches against: title and merged-in names, plus the
     /// key when a rename made it differ from the title. (Repeating the title
-    /// would let a query match across the two copies.) Computed once when the
-    /// library is built.
+    /// would let a query match across the two copies.) Made once, when first
+    /// asked for.
     pub fn search_text(&self) -> &str {
-        &self.search
+        self.search.get_or_init(|| search_text(&self.title, &self.key, &self.aliases))
+    }
+
+    /// Every key the series goes by: its own, then the merged-away ones.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.key.as_str()).chain(self.aliases.iter().map(String::as_str))
     }
 
     /// Airing summary from metadata (`ep 9 in 1d 7h`, `finished`, …) and
@@ -349,7 +370,7 @@ impl Series {
     ///
     /// A multi-episode file (`- 001&002`) is listed once, under its first episode.
     pub fn queue_candidates(&self, n: usize, skip: impl Fn(&ItemKey) -> bool) -> Vec<(ItemKey, PathBuf)> {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         self.new_iter()
             .filter(|i| !skip(&i.key))
             .filter_map(|i| i.best_file().map(|f| (i.key.clone(), f.path.clone())))
@@ -374,7 +395,7 @@ impl Series {
 
     /// Newest file added.
     pub fn last_added(&self) -> Option<i64> {
-        self.items.iter().flat_map(|i| &i.files).filter(|f| f.present).map(FileRef::added).max()
+        self.items.iter().flat_map(|i| &i.files).filter(|f| f.present).map(|f| f.added()).max()
     }
 
     /// True if any file of the series is on disk.
@@ -441,7 +462,7 @@ pub struct InboxEntry {
 #[derive(Debug, Clone)]
 pub struct IndexedFile {
     /// The file.
-    pub file: FileRef,
+    pub file: Arc<FileRef>,
     /// Canonical series key it belongs to.
     pub series: String,
     /// Items it provides.
@@ -459,6 +480,7 @@ pub struct Library {
     by_key: HashMap<String, usize>,
     /// Every merged-away or legacy key → the canonical key it resolves to.
     canonical: HashMap<String, String>,
+    /// Merged-away key → the key it was merged into (as the log settled them).
     aliases: HashMap<String, String>,
     /// Legacy series key → the key it is now (see [`legacy_keys`]).
     legacy: HashMap<String, String>,
@@ -468,23 +490,31 @@ pub struct Library {
     legacy_named: HashSet<String>,
     /// Mapped legacy keys the event log merges or unmerges (see [`Library::legacy_aliases`]).
     legacy_decided: HashSet<String>,
+    /// The offline database version the cached attempts are judged against
+    /// (see [`crate::app::MetaCache::db_version`]).
+    pub db_version: String,
     /// Problems met while building that did not stop it (e.g. the cache
     /// migration in [`crate::app::Ctx::migrated_library`] failing), for the UI to show.
     pub warnings: Vec<String>,
+    /// Part of the event log could not be read (see [`Library::warnings`]).
+    /// Nothing is recorded automatically from such a library: the missing
+    /// part may hold choices that would be overridden.
+    pub partial_history: bool,
 }
 
-/// Group the classified files by the series they belong to now (after
-/// merges), with the series and items known only from history.
+/// Group the classified files by the series they belong to now (after the
+/// merges in `aliases`, see [`crate::events::resolve_alias`]).
 fn group(
-    state: &State,
+    aliases: &HashMap<String, String>,
     classified: Vec<(&FileRow, RootKind, &Classified)>,
 ) -> (HashMap<String, Building>, Vec<IndexedFile>) {
     let mut building: HashMap<String, Building> = HashMap::new();
     let mut indexed = Vec::with_capacity(classified.len());
-    for (row, kind, Classified { series, title, parsed, .. }) in classified {
-        let canon = state.resolve(series);
-        let items = crate::index::classify::expand_items(parsed);
-        let file = FileRef {
+    for (row, kind, c) in classified {
+        let Classified { series, title, parsed, .. } = c;
+        let canon = crate::events::resolve_alias(aliases, series);
+        let items = c.items();
+        let file = Arc::new(FileRef {
             path: row.path.clone(),
             root: row.root.clone(),
             rel: row.rel.clone(),
@@ -493,7 +523,7 @@ fn group(
             first_seen: row.first_seen,
             mtime: row.mtime,
             version: parsed.version,
-        };
+        });
         // Most files join a series already started: no key copy for those.
         let b = match building.get_mut(canon) {
             Some(b) => b,
@@ -518,8 +548,12 @@ fn group(
         }
         indexed.push(IndexedFile { file, series: canon.to_string(), items });
     }
+    (building, indexed)
+}
 
-    // Items/series known only from history (files deleted or never indexed here).
+/// Add the series and items known only from history (files deleted or never
+/// indexed here).
+fn add_history(building: &mut HashMap<String, Building>, state: &State) {
     for (series, items) in &state.items {
         let b = building.entry(series.clone()).or_default();
         for item in items.keys() {
@@ -531,7 +565,47 @@ fn group(
             building.entry(series.clone()).or_default();
         }
     }
-    (building, indexed)
+}
+
+/// Items recorded under a label no file gives any more, when a newer version
+/// labels their file differently (a cleaner extras label): the file name an
+/// event recorded finds the file in the same series, and its item of the same
+/// kind and number is the one that file gives now. Nothing is written; the
+/// log keeps the old label.
+fn relabelled(
+    events: &[Event],
+    canonical: &HashMap<String, String>,
+    building: &HashMap<String, Building>,
+) -> Relabelled {
+    let mut relabelled = Relabelled::new();
+    for ev in events {
+        let (Some(series), Some(item), Some(file)) = (ev.body.series(), ev.body.item(), ev.body.file()) else {
+            continue;
+        };
+        // An episode has no label to change.
+        if item.kind == ItemKind::Episode {
+            continue;
+        }
+        let key = crate::events::rekey(canonical, series);
+        let Some(b) = building.get(key) else { continue };
+        if b.items.contains_key(item) || relabelled.get(key).is_some_and(|m| m.contains_key(item)) {
+            continue;
+        }
+        // Only the label changed: one item of the same kind and number that
+        // a file of that name gives (recorded as `FileRef::name` gives it).
+        let first = ItemKey { kind: item.kind, ep: item.ep, label: String::new() };
+        let named = |f: &Arc<FileRef>| f.rel.file_name().is_some_and(|n| n.to_string_lossy() == file);
+        let mut now = b
+            .items
+            .range(first..)
+            .take_while(|(k, _)| k.kind == item.kind && k.ep == item.ep)
+            .filter(|(_, files)| files.iter().any(named))
+            .map(|(k, _)| k);
+        if let (Some(to), None) = (now.next(), now.next()) {
+            relabelled.entry(key.to_string()).or_default().insert(item.clone(), to.clone());
+        }
+    }
+    relabelled
 }
 
 /// The mapped legacy keys `events` name, and those they merge or unmerge.
@@ -559,24 +633,36 @@ struct Lookups<'a> {
     legacy_of: &'a HashMap<String, Vec<String>>,
     /// Cached metadata rows by series key.
     meta_by: HashMap<&'a str, &'a SeriesMeta>,
-    /// Series keys with a "no match" result, and what it was.
-    attempted: HashMap<&'a str, &'a str>,
+    /// Series keys with a match on record that linked nothing (see [`LastMatch`]).
+    attempted: HashMap<&'a str, LastMatch>,
     /// Canonical key → the keys merged into it.
     aliases_of: HashMap<&'a str, Vec<String>>,
 }
 
 impl<'a> Lookups<'a> {
-    fn new(cfg: &'a Config, state: &'a State, index: &'a Index, legacy_of: &'a HashMap<String, Vec<String>>) -> Self {
+    fn new(
+        cfg: &'a Config,
+        state: &'a State,
+        index: &'a Index,
+        legacy_of: &'a HashMap<String, Vec<String>>,
+        canonical: &'a HashMap<String, String>,
+    ) -> Self {
         let meta_by = index.meta.rows.iter().map(|m| (m.series.as_str(), m)).collect();
-        let attempted = index.meta.attempts.iter().map(|a| (a.series.as_str(), a.result.as_str())).collect();
+        let attempted = index
+            .meta
+            .attempts
+            .iter()
+            .map(|a| {
+                let current = index.meta.db_version == a.db_version;
+                (a.series.as_str(), LastMatch { result: a.result, at: a.at, current })
+            })
+            .collect();
+        // A series' merged-away names: the merged-away keys that lead to it
+        // (on an alias cycle the canonical key is itself merged away; it is
+        // the series, not one of its other names, and not in `canonical`).
         let mut aliases_of: HashMap<&str, Vec<String>> = HashMap::new();
-        for from in state.aliases.keys() {
-            // On an alias cycle the canonical key is itself a merged-away key:
-            // it is the series, not one of its other names.
-            let to = state.resolve(from);
-            if to != from {
-                aliases_of.entry(to).or_default().push(from.clone());
-            }
+        for (from, to) in canonical.iter().filter(|(from, _)| state.aliases.contains_key(*from)) {
+            aliases_of.entry(to).or_default().push(from.clone());
         }
         Self { cfg, state, index, legacy_of, meta_by, attempted, aliases_of }
     }
@@ -585,17 +671,11 @@ impl<'a> Lookups<'a> {
     fn finish_series(&self, key: String, b: Building) -> Series {
         let state = self.state;
         let st = state.series.get(&key).cloned().unwrap_or_default();
-        let title = st.title.clone().unwrap_or_else(|| {
-            let votes = if b.titles.is_empty() { &b.gone_titles } else { &b.titles };
-            votes
-                .iter()
-                .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
-                .map(|(t, _)| t.clone())
-                .or_else(|| {
-                    let f = state.file_hints.get(&key)?;
-                    Some(classify(self.cfg, RootKind::Ongoing, Path::new(f)).title).filter(|t| !t.is_empty())
-                })
-                .unwrap_or_else(|| title_case(&key))
+        // The title set by the user, else the files', else the last played
+        // file's (a series known only from history), else the key's.
+        let title = st.title.clone().or_else(|| b.voted_title()).unwrap_or_else(|| {
+            let played = state.file_hints.get(&key).map(|f| classify(self.cfg, RootKind::Ongoing, Path::new(f)).title);
+            played.filter(|t| !t.is_empty()).unwrap_or_else(|| title_case(&key))
         });
         let states = state.items.get(&key);
         let mut items: Vec<Item> = b
@@ -618,11 +698,10 @@ impl<'a> Lookups<'a> {
             .map(|m| SeriesMeta { series: key.clone(), ..(*m).clone() });
         // A "no match" for the old key doesn't count: the new key is a
         // different title to match (`Ctx::migrated_library` drops those rows).
-        let attempt = self.attempted.get(key.as_str()).map(|r| (*r).to_string());
+        let last_match = self.attempted.get(key.as_str()).copied();
         let mut s = Series {
             meta,
-            match_checked: attempt.is_some(),
-            match_result: attempt,
+            last_match,
             key,
             title,
             status: st.status,
@@ -634,10 +713,9 @@ impl<'a> Lookups<'a> {
             prequels: None,
             episodes_override: st.episodes,
             aliases,
-            search: String::new(),
+            search: std::sync::OnceLock::new(),
         };
         s.prequels = s.anilist_id().and_then(|id| self.index.meta.prequels.get(&id).cloned());
-        s.search = search_text(&s.title, &s.key, &s.aliases);
         s
     }
 }
@@ -648,7 +726,16 @@ struct Building {
     /// nothing is on disk, so a deleted file's old name can't win a tie).
     titles: HashMap<String, usize>,
     gone_titles: HashMap<String, usize>,
-    items: BTreeMap<ItemKey, Vec<FileRef>>,
+    items: BTreeMap<ItemKey, Vec<Arc<FileRef>>>,
+}
+
+impl Building {
+    /// The title most files vote for (those on disk, or else gone ones);
+    /// a tie goes to the smallest.
+    fn voted_title(&self) -> Option<String> {
+        let votes = if self.titles.is_empty() { &self.gone_titles } else { &self.titles };
+        votes.iter().max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0))).map(|(t, _)| t.clone())
+    }
 }
 
 impl Library {
@@ -662,7 +749,13 @@ impl Library {
     pub fn build(cfg: &Config, events: &[Event], index: &Index) -> Self {
         let classified: Vec<(&FileRow, RootKind, &Classified)> = index.classified().collect();
         let legacy = legacy_keys(classified.iter().map(|(_, _, c)| (c.series.as_str(), c.legacy_series.as_deref())));
-        let state = &State::replay_with(events, &legacy);
+        let aliases = crate::events::settled_aliases(events, &legacy);
+        // Resolved once, so lookups by any key are a single lookup.
+        let canonical = crate::events::canonical_keys(&legacy, &aliases);
+        let (mut building, mut indexed) = group(&aliases, classified);
+        let relabelled = relabelled(events, &canonical, &building);
+        let state = State::replay_settled(events, aliases, &canonical, &relabelled);
+        add_history(&mut building, &state);
         let mut legacy_of: HashMap<String, Vec<String>> = HashMap::new();
         for (old, new) in &legacy {
             legacy_of.entry(new.clone()).or_default().push(old.clone());
@@ -671,21 +764,12 @@ impl Library {
             olds.sort_unstable();
         }
 
-        let (building, mut indexed) = group(state, classified);
-        let lookups = Lookups::new(cfg, state, index, &legacy_of);
+        let lookups = Lookups::new(cfg, &state, index, &legacy_of, &canonical);
         let mut series: Vec<Series> = building.into_iter().map(|(key, b)| lookups.finish_series(key, b)).collect();
         series.sort_by_cached_key(|s| (s.title.to_lowercase(), s.key.clone()));
-        indexed.sort_by(|a, b| a.file.path.cmp(&b.file.path));
+        indexed.sort_by(|a, b| path_order(&a.file.path, &b.file.path));
 
         let (legacy_named, legacy_decided) = legacy_mentions(events, &legacy);
-        // Resolved once here, so lookups by any key are a single lookup.
-        let canonical: HashMap<String, String> = legacy
-            .iter()
-            .map(|(old, new)| (old, state.resolve(new)))
-            .chain(state.aliases.keys().map(|from| (from, state.resolve(from))))
-            .filter(|(k, to)| k.as_str() != *to)
-            .map(|(k, to)| (k.clone(), to.to_string()))
-            .collect();
         let mut by_key: HashMap<String, usize> = series.iter().enumerate().map(|(i, s)| (s.key.clone(), i)).collect();
         for (k, to) in &canonical {
             if let Some(&i) = by_key.get(to) {
@@ -702,18 +786,25 @@ impl Library {
             legacy_decided,
             legacy,
             legacy_of,
+            db_version: index.meta.db_version.clone(),
             warnings: Vec::new(),
+            partial_history: false,
         }
     }
 
     /// `Title 07,08` for messages about played items.
     pub fn label(&self, series: &str, items: &[ItemKey]) -> String {
-        let title = self.get(series).map_or(series, |s| s.title.as_str());
+        let title = self.title_of(series);
         let eps: Vec<String> = items.iter().map(ItemKey::describe).collect();
         format!("{title} {}", eps.join(","))
     }
 
-    /// Canonical key for a (possibly merged-away) series key.
+    /// The title of the series `key`, or the key itself without one.
+    pub fn title_of<'a>(&'a self, key: &'a str) -> &'a str {
+        self.get(key).map_or(key, |s| s.title.as_str())
+    }
+
+    /// Canonical key for a series key (possibly merged away, or a legacy spelling).
     pub fn resolve<'a>(&'a self, key: &'a str) -> &'a str {
         crate::events::rekey(&self.canonical, key)
     }
@@ -873,7 +964,7 @@ impl Library {
 
     /// Classification of an indexed path.
     pub fn file(&self, path: &Path) -> Option<&IndexedFile> {
-        let i = self.files.binary_search_by(|f| f.file.path.as_path().cmp(path)).ok()?;
+        let i = self.files.binary_search_by(|f| path_order(&f.file.path, path)).ok()?;
         Some(&self.files[i])
     }
 
@@ -909,6 +1000,10 @@ fn spellings<'a>(legacy_of: &'a HashMap<String, Vec<String>>, key: &'a str) -> i
 /// series on disk (then the exact-key owner keeps it) or several different keys
 /// share one legacy key (nothing says which one it was). Returns legacy → key.
 fn legacy_keys<'a>(series: impl Iterator<Item = (&'a str, Option<&'a str>)> + Clone) -> HashMap<String, String> {
+    // Almost always: no key has a legacy spelling.
+    if series.clone().all(|(_, legacy)| legacy.is_none()) {
+        return HashMap::new();
+    }
     let on_disk: HashSet<&str> = series.clone().map(|(key, _)| key).collect();
     let mut map: HashMap<&str, Option<&str>> = HashMap::new();
     let differing = series.filter_map(|(key, legacy)| Some((key, legacy?)));
@@ -919,6 +1014,18 @@ fn legacy_keys<'a>(series: impl Iterator<Item = (&'a str, Option<&'a str>)> + Cl
         }
     }
     map.into_iter().filter_map(|(legacy, key)| Some((legacy.to_string(), key?.to_string()))).collect()
+}
+
+/// The order of paths as [`Path`] compares them (component by component),
+/// for the normalized paths a scan finds, but without splitting them into
+/// components: bytes, with the separator first. Sorting a library's files
+/// by `Path::cmp` takes a third of a build.
+fn path_order(a: &Path, b: &Path) -> std::cmp::Ordering {
+    use std::os::unix::ffi::OsStrExt;
+    fn bytes(p: &Path) -> impl Iterator<Item = u8> + '_ {
+        p.as_os_str().as_bytes().iter().map(|&c| if c == b'/' { 0 } else { c })
+    }
+    bytes(a).cmp(bytes(b))
 }
 
 /// Title and merged-in names, plus the key when it differs from the title's own.
@@ -949,6 +1056,18 @@ pub fn title_case(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cheap path order is `Path`'s, for the paths a scan finds.
+    #[test]
+    fn path_order_is_paths_order() {
+        let paths =
+            ["/m/Show/x.mkv", "/m/Show 2/x.mkv", "/m/Show-2/a.mkv", "/m/Show/a/b.mkv", "/m/Showa.mkv", "/m/S", "/m"];
+        for a in paths {
+            for b in paths {
+                assert_eq!(path_order(Path::new(a), Path::new(b)), Path::new(a).cmp(Path::new(b)), "{a} vs {b}");
+            }
+        }
+    }
     use crate::app::MetaCache;
     use crate::config::Root;
     use crate::events::{Event, EventBody};
@@ -1216,6 +1335,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_relabelled_file_keeps_its_watch_state() {
+        let name = "[GroupA] Grand Blue (Creditless ED 01) [BDRip 1080p][ABCD0001].mkv";
+        let files = [
+            row("anime", &format!("Grand Blue/Extras/{name}"), true, 1),
+            row("anime", "Grand Blue/Grand Blue - 01.mkv", true, 1),
+        ];
+        // The label an older version gave the file: its whole name.
+        let old =
+            ItemKey { kind: ItemKind::Extra, ep: None, label: crate::identity::label_key(crate::parse::stem(name)) };
+        let new = ItemKey { label: "creditless ed 01".into(), ..old };
+        let file = || Some(name.to_string());
+        let watched = |ts, series: &str, item: &ItemKey| {
+            ev(ts, EventBody::Watched { series: series.into(), item: item.clone(), file: file() })
+        };
+        let states = |events: &[Event]| -> Vec<(ItemKey, WatchState)> {
+            let lib = build(&files, events, &[]);
+            lib.get("grand blue").unwrap().items.iter().map(|i| (i.key.clone(), i.state)).collect()
+        };
+        let with_new = |state| [(ep(1), WatchState::Unwatched), (new.clone(), state)];
+
+        // The state moves to the item the file gives now; no item is left under the old label.
+        assert_eq!(states(&[watched(5, "grand blue", &old)]), with_new(WatchState::Watched { at: 5 }));
+        // Events under either label replay as one item, in log order: the
+        // newest wins, and playing a watched item again doesn't un-watch it.
+        let unwatched = ev(7, EventBody::Unwatched { series: "grand blue".into(), item: new.clone(), file: file() });
+        assert_eq!(states(&[watched(5, "grand blue", &old), unwatched]), with_new(WatchState::Unwatched));
+        let progress =
+            EventBody::Progress { series: "grand blue".into(), item: new.clone(), pos: 1.0, dur: None, file: file() };
+        assert_eq!(states(&[watched(5, "grand blue", &old), ev(7, progress)]), with_new(WatchState::Watched { at: 5 }));
+        // Nor is an item of another kind (an episode watched elsewhere as a
+        // file of this name), or one that a file still gives.
+        assert_eq!(
+            states(&[watched(5, "grand blue", &ep(2))]),
+            [
+                (ep(1), WatchState::Unwatched),
+                (ep(2), WatchState::Watched { at: 5 }),
+                (new.clone(), WatchState::Unwatched)
+            ]
+        );
+        assert_eq!(
+            states(&[watched(5, "grand blue", &ep(1))]),
+            [(ep(1), WatchState::Watched { at: 5 }), (new.clone(), WatchState::Unwatched)]
+        );
+        // Nor is history in another series with the same file name.
+        let lib = build(&files, &[watched(5, "other show", &old)], &[]);
+        assert_eq!(lib.get("other show").unwrap().items[0].key, old);
+        assert!(lib.get("grand blue").unwrap().items.iter().all(|i| i.state == WatchState::Unwatched));
+    }
+
     /// Extras follow the first episode with their number; the others (no
     /// number, or no such episode) come last, in their own order.
     #[test]
@@ -1301,11 +1470,12 @@ mod tests {
     #[test]
     fn match_attempts_mark_series_as_checked() {
         let files = [row("dl", "[A] Zzz - 01.mkv", true, 1), row("dl", "[A] Yyy - 01.mkv", true, 1)];
-        let attempt = MatchAttempt { series: "zzz".into(), db_version: "v1".into(), at: 1, result: "none".into() };
-        let index = index(&files, MetaCache { attempts: vec![attempt], ..MetaCache::default() });
+        let attempt = MatchAttempt { series: "zzz".into(), db_version: "v1".into(), at: 1, result: MatchResult::None };
+        let index =
+            index(&files, MetaCache { attempts: vec![attempt], db_version: "v1".into(), ..MetaCache::default() });
         let lib = Library::build(&cfg(), &[], &index);
-        assert!(lib.get("zzz").unwrap().match_checked);
-        assert!(!lib.get("yyy").unwrap().match_checked);
+        assert!(lib.get("zzz").unwrap().last_match.is_some());
+        assert!(lib.get("yyy").unwrap().last_match.is_none());
     }
 
     #[test]
@@ -1411,13 +1581,15 @@ mod tests {
             anilist: Some(anilist),
             ..SeriesMeta::default()
         };
-        let attempt = MatchAttempt { series: "ハカ".into(), db_version: "v1".into(), at: 1, result: "none".into() };
-        let mut index = index(&baka_files(), MetaCache { attempts: vec![attempt], ..rows(&[meta("ハカ", 1)]) });
+        let attempt =
+            MatchAttempt { series: "ハカ".into(), db_version: "v1".into(), at: 1, result: MatchResult::None };
+        let cache = MetaCache { attempts: vec![attempt], db_version: "v1".into(), ..rows(&[meta("ハカ", 1)]) };
+        let mut index = index(&baka_files(), cache);
         let s = |index: &Index| Library::build(&cfg(), &[], index).get("バカ").unwrap().clone();
         let old = s(&index);
         assert_eq!(old.meta.as_ref().map(|m| (m.series.as_str(), m.anilist)), Some(("バカ", Some(1))), "re-keyed");
         assert_eq!(old.anilist_id(), Some(1));
-        assert!(!old.match_checked, "a \"no match\" for the old key is not one for the new key");
+        assert!(old.last_match.is_none(), "a \"no match\" for the old key is not one for the new key");
         // A row under the new key is preferred.
         index.meta.rows.push(meta("バカ", 2));
         assert_eq!(s(&index).anilist_id(), Some(2));

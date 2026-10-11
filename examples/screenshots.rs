@@ -204,14 +204,8 @@ fn main() -> anyhow::Result<()> {
     // Up next with two episodes queued and one playing.
     let mut app = fresh(home.path())?;
     app.press("j  ");
-    app.playing = Some(NowPlaying {
-        path: None,
-        label: "Sousou no Frieren 29".into(),
-        pos: 802.0,
-        dur: Some(1420.0),
-        total: 3,
-        done: 0,
-    });
+    app.playing =
+        Some(NowPlaying { label: "Sousou no Frieren 29".into(), pos: 802.0, dur: Some(1420.0), total: 3, done: 0 });
     write("up-next.svg", &shot(&mut app, 14), "anipv — up next")?;
     app.playing = None;
 

@@ -234,7 +234,6 @@ fn queue_is_consumed_once_playback_starts() {
 }
 
 /// A failed write must stay visible instead of being replaced by "Show → status".
-#[cfg(unix)]
 #[test]
 fn write_errors_are_not_hidden_by_success_messages() {
     use std::os::unix::fs::PermissionsExt;
@@ -264,7 +263,12 @@ fn stale_metadata_sync_results_are_discarded() {
     // with results for other series.
     let stale = SeriesMeta { series: "yuru camp".into(), anilist: Some(98444), ..SeriesMeta::default() };
     let other = SeriesMeta { series: "one piece".into(), anilist: Some(21), ..SeriesMeta::default() };
-    let none = MatchAttempt { series: "dungeon meshi".into(), db_version: "v".into(), at: 1, result: "none".into() };
+    let none = MatchAttempt {
+        series: "dungeon meshi".into(),
+        db_version: "v".into(),
+        at: 1,
+        result: anipv::index::db::MatchResult::None,
+    };
     let res = SyncResult {
         rows: vec![stale, other],
         attempts: vec![none],
@@ -677,7 +681,6 @@ fn held_keys_follow_a_merge() {
 /// Actions don't read the event log again (here another device's log has
 /// become unreadable since it was read), but events arriving from elsewhere
 /// are picked up on the next reload.
-#[cfg(unix)]
 #[test]
 fn actions_reuse_the_loaded_event_log() {
     use anipv::events::{EventBody, EventLog};
@@ -730,4 +733,24 @@ fn detail_rows_follow_a_reload() {
     assert!(shown(&app).len() > before.len());
     app.press("d");
     assert_eq!(shown(&app), expected(&app));
+}
+
+/// The queue scrolls like the other lists: after it shrinks while scrolled
+/// down, it fills the view from the top again instead of showing blank rows.
+#[test]
+fn queue_fills_the_view_after_it_shrinks() {
+    use anipv::app::QueueEntry;
+    use anipv::model::{EpNo, ItemKey};
+    let (_d, mut app) = app();
+    let entry = |n: u32| QueueEntry {
+        series: format!("show {n}"),
+        item: ItemKey::episode(EpNo::new(1)),
+        file: format!("/m/{n}.mkv").into(),
+    };
+    app.queue = (1..=100).map(entry).collect();
+    app.press("5G");
+    assert!(render(&mut app).contains("show 100"));
+    app.queue.truncate(3);
+    let s = render(&mut app);
+    assert!(s.contains("show 1 ") && s.contains("show 3"), "{s}");
 }

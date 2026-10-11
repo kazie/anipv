@@ -244,7 +244,6 @@ fn import_fish_resolves_by_path_and_skips_ambiguous_names() {
 
 /// A file played through a symlinked mount resolves by its show folder, and a
 /// folder naming another show doesn't borrow an indexed file's base name.
-#[cfg(unix)]
 #[test]
 fn import_fish_follows_symlinked_mounts() {
     let d = demo();
@@ -443,7 +442,6 @@ fn play_tracks_without_runtime_dir() {
 }
 
 /// A failed write reports the error and keeps following mpv.
-#[cfg(unix)]
 #[test]
 fn play_keeps_going_when_a_write_fails() {
     use std::os::unix::fs::PermissionsExt;
@@ -499,4 +497,61 @@ fn meta_refresh_respects_anilist_off() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("anilist = false"));
+}
+
+/// While part of the event log can't be read, commands that write refuse
+/// (what they would decide from the rest may be wrong), and `doctor` lists
+/// the file once, among its own findings.
+#[test]
+fn writes_wait_for_an_unreadable_log_file() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let d = demo();
+    let other = d.path().join("data/events/laptop.jsonl");
+    std::fs::write(&other, "").unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&other).is_ok() {
+        eprintln!("skipped: running as root, nothing is unreadable");
+        return;
+    }
+    let events = || std::fs::read_to_string(d.path().join("data/events/desktop.jsonl")).unwrap();
+    let before = events();
+    anipv(d.path())
+        .args(["mark", "frieren", "29"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("laptop.jsonl").and(predicate::str::contains("nothing is changed")));
+    assert_eq!(events(), before);
+    anipv(d.path()).arg("ls").assert().success().stderr(predicate::str::contains("laptop.jsonl"));
+    anipv(d.path())
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("laptop.jsonl").count(1))
+        .stderr(predicate::str::contains("laptop.jsonl").not());
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+    anipv(d.path()).args(["mark", "frieren", "29"]).assert().success();
+}
+
+#[test]
+fn play_needs_at_least_one_episode() {
+    let d = demo();
+    anipv(d.path()).args(["play", "frieren", "-n", "0", "--print"]).assert().failure();
+}
+
+/// A reader that stops early (`anipv export | head`) is not an error.
+#[test]
+fn export_into_a_closed_pipe_succeeds() {
+    let d = demo();
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("anipv"))
+        .arg("export")
+        .env("ANIPV_HOME", d.path())
+        .env("NO_COLOR", "1")
+        .env_remove("ANIPV_CONFIG")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }

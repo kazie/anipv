@@ -24,7 +24,7 @@ Press `?` in the TUI to see these at any time.
 
 | Key | Action |
 | --- | --- |
-| `space` | queue next new episode (repeat for more) |
+| `space` | queue next new episode and move down |
 | `a` | queue all new episodes |
 | `w` | mark next episode watched without playing |
 | `P` | include paused series |
@@ -46,7 +46,7 @@ Press `?` in the TUI to see these at any time.
 | Key | Action |
 | --- | --- |
 | `/` | fuzzy search |
-| `f` | cycle filter (on disk, following, paused, …) |
+| `f` | cycle filter (on disk, following, paused, …); ends a search |
 | `m` | merge into another series |
 | `U` | undo merges into this series |
 | `R` | rename |

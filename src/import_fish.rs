@@ -9,11 +9,13 @@
 //!
 //! Each played file is matched against the index (so archive folders give the
 //! right series): by its exact path first, then by the longest path suffix that
-//! includes its folder (so relative paths, moved roots and symlinked mounts
-//! resolve), then by base name. A typed folder that names nothing in the index
-//! only falls back to the base name when parsing the typed path gives the same
-//! series. Ambiguous names are skipped, never guessed. Files that are not
-//! indexed at all are parsed directly.
+//! includes a folder naming the show (so relative paths, moved roots and
+//! symlinked mounts resolve; `Season 1/01.mkv` could be any show's), then by
+//! base name. A typed folder that names nothing in the index only falls back
+//! to the base name when parsing the typed path gives the same series.
+//! Ambiguous names are skipped, never guessed. Files that are not indexed at
+//! all are parsed directly, unless nothing in their name or folders says which
+//! show they are (`01.mkv`): those are skipped too.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -22,7 +24,7 @@ use anyhow::{Context, Result};
 
 use crate::config::{Config, RootKind};
 use crate::events::{Event, EventBody};
-use crate::index::classify::classify;
+use crate::index::classify::{classify, is_generic_dir};
 use crate::library::Library;
 use crate::model::{EpNo, ItemKey, ItemKind, SeriesStatus};
 use crate::parse::is_video;
@@ -57,76 +59,72 @@ fn unescape_history(s: &str) -> String {
     out
 }
 
-#[derive(Debug, PartialEq)]
-enum Tok {
-    Word { text: String, glob: bool },
-    Sep,
+/// A word of a command line.
+#[derive(Debug, Default, PartialEq)]
+struct Word {
+    text: String,
+    /// It has a wildcard or brace expansion (`{01,02}.mkv`): not a file name as typed.
+    glob: bool,
 }
 
-/// Split a command line using fish quoting rules.
-fn tokenize(cmd: &str) -> Vec<Tok> {
-    let mut toks = Vec::new();
-    let mut cur = String::new();
-    let mut in_word = false;
-    let mut glob = false;
+/// Split a command line into its commands (at `;`, `|`, `&` and newlines)
+/// and their words, using fish quoting rules.
+fn commands(cmd: &str) -> Vec<Vec<Word>> {
+    let (mut cmds, mut words) = (Vec::new(), Vec::new());
+    let mut word: Option<Word> = None;
     let mut chars = cmd.chars().peekable();
-    let flush = |toks: &mut Vec<Tok>, cur: &mut String, in_word: &mut bool, glob: &mut bool| {
-        if *in_word {
-            toks.push(Tok::Word { text: std::mem::take(cur), glob: *glob });
-        }
-        *in_word = false;
-        *glob = false;
-    };
     while let Some(c) = chars.next() {
         match c {
-            '\\' => {
-                in_word = true;
-                if let Some(n) = chars.next()
-                    && n != '\n'
-                {
-                    cur.push(n);
-                }
-            }
+            '\\' => match chars.next() {
+                // A line continuation joins the lines (a trailing `\\` is nothing).
+                Some('\n') | None => {}
+                Some(n) => word.get_or_insert_default().text.push(n),
+            },
+            // A comment runs to the end of the line (`#` inside a word is literal).
+            '#' if word.is_none() => while chars.next_if(|&n| n != '\n').is_some() {},
             '\'' => {
-                in_word = true;
+                let text = &mut word.get_or_insert_default().text;
                 while let Some(n) = chars.next() {
                     match n {
                         '\'' => break,
-                        '\\' if matches!(chars.peek(), Some('\'' | '\\')) => cur.push(chars.next().unwrap_or('\\')),
-                        _ => cur.push(n),
+                        '\\' if matches!(chars.peek(), Some('\'' | '\\')) => text.push(chars.next().unwrap_or('\\')),
+                        _ => text.push(n),
                     }
                 }
             }
             '"' => {
-                in_word = true;
+                let text = &mut word.get_or_insert_default().text;
                 while let Some(n) = chars.next() {
                     match n {
                         '"' => break,
                         '\\' if matches!(chars.peek(), Some('"' | '\\' | '$')) => {
-                            cur.push(chars.next().unwrap_or('\\'));
+                            text.push(chars.next().unwrap_or('\\'));
                         }
-                        _ => cur.push(n),
+                        _ => text.push(n),
                     }
                 }
             }
             ';' | '|' | '&' | '\n' => {
-                flush(&mut toks, &mut cur, &mut in_word, &mut glob);
-                toks.push(Tok::Sep);
+                words.extend(word.take());
+                cmds.push(std::mem::take(&mut words));
             }
-            c if c.is_whitespace() => flush(&mut toks, &mut cur, &mut in_word, &mut glob),
-            '*' | '?' => {
-                in_word = true;
-                glob = true;
-                cur.push(c);
+            c if c.is_whitespace() => words.extend(word.take()),
+            '*' | '?' | '{' | '}' => {
+                let w = word.get_or_insert_default();
+                w.glob = true;
+                w.text.push(c);
             }
-            _ => {
-                in_word = true;
-                cur.push(c);
-            }
+            _ => word.get_or_insert_default().text.push(c),
         }
     }
-    flush(&mut toks, &mut cur, &mut in_word, &mut glob);
-    toks
+    words.extend(word);
+    cmds.push(words);
+    cmds
+}
+
+/// The last component of a typed path.
+fn base_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// A command that runs the command after it: `(name, flags it may take
@@ -137,6 +135,10 @@ type Wrapper = (&'static str, &'static [&'static str], &'static [&'static str]);
 /// are skipped anywhere before it, e.g. `env FOO=1 mpv …`). Any other flag
 /// ends the search, so the command is not counted as an mpv play.
 const WRAPPERS: &[Wrapper] = &[
+    // fish's own: `cd x; and mpv …`, `not mpv …`.
+    ("and", &[], &[]),
+    ("or", &[], &[]),
+    ("not", &[], &[]),
     ("command", &[], &[]),
     ("exec", &[], &[]),
     ("nohup", &[], &[]),
@@ -146,82 +148,65 @@ const WRAPPERS: &[Wrapper] = &[
     ("setsid", &[], &[]),
     ("caffeinate", &["-d", "-i", "-m", "-s", "-u"], &[]),
     ("systemd-run", &["--user", "--scope"], &[]),
+    ("prime-run", &[], &[]),
+    ("gamemoderun", &[], &[]),
 ];
 
 /// Video file arguments of every `mpv` command in `cmd`, also behind the
 /// common prefixes such as `nohup mpv …` or `nice -n 5 mpv …`.
 pub fn mpv_files(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut at_start = true;
-    let mut in_mpv = false;
-    let mut wrapper: Option<&Wrapper> = None;
-    let mut skip_value = false;
-    for t in tokenize(cmd) {
-        match t {
-            Tok::Sep => {
-                at_start = true;
-                in_mpv = false;
-                wrapper = None;
-                skip_value = false;
-            }
-            Tok::Word { text, glob } => {
-                if at_start {
-                    if std::mem::take(&mut skip_value) {
-                        continue;
-                    }
-                    if let Some((_, flags, valued)) = wrapper {
-                        if flags.contains(&text.as_str()) {
-                            continue;
-                        }
-                        if valued.contains(&text.as_str()) {
-                            skip_value = true;
-                            continue;
-                        }
-                    }
-                    // `VAR=value mpv …`
-                    if text.contains('=') && !text.starts_with('-') && !text.starts_with('=') {
-                        continue;
-                    }
-                    let name = text.rsplit('/').next().unwrap_or(&text);
-                    if let Some(w) = WRAPPERS.iter().find(|w| w.0 == name) {
-                        wrapper = Some(w);
-                        continue;
-                    }
-                    in_mpv = name == "mpv";
-                    at_start = false;
-                    continue;
-                }
-                if in_mpv && !glob && !text.starts_with('-') && !text.contains("://") {
-                    let base = text.rsplit('/').next().unwrap_or(&text);
-                    if is_video(base) {
-                        out.push(text);
-                    }
-                }
-            }
+    for words in commands(cmd) {
+        let mut words = words.into_iter();
+        if command_word(&mut words).is_some_and(|w| base_name(&w.text) == "mpv") {
+            let file = |w: &Word| !w.glob && !w.text.starts_with('-') && !w.text.contains("://");
+            out.extend(words.filter(|w| file(w) && is_video(base_name(&w.text))).map(|w| w.text));
         }
     }
     out
+}
+
+/// The word naming the command `words` run, past `VAR=value` assignments and
+/// [`WRAPPERS`] with their flags.
+fn command_word(words: &mut impl Iterator<Item = Word>) -> Option<Word> {
+    let mut wrapper: Option<&Wrapper> = None;
+    while let Some(w) = words.next() {
+        if let Some((_, flags, valued)) = wrapper {
+            if flags.contains(&w.text.as_str()) {
+                continue;
+            }
+            if valued.contains(&w.text.as_str()) {
+                words.next();
+                continue;
+            }
+        }
+        // `VAR=value mpv …`
+        if w.text.contains('=') && !w.text.starts_with(['-', '=']) {
+            continue;
+        }
+        match WRAPPERS.iter().find(|x| x.0 == base_name(&w.text)) {
+            Some(x) => wrapper = Some(x),
+            None => return Some(w),
+        }
+    }
+    None
 }
 
 /// Parse fish history text into mpv plays, oldest first.
 pub fn parse_history(text: &str) -> Vec<Played> {
     let mut out = Vec::new();
     let mut cmd: Option<String> = None;
-    let push = |out: &mut Vec<Played>, cmd: &mut Option<String>, when: i64| {
-        if let Some(c) = cmd.take() {
-            let files = mpv_files(&unescape_history(&c));
-            if !files.is_empty() {
-                out.push(Played { when, files });
-            }
-        }
-    };
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("- cmd: ") {
             cmd = Some(rest.to_string());
         } else if let Some(rest) = line.trim_start().strip_prefix("when: ")
             && let Ok(when) = rest.trim().parse()
+            && let Some(c) = cmd.take()
         {
-            push(&mut out, &mut cmd, when);
+            let files = mpv_files(&unescape_history(&c));
+            if !files.is_empty() {
+                out.push(Played { when, files });
+            }
         }
     }
     out.sort_by_key(|p| p.when);
@@ -229,9 +214,17 @@ pub fn parse_history(text: &str) -> Vec<Played> {
 }
 
 /// Default fish history location.
-pub fn default_history_path() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map_or_else(|| crate::config::expand_tilde(Path::new("~/.local/share")), std::path::PathBuf::from);
+pub fn default_history_path() -> PathBuf {
+    history_path_in(std::env::var_os("XDG_DATA_HOME"))
+}
+
+/// The fish history under `$XDG_DATA_HOME` (`data_home`), which only counts
+/// when it is an absolute path, like the XDG spec says; else `~/.local/share`.
+fn history_path_in(data_home: Option<std::ffi::OsString>) -> PathBuf {
+    let base = data_home
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| crate::config::expand_tilde(Path::new("~/.local/share")));
     base.join("fish").join("fish_history")
 }
 
@@ -270,11 +263,15 @@ pub struct ImportPlan {
     pub watches: Vec<ImportedWatch>,
     /// Status suggestions for currently untracked series.
     pub proposals: Vec<Proposal>,
-    /// Number of mpv commands considered.
+    /// Number of mpv commands with a play to import (a file identified and
+    /// not in the log yet).
     pub commands: usize,
     /// File names that matched several indexed files and no path told them
     /// apart; skipped rather than guessed.
     pub ambiguous: BTreeSet<String>,
+    /// File names that are not indexed and say nothing about which show they
+    /// are (no title of their own, no folder naming one); skipped.
+    pub unidentified: BTreeSet<String>,
 }
 
 impl ImportPlan {
@@ -308,28 +305,38 @@ pub fn already_imported(events: &[Event]) -> HashSet<(i64, String)> {
         .collect()
 }
 
-type ByName<'a> = HashMap<&'a str, Vec<&'a crate::library::IndexedFile>>;
+/// Indexed files by base name, each with its path's trailing named
+/// components, last first (see [`common_suffix`]).
+type ByName<'a> = HashMap<&'a str, Vec<(&'a crate::library::IndexedFile, Vec<Component<'a>>)>>;
+
+/// The trailing named components of `path`, last first, up to the first
+/// one that is not named (the root, `..`).
+fn rev_named(path: &Path) -> Vec<Component<'_>> {
+    path.components().rev().take_while(|c| matches!(c, Component::Normal(_))).collect()
+}
 
 /// How a played file relates to the index.
 enum Resolution<'a> {
     Found(&'a crate::library::IndexedFile),
     Ambiguous,
-    /// Not indexed; with its series and items if [`identify`] already ran.
-    Unknown(Option<(String, Vec<ItemKey>)>),
+    /// Not indexed: its series and items as parsed (see [`identify`]).
+    Parsed(String, Vec<ItemKey>),
+    /// Not indexed, and nothing says which show it is.
+    Unidentified,
 }
 
 /// The single file among `files` (present ones win), or `Ambiguous` if they
-/// disagree about the series or items, `Unknown` if there are none.
-fn unique<'a>(files: &[&'a crate::library::IndexedFile]) -> Resolution<'a> {
+/// disagree about the series or items, `None` if there are none.
+fn unique<'a>(files: &[&'a crate::library::IndexedFile]) -> Option<Resolution<'a>> {
     let present: Vec<_> = files.iter().copied().filter(|f| f.file.present).collect();
     let pool = if present.is_empty() { files } else { &present };
-    match pool {
-        [] => Resolution::Unknown(None),
+    Some(match pool {
+        [] => return None,
         [first, rest @ ..] if rest.iter().all(|f| f.series == first.series && f.items == first.items) => {
             Resolution::Found(first)
         }
         _ => Resolution::Ambiguous,
-    }
+    })
 }
 
 /// The named components of `path` (no root, `.` or `..`).
@@ -344,33 +351,39 @@ fn normalize(file: &str) -> PathBuf {
     if path.is_absolute() { path } else { named_parts(&path).collect() }
 }
 
-/// Number of trailing path components `a` and `b` share.
-fn common_suffix(a: &Path, b: &Path) -> usize {
-    a.components()
-        .rev()
-        .zip(b.components().rev())
-        .take_while(|(x, y)| x == y && matches!(x, Component::Normal(_)))
-        .count()
+/// Number of trailing named path components `a` and `b` share (both from [`rev_named`]).
+fn common_suffix(a: &[Component<'_>], b: &[Component<'_>]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+/// Whether the folders among the last `n` components of `path` (the file
+/// and `n - 1` folders) include one that names a show, not just a season or
+/// a kind of file.
+fn names_a_show(cfg: &Config, path: &Path, n: usize) -> bool {
+    path.iter().rev().skip(1).take(n.saturating_sub(1)).any(|d| d.to_str().is_some_and(|d| !is_generic_dir(cfg, d)))
 }
 
 /// Series and items of a file that is not (or not certainly) in the index.
 /// A path under a root is classified as the scan would; any other path is
 /// classified as typed, so `Show/01.mkv` borrows the folder name the way a
-/// file in a download folder would.
-fn identify(cfg: &Config, lib: &Library, path: &Path) -> (String, Vec<ItemKey>) {
+/// file in a download folder would. `None` for one with no title of its own
+/// and no folder naming a show (`01.mkv`, `Season 1/01.mkv`), which would
+/// make up a series from its file name.
+fn identify(cfg: &Config, lib: &Library, path: &Path) -> Option<(String, Vec<ItemKey>)> {
     if lib.file(path).is_some() || cfg.roots.iter().any(|r| path.starts_with(r.resolved())) {
-        return lib.identify(cfg, path);
+        return Some(lib.identify(cfg, path));
     }
     let rel: PathBuf = named_parts(path).collect();
     let c = classify(cfg, RootKind::Ongoing, &rel);
-    (lib.resolve(&c.series).to_string(), c.items())
+    (!c.parsed.title.is_empty() || names_a_show(cfg, &rel, usize::MAX))
+        .then(|| (lib.resolve(&c.series).to_string(), c.items()))
 }
 
 /// Match a played file (see [`normalize`]) to the index:
 /// 1. an absolute path that is indexed as is;
 /// 2. the indexed files with that base name sharing the longest path suffix,
-///    if it includes the parent folder (relative paths, moved roots and
-///    symlinked mounts);
+///    if it includes a folder naming the show (relative paths, moved roots
+///    and symlinked mounts);
 /// 3. by base name: freely for a bare name, but for a path with folders only
 ///    among files of the series the typed path itself parses as, so
 ///    `OtherShow/01.mkv` never lands on the only indexed `ShowA/01.mkv`.
@@ -382,21 +395,21 @@ fn resolve<'a>(cfg: &Config, lib: &'a Library, by_name: &ByName<'a>, path: &Path
     }
     let named = path.file_name().and_then(|n| n.to_str()).and_then(|n| by_name.get(n)).map_or(&[][..], Vec::as_slice);
     let has_dir = named_parts(path).nth(1).is_some();
+    let parsed = || identify(cfg, lib, path).map_or(Resolution::Unidentified, |(s, i)| Resolution::Parsed(s, i));
     if !has_dir {
-        return unique(named);
+        let files: Vec<_> = named.iter().map(|(f, _)| *f).collect();
+        return unique(&files).unwrap_or_else(parsed);
     }
-    let scored: Vec<_> = named.iter().map(|&f| (common_suffix(path, &f.file.path), f)).collect();
+    let typed = rev_named(path);
+    let scored: Vec<_> = named.iter().map(|(f, rev)| (common_suffix(&typed, rev), *f)).collect();
     let best = scored.iter().map(|(n, _)| *n).max().unwrap_or(0);
-    if best >= 2 {
+    if names_a_show(cfg, path, best) {
         let hits: Vec<_> = scored.iter().filter(|(n, _)| *n == best).map(|(_, f)| *f).collect();
-        return unique(&hits);
+        return unique(&hits).unwrap_or_else(parsed);
     }
-    let (series, items) = identify(cfg, lib, path);
-    let same: Vec<_> = named.iter().copied().filter(|f| f.series == series).collect();
-    match unique(&same) {
-        Resolution::Unknown(_) => Resolution::Unknown(Some((series, items))),
-        found => found,
-    }
+    let Some((series, items)) = identify(cfg, lib, path) else { return Resolution::Unidentified };
+    let same: Vec<_> = named.iter().map(|(f, _)| *f).filter(|f| f.series == series).collect();
+    unique(&same).unwrap_or(Resolution::Parsed(series, items))
 }
 
 /// Build an import plan for plays not yet in the log (see [`already_imported`]).
@@ -404,20 +417,22 @@ pub fn plan(cfg: &Config, lib: &Library, plays: &[Played], already: &HashSet<(i6
     let mut by_name: ByName = HashMap::new();
     for f in &lib.files {
         if let Some(n) = f.file.path.file_name().and_then(|n| n.to_str()) {
-            by_name.entry(n).or_default().push(f);
+            by_name.entry(n).or_default().push((f, rev_named(&f.file.path)));
         }
     }
 
     // Every play informs the status suggestions; only plays not yet in the log
     // become new events.
     let mut latest: HashMap<(String, ItemKey), ImportedWatch> = HashMap::new();
-    let mut history: Vec<ImportedWatch> = Vec::new();
+    // Per series: the last time an episode was played, and the highest one.
+    let mut by_series: HashMap<String, (i64, Option<EpNo>)> = HashMap::new();
     let mut commands = 0;
     let mut ambiguous = BTreeSet::new();
+    let mut unidentified = BTreeSet::new();
     for p in plays {
         let mut new = false;
         for file in &p.files {
-            let base = file.rsplit('/').next().unwrap_or(file);
+            let base = base_name(file);
             let path = normalize(file);
             let (series, items, matched) = match resolve(cfg, lib, &by_name, &path) {
                 Resolution::Found(f) => (f.series.clone(), f.items.clone(), true),
@@ -425,13 +440,19 @@ pub fn plan(cfg: &Config, lib: &Library, plays: &[Played], already: &HashSet<(i6
                     ambiguous.insert(base.to_string());
                     continue;
                 }
-                Resolution::Unknown(known) => {
-                    let (series, items) = known.unwrap_or_else(|| identify(cfg, lib, &path));
-                    (series, items, false)
+                Resolution::Parsed(series, items) => (series, items, false),
+                Resolution::Unidentified => {
+                    unidentified.insert(base.to_string());
+                    continue;
                 }
             };
             new |= !already.contains(&(p.when, base.to_string()));
             for item in items {
+                if item.kind == ItemKind::Episode {
+                    let (last, max_ep) = by_series.entry(series.clone()).or_default();
+                    *last = (*last).max(p.when);
+                    *max_ep = (*max_ep).max(item.ep);
+                }
                 let w = ImportedWatch {
                     series: series.clone(),
                     item: item.clone(),
@@ -439,8 +460,7 @@ pub fn plan(cfg: &Config, lib: &Library, plays: &[Played], already: &HashSet<(i6
                     file: base.to_string(),
                     matched,
                 };
-                latest.insert((series.clone(), item), w.clone());
-                history.push(w);
+                latest.insert((series.clone(), item), w);
             }
         }
         commands += usize::from(new);
@@ -452,21 +472,14 @@ pub fn plan(cfg: &Config, lib: &Library, plays: &[Played], already: &HashSet<(i6
         latest.into_values().filter(|w| !already.contains(&(w.when, w.file.clone()))).collect();
     watches.sort_by(|a, b| (a.when, &a.series, &a.item).cmp(&(b.when, &b.series, &b.item)));
 
-    // Per series: the last time an episode was played, and the highest one.
-    let mut by_series: HashMap<&str, (i64, Option<EpNo>)> = HashMap::new();
-    for w in history.iter().filter(|w| w.item.kind == ItemKind::Episode) {
-        let (last, max_ep) = by_series.entry(&w.series).or_default();
-        *last = (*last).max(w.when);
-        *max_ep = (*max_ep).max(w.item.ep);
-    }
     let mut proposals: Vec<Proposal> = by_series
         .into_iter()
         .filter_map(|(key, (last, max_watched))| {
-            let s = lib.get(key);
+            let s = lib.get(&key);
             if s.is_some_and(|s| s.status != SeriesStatus::Untracked) {
                 return None;
             }
-            let title = s.map_or_else(|| crate::library::title_case(key), |s| s.title.clone());
+            let title = s.map_or_else(|| crate::library::title_case(&key), |s| s.title.clone());
             let more_on_disk =
                 s.is_some_and(|s| s.episodes().any(|i| i.present() && i.key.ep > max_watched && !i.state.is_watched()));
             let age = now - last;
@@ -475,12 +488,12 @@ pub fn plan(cfg: &Config, lib: &Library, plays: &[Played], already: &HashSet<(i6
                 (false, true) if age < 365 * 86_400 => SeriesStatus::Paused,
                 _ => return None,
             };
-            Some(Proposal { series: key.to_string(), title, status, last })
+            Some(Proposal { series: key, title, status, last })
         })
         .collect();
     proposals.sort_by(|a, b| b.last.cmp(&a.last).then_with(|| a.series.cmp(&b.series)));
 
-    ImportPlan { watches, proposals, commands, ambiguous }
+    ImportPlan { watches, proposals, commands, ambiguous, unidentified }
 }
 
 /// Read history from `path`.
@@ -551,6 +564,40 @@ mod tests {
             "nice -n mpv a.mkv",
         ] {
             assert_eq!(mpv_files(cmd), Vec::<String>::new(), "{cmd}");
+        }
+    }
+
+    /// fish's `and`/`or`/`not`, GPU wrappers, line continuations, comments
+    /// and brace expansion.
+    #[test]
+    fn fish_syntax_around_mpv() {
+        let a = vec!["a.mkv".to_string()];
+        for cmd in [
+            "cd x; and mpv a.mkv",
+            "test -f a.mkv; or mpv a.mkv",
+            "not mpv a.mkv",
+            "prime-run mpv a.mkv",
+            "gamemoderun mpv a.mkv",
+            "nohup \\\nmpv a.mkv",
+            "FOO=1 \\\nmpv a.mkv",
+            "mpv a.mkv # b.mkv was broken",
+            "# mpv c.mkv\nmpv a.mkv",
+            "mpv a.mkv {01,02}.mkv",
+        ] {
+            assert_eq!(mpv_files(cmd), a, "{cmd:?}");
+        }
+        assert_eq!(mpv_files("mpv a#b.mkv"), vec!["a#b.mkv"], "`#` inside a word is literal");
+        assert_eq!(mpv_files("mpv 'Show {v2}.mkv'"), vec!["Show {v2}.mkv"], "quoted braces are literal");
+        assert_eq!(mpv_files("mpv long\\\nname.mkv"), vec!["longname.mkv"]);
+    }
+
+    /// `$XDG_DATA_HOME` only counts when it is an absolute path.
+    #[test]
+    fn history_path_follows_xdg_data_home() {
+        let data_home = |v: &str| history_path_in(Some(v.into()));
+        assert_eq!(data_home("/data"), Path::new("/data/fish/fish_history"));
+        for v in ["", "relative"] {
+            assert!(data_home(v).is_absolute() && data_home(v).ends_with(".local/share/fish/fish_history"), "{v:?}");
         }
     }
 
@@ -737,6 +784,31 @@ mod tests {
     fn unindexed_relative_path_uses_its_folder() {
         let p = plan_of(&one_series(&["ShowA/01.mkv"]), &[play(100, "./Some Show/03.mkv")]);
         assert_eq!(got(&p), [("some show", Some(30), false)]);
+    }
+
+    /// A shared `Season 1` folder says nothing about the show: another show's
+    /// `Season 1/01.mkv` is not matched to the indexed one, and with no
+    /// folder naming a show the play is skipped.
+    #[test]
+    fn generic_folders_do_not_pick_the_show() {
+        let lib = one_series(&["ShowA/Season 1/01.mkv"]);
+        let p = plan_of(&lib, &[play(100, "/mnt/usb/ShowB/Season 1/01.mkv"), play(200, "Season 1/01.mkv")]);
+        assert_eq!(got(&p), [("showb", Some(10), false)]);
+        assert_eq!(p.unidentified.iter().collect::<Vec<_>>(), ["01.mkv"]);
+        // The show's folder in the shared part still matches.
+        let p = plan_of(&lib, &[play(100, "/old/disk/ShowA/Season 1/01.mkv")]);
+        assert_eq!(got(&p).len(), 1);
+        assert!(p.watches[0].matched, "{:?}", p.watches);
+    }
+
+    /// An unindexed file with no title and no folder naming a show is skipped
+    /// rather than becoming a series named after the file.
+    #[test]
+    fn untitled_unindexed_files_are_skipped() {
+        let p = plan_of(&one_series(&["ShowA/01.mkv"]), &[play(100, "05.mkv"), play(200, "[X] Real Show - 03.mkv")]);
+        assert_eq!(got(&p), [("real show", Some(30), false)]);
+        assert_eq!(p.unidentified.iter().collect::<Vec<_>>(), ["05.mkv"]);
+        assert!(p.proposals.iter().all(|pr| pr.series == "real show"), "{:?}", p.proposals);
     }
 
     /// A base name only one indexed file has still matches.

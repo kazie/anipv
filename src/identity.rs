@@ -86,10 +86,16 @@ fn fold(title: &str, voiced: bool) -> String {
         .replace(['\'', '’', '`'], "")
         .replace('&', " and ");
 
-    let seasoned = SEASON_WORDS.replace_all(&folded, |caps: &regex::Captures<'_>| {
-        let n: u32 = caps.iter().skip(1).flatten().next().and_then(|m| m.as_str().parse().ok()).unwrap_or(1);
-        if n <= 1 { " ".to_string() } else { format!(" s{n} ") }
-    });
+    // Every season marker has a digit: most titles skip the regex (which is
+    // slow on non-ASCII text).
+    let seasoned = if folded.contains(char::is_numeric) {
+        SEASON_WORDS.replace_all(&folded, |caps: &regex::Captures<'_>| {
+            let n: u32 = caps.iter().skip(1).flatten().next().and_then(|m| m.as_str().parse().ok()).unwrap_or(1);
+            if n <= 1 { " ".to_string() } else { format!(" s{n} ") }
+        })
+    } else {
+        std::borrow::Cow::Borrowed(folded.as_str())
+    };
 
     let seasoned = seasoned.trim_start();
     let seasoned = seasoned.strip_prefix("the ").unwrap_or(seasoned);
@@ -119,16 +125,7 @@ fn fold(title: &str, voiced: bool) -> String {
 /// Season 1 (or none) leaves both alone; later seasons get an `sN` suffix on
 /// the key and ` SN` on the title, unless the title already carries one.
 pub fn series_name(title: &str, season: Option<u32>) -> (String, String) {
-    name_with(title, season, series_key)
-}
-
-/// [`series_name`] with [`legacy_series_key`].
-pub fn legacy_series_name(title: &str, season: Option<u32>) -> (String, String) {
-    name_with(title, season, legacy_series_key)
-}
-
-fn name_with(title: &str, season: Option<u32>, key_of: fn(&str) -> String) -> (String, String) {
-    let (key, added) = name_key(title, season, key_of);
+    let (key, added) = name_key(title, season, series_key);
     let shown = match added {
         Some(n) => format!("{title} S{n}"),
         None => title.to_string(),
@@ -136,7 +133,8 @@ fn name_with(title: &str, season: Option<u32>, key_of: fn(&str) -> String) -> (S
     (key, shown)
 }
 
-/// The legacy key of `title` (as [`legacy_series_name`] gives it), given its
+/// The legacy key of `title` (as [`series_name`] with [`legacy_series_key`]
+/// would give it), given its
 /// current `key` (as [`series_name`] gives it), or `None` when it is the same.
 ///
 /// Only a voiced mark kept after a kana makes the two differ, so a key without
@@ -155,13 +153,14 @@ fn has_voiced_mark(key: &str) -> bool {
 /// The key of `title` with `key_of`, plus the season suffix it was given (if any).
 fn name_key(title: &str, season: Option<u32>, key_of: fn(&str) -> String) -> (String, Option<u32>) {
     let base = key_of(title);
-    match season {
-        Some(n) if n >= 2 && !base.split(' ').any(|w| w == format!("s{n}")) => {
-            let key = if base.is_empty() { format!("s{n}") } else { format!("{base} s{n}") };
-            (key, Some(n))
+    if let Some(n) = season.filter(|n| *n >= 2) {
+        let marker = format!("s{n}");
+        if !base.split(' ').any(|w| w == marker) {
+            let key = if base.is_empty() { marker } else { format!("{base} {marker}") };
+            return (key, Some(n));
         }
-        _ => (base, None),
     }
+    (base, None)
 }
 
 /// The franchise part of a series key: a trailing season (`s3`) or year
@@ -191,6 +190,11 @@ pub fn base_key(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`series_name`] with [`legacy_series_key`].
+    fn legacy_series_name(title: &str, season: Option<u32>) -> (String, String) {
+        (name_key(title, season, legacy_series_key).0, series_name(title, season).1)
+    }
     use proptest::prelude::*;
 
     #[test]

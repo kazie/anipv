@@ -148,10 +148,12 @@ anipv makes two kinds of network requests by default, both optional, and a third
    (`next airing episode`, `episode count`). No account or token is involved, and
    nothing is ever sent about what you watched. Set `anilist = false` to turn it off.
 3. **Off by default**: with `anilist_search = true` (or `anipv meta match --search`),
-   series the offline database can't match, such as shows newer than a stale
-   dataset, are looked up on AniList by title. What is sent is the titles anipv
+   series the offline database can't match (all of them while none is
+   downloaded), such as shows newer than a stale dataset, are looked up on
+   AniList by title. What is sent is the titles anipv
    shows for those series (parsed from your file and folder names), nothing
-   else: no paths, no watch history. Each series is asked about once per dataset.
+   else: no paths, no watch history. Each series is asked about at most once a
+   month, at most 10 per update.
 
 More: [configuration](docs/config.md) · [architecture](docs/architecture.md) · [event log](docs/events.md) · [keys](docs/keybindings.md)
 

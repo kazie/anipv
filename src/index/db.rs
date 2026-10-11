@@ -35,16 +35,25 @@ const ROOT_MOUNTED: &str = "root_mounted:";
 /// (the files really are gone) rather than an unmounted drive.
 ///
 /// `was` is the mount state recorded at the last non-empty scan, `now` the
-/// state at this one. A plain folder (`was` false) was emptied by the user; a
-/// mount that is still mounted is a legitimately empty filesystem. With no
-/// record (an index from before mount states were kept, or a root whose path
-/// changed) a root that is a plain folder now is trusted too: if it was really
-/// an unmounted drive's mount point, its files only drop out of the index
-/// until the next scan with the drive mounted brings them back. A mount that
-/// is no longer one, or an unknown state now (not unix, or stat failed), is
-/// treated as unmounted, so nothing is lost.
+/// state at this one. The rule: believe it only if the state is known now and
+/// is the same as then, no record counting as a plain folder.
+///
+/// So a plain folder that still is one was emptied by the user, and a mount
+/// that is still mounted is a legitimately empty filesystem. Without a record
+/// (an index from before mount states were kept, or a root whose path
+/// changed) an empty plain folder is believed too: if it really was an
+/// unmounted drive's mount point, its files only drop out of the index until
+/// a scan with the drive mounted brings them back. A mount that is no longer
+/// one, a folder that has become a mount (maybe an automounter's empty
+/// placeholder), or an unknown state (the stat failed) is treated as
+/// unmounted, so nothing is lost.
 pub fn trust_empty_scan(was: Option<bool>, now: Option<bool>) -> bool {
-    matches!((was, now), (Some(false) | None, Some(false)) | (Some(_), Some(true)))
+    now == Some(was.unwrap_or(false))
+}
+
+/// How a root's mount state at a scan of `base` is recorded (see [`recorded_mount`]).
+fn mount_record(mounted: bool, base: &Path) -> String {
+    format!("{}:{}", u8::from(mounted), base.to_string_lossy())
 }
 
 /// The mount state recorded for a root, if it was recorded for `base`.
@@ -214,18 +223,63 @@ pub struct SeriesMeta {
     pub search_linked: bool,
 }
 
-/// "Matching ran for this series against this offline database version and
-/// found nothing to link" (`result`: `none` or `ambiguous`).
+/// "Matching ran for this series and found nothing to link": against the
+/// offline database (version `db_version`), or by title on `AniList`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchAttempt {
     /// Series key.
     pub series: String,
-    /// Offline database version (`lastUpdate`) the attempt used.
+    /// Offline database version (`lastUpdate`, `""` without one) it ran with.
     pub db_version: String,
     /// When it ran.
     pub at: i64,
-    /// `none` or `ambiguous`.
-    pub result: String,
+    /// What it came to.
+    pub result: MatchResult,
+}
+
+/// What a match that linked nothing came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchResult {
+    /// The offline database knows nothing by the series' names.
+    None,
+    /// The offline database has several equally good entries.
+    Ambiguous,
+    /// A title search on `AniList` found nothing by the series' names.
+    SearchNone,
+    /// A title search found several equally good anime.
+    SearchAmbiguous,
+    /// A title search's request failed.
+    SearchFailed,
+}
+
+impl MatchResult {
+    const ALL: [Self; 5] = [Self::None, Self::Ambiguous, Self::SearchNone, Self::SearchAmbiguous, Self::SearchFailed];
+
+    /// How it is stored.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Ambiguous => "ambiguous",
+            Self::SearchNone => "search-none",
+            Self::SearchAmbiguous => "search-ambiguous",
+            Self::SearchFailed => "search-failed",
+        }
+    }
+
+    /// The result stored as `s`, if it is one this version knows.
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == s)
+    }
+
+    /// A title search's answer (as opposed to the offline database's).
+    pub const fn is_search(self) -> bool {
+        matches!(self, Self::SearchNone | Self::SearchAmbiguous | Self::SearchFailed)
+    }
+
+    /// Several candidates, from the database or a title search.
+    pub const fn is_ambiguous(self) -> bool {
+        matches!(self, Self::Ambiguous | Self::SearchAmbiguous)
+    }
 }
 
 /// "`AniList` was asked about this id": when, and whether it knew the id.
@@ -371,16 +425,19 @@ impl Db {
             }
         }
         stats.new = count(&tx)? - before;
-        let previously: i64 =
-            tx.query_row("SELECT COUNT(*) FROM files WHERE root = ?1 AND present = 1", [root], |r| r.get(0))?;
+        // An empty scan of a root that had files is checked against the mount
+        // state recorded at its last scan that found files (which records it).
         let key = format!("{ROOT_MOUNTED}{root}");
-        let looks_unmounted = files.is_empty() && previously > 0 && {
-            let was = get_kv(&tx, &key)?.and_then(|v| recorded_mount(&v, base));
-            !trust_empty_scan(was, mounted)
+        let looks_unmounted = if files.is_empty() {
+            let previously: i64 =
+                tx.query_row("SELECT COUNT(*) FROM files WHERE root = ?1 AND present = 1", [root], |r| r.get(0))?;
+            previously > 0 && !trust_empty_scan(get_kv(&tx, &key)?.and_then(|v| recorded_mount(&v, base)), mounted)
+        } else {
+            if let Some(m) = mounted {
+                write_kv(&tx, &key, &mount_record(m, base))?;
+            }
+            false
         };
-        if let (false, Some(m)) = (files.is_empty(), mounted) {
-            write_kv(&tx, &key, &format!("{}:{}", u8::from(m), base.to_string_lossy()))?;
-        }
         if complete && !looks_unmounted {
             stats.gone = tx.execute(
                 "UPDATE files SET present = 0 WHERE root = ?1 AND present = 1 AND last_scan < ?2",
@@ -494,20 +551,19 @@ impl Db {
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         {
-            let mut forget = tx.prepare_cached("DELETE FROM match_attempts WHERE series = ?1")?;
+            // A link (or fresh data for one) replaces "nothing to link", and
+            // "nothing to link" drops a link that no longer matches.
             for m in rows {
-                forget.execute([&m.series])?;
+                delete_attempt(&tx, &m.series)?;
             }
-            // "Nothing to link" also drops a link that no longer matches.
-            let mut unlink = tx.prepare_cached("DELETE FROM series_meta WHERE series = ?1")?;
             for a in attempts {
-                unlink.execute([&a.series])?;
+                delete_meta_row(&tx, &a.series)?;
             }
             let mut put = tx.prepare_cached(
                 "INSERT OR REPLACE INTO match_attempts(series, db_version, at, result) VALUES (?1, ?2, ?3, ?4)",
             )?;
             for a in attempts {
-                put.execute(params![a.series, a.db_version, a.at, a.result])?;
+                put.execute(params![a.series, a.db_version, a.at, a.result.as_str()])?;
             }
         }
         write_metas(&tx, rows)?;
@@ -530,13 +586,10 @@ impl Db {
     /// All known prequel lists, by `AniList` id.
     pub fn prequels(&self) -> Result<std::collections::HashMap<u64, Vec<u64>>> {
         let mut st = self.conn.prepare_cached("SELECT anilist, prequels FROM prequels")?;
-        let rows = st.query_map([], |r| Ok((from_sql(r.get(0)?), r.get::<_, String>(1)?)))?;
-        let mut out = std::collections::HashMap::new();
-        for row in rows {
-            let (id, json) = row?;
-            out.insert(id, serde_json::from_str(&json).unwrap_or_default());
-        }
-        Ok(out)
+        let rows = st.query_map([], |r| {
+            Ok((from_sql(r.get(0)?), serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default()))
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
     /// When each `AniList` id was last asked about, and whether it was found.
@@ -547,13 +600,23 @@ impl Db {
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    /// All recorded match attempts.
+    /// Run `f` with all its reads seeing one state of the database (a read
+    /// transaction), so another process writing in between can't mix two.
+    pub fn snapshot<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let _read = self.conn.unchecked_transaction()?;
+        f(self)
+    }
+
+    /// All recorded match attempts (but those with a result this version
+    /// doesn't know, written by a newer one: the series is matched again).
     pub fn match_attempts(&self) -> Result<Vec<MatchAttempt>> {
         let mut st = self.conn.prepare_cached("SELECT series, db_version, at, result FROM match_attempts")?;
         let rows = st.query_map([], |r| {
-            Ok(MatchAttempt { series: r.get(0)?, db_version: r.get(1)?, at: r.get(2)?, result: r.get(3)? })
+            let (series, db_version, at, result): (String, String, i64, String) =
+                (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+            Ok(MatchResult::parse(&result).map(|result| MatchAttempt { series, db_version, at, result }))
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        Ok(rows.filter_map(Result::transpose).collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Insert or replace cached metadata rows, in one transaction.
@@ -570,8 +633,9 @@ impl Db {
     /// A row already under the new key wins; the old row is deleted either
     /// way, so nothing stays behind for a later sync to miss. "No match"
     /// attempts under an old key are dropped rather than moved: the new key is
-    /// a different title, so it gets matched again. (A row a title search
-    /// made keeps its mark, [`SeriesMeta::search_linked`], when it moves.)
+    /// a different title, so it gets matched again; a row moved to the new key
+    /// replaces that key's attempt, as a row written there would. (A row a
+    /// title search made keeps its mark, [`SeriesMeta::search_linked`].)
     ///
     /// Pairs with no rows under the old key are looked up with reads only, and
     /// when no pair has any, no write transaction is started at all (callers
@@ -597,12 +661,14 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         {
             let mut rename = tx.prepare_cached("UPDATE OR IGNORE series_meta SET series = ?2 WHERE series = ?1")?;
-            let mut drop_meta = tx.prepare_cached("DELETE FROM series_meta WHERE series = ?1")?;
-            let mut drop_attempts = tx.prepare_cached("DELETE FROM match_attempts WHERE series = ?1")?;
             for &(old, new) in &pairs {
-                rename.execute([old, new])?;
-                drop_meta.execute([old])?;
-                drop_attempts.execute([old])?;
+                // A row moved to the new key replaces its attempt, as a row
+                // written there would (see `store_sync`).
+                if rename.execute([old, new])? > 0 {
+                    delete_attempt(&tx, new)?;
+                }
+                delete_meta_row(&tx, old)?;
+                delete_attempt(&tx, old)?;
             }
         }
         tx.commit()?;
@@ -611,8 +677,7 @@ impl Db {
 
     /// Remove cached metadata for a series.
     pub fn delete_meta(&self, series: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM series_meta WHERE series = ?1", [series])?;
-        Ok(())
+        delete_meta_row(&self.conn, series)
     }
 
     /// All cached metadata.
@@ -670,6 +735,16 @@ fn upgrade(conn: &Connection, version: i32) -> Result<()> {
 
 // Writers shared by the single-purpose methods and `store_sync`; they run
 // inside whatever transaction the caller holds.
+
+fn delete_meta_row(conn: &Connection, series: &str) -> Result<()> {
+    conn.prepare_cached("DELETE FROM series_meta WHERE series = ?1")?.execute([series])?;
+    Ok(())
+}
+
+fn delete_attempt(conn: &Connection, series: &str) -> Result<()> {
+    conn.prepare_cached("DELETE FROM match_attempts WHERE series = ?1")?.execute([series])?;
+    Ok(())
+}
 
 fn get_kv(conn: &Connection, k: &str) -> Result<Option<String>> {
     Ok(conn.query_row("SELECT v FROM kv WHERE k = ?1", [k], |r| r.get(0)).optional()?)
@@ -784,8 +859,10 @@ mod tests {
         assert!(present_after_empty_scan(None, None));
         assert!(present_after_empty_scan(Some(false), None));
         assert!(present_after_empty_scan(Some(true), None));
-        // No record and a mount now: maybe an automounter's empty placeholder.
+        // No record and a mount now, or a plain folder that has become a
+        // mount: maybe an automounter's empty placeholder.
         assert!(present_after_empty_scan(None, Some(true)));
+        assert!(present_after_empty_scan(Some(false), Some(true)));
     }
 
     #[test]
@@ -807,11 +884,12 @@ mod tests {
     #[test]
     fn mount_record_of_another_path_is_ignored() {
         let mut db = Db::open_in_memory().unwrap();
-        db.apply_scan("dl", &[f("a.mkv")], 10, true, Path::new("/old"), Some(false)).unwrap();
-        // The root now points elsewhere; "/old was a plain folder" says nothing
-        // about "/m", which is a mount now: untrusted with no record.
+        db.apply_scan("dl", &[f("a.mkv")], 10, true, Path::new("/old"), Some(true)).unwrap();
+        // The root now points elsewhere; "/old was a mount" says nothing about
+        // "/m", which is a mount now: untrusted with no record.
         assert_eq!(db.apply_scan("dl", &[], 20, true, m(), Some(true)).unwrap().gone, 0);
-        // The same record does apply to the path it was made for.
+        // The same record does apply to the path it was made for: a mount
+        // that is still mounted and empty.
         assert_eq!(db.apply_scan("dl", &[], 30, true, Path::new("/old"), Some(true)).unwrap().gone, 1);
     }
 
@@ -944,7 +1022,7 @@ mod tests {
     fn match_attempts_are_replaced_by_links() {
         let db = Db::open_in_memory().unwrap();
         let attempt =
-            |s: &str| MatchAttempt { series: s.into(), db_version: "v1".into(), at: 1, result: "none".into() };
+            |s: &str| MatchAttempt { series: s.into(), db_version: "v1".into(), at: 1, result: MatchResult::None };
         db.put_match_results(&[], &[attempt("a"), attempt("b")]).unwrap();
         assert_eq!(db.match_attempts().unwrap().len(), 2);
         let row = SeriesMeta { series: "a".into(), anilist: Some(1), refreshed_at: Some(2), ..SeriesMeta::default() };
@@ -964,13 +1042,18 @@ mod tests {
             search_linked: true,
             ..SeriesMeta::default()
         };
-        let attempt =
-            |series: &str| MatchAttempt { series: series.into(), db_version: "v".into(), at: 1, result: "none".into() };
+        let attempt = |series: &str| MatchAttempt {
+            series: series.into(),
+            db_version: "v".into(),
+            at: 1,
+            result: MatchResult::None,
+        };
         db.put_match_results(&[row("old")], &[]).unwrap();
         assert_eq!(db.all_meta().unwrap(), vec![row("old")]);
         db.put_match_results(&[], &[attempt("new")]).unwrap();
         assert_eq!(db.rekey_legacy([("old", "new")]).unwrap(), 1);
         assert_eq!(db.all_meta().unwrap(), vec![row("new")]);
+        assert!(db.match_attempts().unwrap().is_empty(), "the moved row replaces the new key's attempt");
         // A row from elsewhere replaces it, mark and all.
         let other = SeriesMeta { series: "new".into(), anilist: Some(6), ..SeriesMeta::default() };
         db.put_match_results(std::slice::from_ref(&other), &[]).unwrap();
@@ -1003,6 +1086,31 @@ mod tests {
         assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
     }
 
+    /// Results are stored by name; one this version doesn't know (from a newer
+    /// one) is left out, so the series is matched again.
+    #[test]
+    fn match_results_round_trip() {
+        let db = Db::open_in_memory().unwrap();
+        let attempts: Vec<MatchAttempt> = MatchResult::ALL
+            .into_iter()
+            .map(|result| MatchAttempt { series: result.as_str().into(), db_version: "v".into(), at: 1, result })
+            .collect();
+        db.put_match_results(&[], &attempts).unwrap();
+        db.conn.execute("INSERT INTO match_attempts VALUES ('future', 'v', 1, 'something-new')", []).unwrap();
+        let mut back = db.match_attempts().unwrap();
+        back.sort_by_key(|a| MatchResult::ALL.iter().position(|r| *r == a.result));
+        assert_eq!(back, attempts);
+        // `ALL` lists every result (adding one fails to compile here until it is listed).
+        let index = |r: MatchResult| match r {
+            MatchResult::None => 0,
+            MatchResult::Ambiguous => 1,
+            MatchResult::SearchNone => 2,
+            MatchResult::SearchAmbiguous => 3,
+            MatchResult::SearchFailed => 4,
+        };
+        assert!(MatchResult::ALL.into_iter().map(index).eq(0..5));
+    }
+
     #[test]
     fn non_utf8_file_names_round_trip() {
         use std::os::unix::ffi::OsStrExt;
@@ -1022,7 +1130,7 @@ mod tests {
     #[test]
     fn match_results_are_stored_atomically() {
         let db = Db::open_in_memory().unwrap();
-        let attempt = MatchAttempt { series: "a".into(), db_version: "v1".into(), at: 1, result: "none".into() };
+        let attempt = MatchAttempt { series: "a".into(), db_version: "v1".into(), at: 1, result: MatchResult::None };
         db.put_match_results(&[], std::slice::from_ref(&attempt)).unwrap();
         db.conn
             .execute_batch(

@@ -41,7 +41,7 @@ impl View {
     /// Every view, tabs first.
     const ALL: [Self; 6] = [Self::UpNext, Self::Inbox, Self::Series, Self::Files, Self::Queue, Self::Detail];
 
-    /// The next (or previous) tab, wrapping; Detail counts as the first tab.
+    /// The next (or previous) tab, wrapping.
     fn cycle(self, forward: bool) -> Self {
         let n = Self::TABS.len();
         let i = Self::TABS.iter().position(|v| *v == self).unwrap_or(0);
@@ -106,28 +106,26 @@ impl SeriesFilter {
     }
 }
 
-/// What a text input is for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a text input about a series is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputPurpose {
-    /// Live filter in the Series view.
-    Search,
-    /// Note for a status change.
-    Note {
-        /// Series key.
-        series: String,
-        /// Status being set.
-        status: SeriesStatus,
-    },
+    /// Note for a status change to this status.
+    Note(SeriesStatus),
     /// New display title.
-    Rename {
-        /// Series key.
-        series: String,
-    },
+    Rename,
     /// `AniList` id to link.
-    Link {
-        /// Series key.
-        series: String,
-    },
+    Link,
+}
+
+impl InputPurpose {
+    /// What the input box asks for.
+    pub fn prompt(self) -> String {
+        match self {
+            Self::Note(status) => format!("{status} — note (optional)"),
+            Self::Rename => "title".into(),
+            Self::Link => "AniList id (empty to unlink)".into(),
+        }
+    }
 }
 
 /// Modal overlays.
@@ -144,12 +142,14 @@ pub enum Popup {
     },
     /// Pick a series to merge into.
     Merge(MergePicker),
-    /// Single-line text input.
+    /// The Series view's search box: edits [`App::query`] as it is typed.
+    Search,
+    /// Single-line text input about a series.
     Input {
+        /// Series key.
+        series: String,
         /// What it's for.
         purpose: InputPurpose,
-        /// Prompt.
-        prompt: String,
         /// Current text.
         text: String,
     },
@@ -216,8 +216,6 @@ enum RowId {
 /// Live playback info.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NowPlaying {
-    /// Current file.
-    pub path: Option<PathBuf>,
     /// Display label for the current file.
     pub label: String,
     /// Position (s).
@@ -232,8 +230,8 @@ pub struct NowPlaying {
 
 impl NowPlaying {
     /// A session of `total` files that has not started playing yet.
-    pub fn starting(total: usize) -> Self {
-        Self { path: None, label: "starting mpv…".into(), pos: 0.0, dur: None, total, done: 0 }
+    fn starting(total: usize) -> Self {
+        Self { label: "starting mpv…".into(), pos: 0.0, dur: None, total, done: 0 }
     }
 }
 
@@ -261,6 +259,8 @@ pub struct ScanSummary {
     pub text: String,
     /// Roots that could not be scanned (unmounted, say).
     pub offline_roots: Vec<String>,
+    /// A root that could be reached failed to scan in full.
+    pub failed: bool,
 }
 
 /// The whole TUI state.
@@ -272,7 +272,7 @@ pub struct App {
     /// Active view.
     pub view: View,
     /// View to return to from Detail.
-    pub back: View,
+    back: View,
     /// Selections per view.
     pub upnext_state: TableState,
     /// Inbox view selection.
@@ -309,9 +309,9 @@ pub struct App {
     meta_epoch: u64,
     /// Series whose link changed by hand, with the epoch of the change.
     relinked: HashMap<String, u64>,
-    /// The metadata update running now (with what it is doing, for the
-    /// header), and one requested while it ran.
+    /// The metadata update running now, with what it is doing (for the header).
     meta_running: Option<(MetaRequest, &'static str)>,
+    /// A metadata update requested while one ran: it starts when that ends.
     meta_pending: Option<MetaRequest>,
     /// Playback state while mpv runs.
     pub playing: Option<NowPlaying>,
@@ -330,13 +330,15 @@ pub struct App {
     /// Roots the last scan could not reach (unmounted, say); none are known
     /// before the first scan (see [`App::start_scan`]).
     pub offline_roots: Vec<String>,
-    // Row caches: indices into `lib.series` / `lib.files`, rebuilt by `refresh_rows`.
+    // Row caches, rebuilt by `refresh_rows`: indices into `lib.series` /
+    // `lib.files`, the inbox entries, and the Up next count.
     upnext_ix: Vec<usize>,
     /// Up next rows with a new episode on disk (the tab's count).
     upnext_ready: usize,
     inbox: Vec<InboxEntry>,
-    /// Width in cells of the longest Inbox hint (so the column does not jump while scrolling).
-    inbox_hint_width: u16,
+    /// Width of the longest Inbox hint, over every row (so the column does
+    /// not jump while scrolling).
+    inbox_hint_width: usize,
     series_ix: Vec<usize>,
     files_ix: Vec<usize>,
     /// Detail rows: indices into the items of the series shown.
@@ -411,6 +413,11 @@ impl App {
         Ok(app)
     }
 
+    /// The tab shown as active: Detail belongs to the tab it was opened from.
+    pub fn tab(&self) -> View {
+        if self.view == View::Detail { self.back } else { self.view }
+    }
+
     /// Current time for display purposes.
     pub fn now(&self) -> i64 {
         self.clock.unwrap_or_else(now)
@@ -464,7 +471,7 @@ impl App {
     fn reload_meta(&mut self) {
         match self.ctx.meta_cache() {
             Ok(meta) => self.index.meta = meta,
-            Err(e) => self.fail(format!("reading the index failed: {e:#}")),
+            Err(e) => self.fail(format!("reading the cached metadata failed: {e:#}")),
         }
         self.reload();
     }
@@ -479,8 +486,14 @@ impl App {
         }
         match self.ctx.library_completed(&mut self.index, &mut self.events) {
             Ok((lib, done)) => {
+                // Warnings that stay (a read-only events folder, say) show when
+                // they appear, not on every reload, where they would hide what
+                // each action reports.
+                let changed = lib.warnings != self.lib.warnings;
                 self.lib = Arc::new(lib);
-                self.warn_all();
+                if changed {
+                    self.warn_all();
+                }
                 if !done.is_empty() {
                     self.say(format!("✓ completed: {} (all episodes watched)", done.join(", ")));
                 }
@@ -492,7 +505,6 @@ impl App {
         for (view, id) in &keep {
             self.select_id(*view, id);
         }
-        self.clamp_selections();
         // The merge picker lists series of the old library: keep its cursor on
         // the same target. Other popups stay open as they are.
         match self.popup.take() {
@@ -607,7 +619,7 @@ impl App {
         self.inbox_hint_width = inbox
             .iter()
             .filter_map(|e| e.hint)
-            .map(|h| super::ui::cells(unicode_width::UnicodeWidthStr::width(h.describe(lib).as_str())))
+            .map(|h| unicode_width::UnicodeWidthStr::width(h.describe(lib).as_str()))
             .max()
             .unwrap_or(0);
         self.upnext_ready = upnext.iter().filter(|&&i| lib.series[i].next_up().is_some()).count();
@@ -629,7 +641,7 @@ impl App {
                 .map(|(c, _)| c.0)
                 .collect()
         };
-        self.clamp_selections();
+        clamp_cursor(&mut self.series_state, self.series_ix.len());
     }
 
     /// Recompute the Detail rows (after a reload, or when the series shown
@@ -638,8 +650,6 @@ impl App {
         let EpisodeFilter { extras, missing } = self.episodes_shown;
         self.detail_ix = self.detail_series().map(|s| s.ordered_indices(extras, missing)).unwrap_or_default();
     }
-
-    // ---- rows -------------------------------------------------------------
 
     /// What a running metadata update is doing, for the header.
     pub fn meta_busy(&self) -> Option<&'static str> {
@@ -650,6 +660,8 @@ impl App {
     pub fn tab_counts(&self) -> (usize, usize) {
         (self.upnext_ready, self.inbox.len())
     }
+
+    // ---- rows -------------------------------------------------------------
 
     /// Series in Up next, rows `range` only.
     pub fn upnext_rows_in(&self, range: Range<usize>) -> Vec<&Series> {
@@ -692,16 +704,9 @@ impl App {
         self.detail_key.iter_mut().for_each(&resolve);
         self.queue.iter_mut().map(|q| &mut q.series).for_each(&resolve);
         match &mut self.popup {
-            Some(
-                Popup::Status { series, .. }
-                | Popup::Input {
-                    purpose:
-                        InputPurpose::Note { series, .. } | InputPurpose::Rename { series } | InputPurpose::Link { series },
-                    ..
-                },
-            ) => resolve(series),
+            Some(Popup::Status { series, .. } | Popup::Input { series, .. }) => resolve(series),
             Some(Popup::Merge(picker)) => resolve(&mut picker.from),
-            Some(Popup::Help | Popup::ConfirmQuit | Popup::Input { purpose: InputPurpose::Search, .. }) | None => {}
+            Some(Popup::Help | Popup::ConfirmQuit | Popup::Search) | None => {}
         }
         let running = self.meta_running.as_mut().map(|(r, _)| r);
         for request in running.into_iter().chain(&mut self.meta_pending) {
@@ -738,7 +743,7 @@ impl App {
     }
 
     /// Width in cells of the longest Inbox hint.
-    pub fn inbox_hint_width(&self) -> u16 {
+    pub fn inbox_hint_width(&self) -> usize {
         self.inbox_hint_width
     }
 
@@ -748,17 +753,17 @@ impl App {
     }
 
     /// Highlighted series in Up next.
-    pub fn selected_upnext(&self) -> Option<&Series> {
+    fn selected_upnext(&self) -> Option<&Series> {
         self.upnext_state.selected().and_then(|i| self.upnext_ix.get(i)).map(|&i| &self.lib.series[i])
     }
 
     /// Highlighted series in the Series view.
-    pub fn selected_series(&self) -> Option<&Series> {
+    fn selected_series(&self) -> Option<&Series> {
         self.series_state.selected().and_then(|i| self.series_ix.get(i)).map(|&i| &self.lib.series[i])
     }
 
     /// Series under the cursor in whatever view is active.
-    pub fn focused_series(&self) -> Option<&Series> {
+    fn focused_series(&self) -> Option<&Series> {
         match self.view {
             View::UpNext => self.selected_upnext(),
             View::Inbox => self.selected_inbox(),
@@ -781,12 +786,11 @@ impl App {
     fn toggle_queue(&mut self, series: &str, item: &Item) {
         if let Some(i) = self.queue.iter().position(|q| q.series == series && q.item == item.key) {
             self.queue.remove(i);
-        } else if let Some(f) = item.best_file() {
-            self.queue.push(QueueEntry { series: series.to_string(), item: item.key.clone(), file: f.path.clone() });
+        } else if let Some(entry) = entry_for(series, item) {
+            self.queue.push(entry);
         } else {
             self.say("not on disk");
         }
-        self.clamp_selections();
     }
 
     /// Queue the next new episode(s) of a series that aren't queued yet.
@@ -805,26 +809,20 @@ impl App {
         }
         let n = entries.len();
         self.queue.extend(entries);
-        self.clamp_selections();
         self.say(format!("queued {n} from {title} ({} in queue)", self.queue.len()));
     }
 
-    /// Report a failed write, then reload to show the new state.
-    fn after_write(&mut self, res: Result<Recorded>) {
-        self.add_recorded(res);
-        self.reload();
-    }
-
     /// Keep events just recorded (without reading the log again), or report
-    /// that writing them failed.
-    fn add_recorded(&mut self, res: Result<Recorded>) {
+    /// that writing them failed, then reload to show the new state.
+    fn after_write(&mut self, res: Result<Recorded>) {
         match res {
             Ok(recorded) => self.ctx.log.merge(&mut self.events, recorded),
             Err(e) => self.fail(format!("{}: {e:#}", crate::app::WRITE_FAILED)),
         }
+        self.reload();
     }
 
-    fn record(&mut self, bodies: Vec<EventBody>) {
+    fn record(&mut self, bodies: impl IntoIterator<Item = EventBody>) {
         let res = self.ctx.record(bodies);
         self.after_write(res);
     }
@@ -864,7 +862,6 @@ impl App {
         if !self.play_queue() {
             // mpv did not start: take back what this press queued.
             self.queue.truncate(before);
-            self.clamp_selections();
         }
     }
 
@@ -879,12 +876,11 @@ impl App {
     }
 
     /// Start mpv on just this item, leaving the queue as it is.
-    pub fn play_item(&mut self, series: &str, item: &Item) {
-        let Some(file) = item.best_file() else {
+    fn play_item(&mut self, series: &str, item: &Item) {
+        let Some(entry) = entry_for(series, item) else {
             self.say("not on disk");
             return;
         };
-        let entry = QueueEntry { series: series.to_string(), item: item.key.clone(), file: file.path.clone() };
         let files = self.ctx.play_files(&self.lib, std::slice::from_ref(&entry));
         self.launch(&files);
     }
@@ -965,12 +961,15 @@ impl App {
                 let before: HashSet<String> = self.inbox_rows().iter().map(|(s, _)| s.key.clone()).collect();
                 self.reload_index();
                 let arrived = self.inbox_rows().iter().filter(|(s, _)| !before.contains(&s.key)).count();
+                let inbox = (arrived > 0).then(|| {
+                    format!("{arrived} new show{} in your inbox (press 2)", if arrived == 1 { "" } else { "s" })
+                });
                 match res {
-                    Ok(_) if arrived > 0 => self.say(format!(
-                        "{arrived} new show{} in your inbox (press 2)",
-                        if arrived == 1 { "" } else { "s" }
-                    )),
-                    Ok(done) => self.say(done.text),
+                    // A root that failed is not left out for the inbox news.
+                    Ok(done) if done.failed => {
+                        self.fail(inbox.into_iter().chain([done.text]).collect::<Vec<_>>().join(" · "));
+                    }
+                    Ok(done) => self.say(inbox.unwrap_or(done.text)),
                     Err(e) => self.fail(format!("scan failed: {e}")),
                 }
             }
@@ -991,19 +990,16 @@ impl App {
                 if let Err(e) = self.ctx.store_sync(&res) {
                     self.fail(format!("could not cache metadata: {e:#}"));
                 }
-                if !res.rows.is_empty()
-                    || !res.attempts.is_empty()
-                    || !res.prequels.is_empty()
-                    || !res.checked.is_empty()
-                {
-                    self.reload_meta();
-                }
+                // Even a sync that found nothing may have stored a new
+                // offline database version, which every attempt is judged by.
+                self.reload_meta();
                 if let Some(msg) = self.meta_summary(&request, &res) {
                     self.say(msg);
                 }
-                // After the summary, so they are what shows.
-                for note in &res.notes {
-                    self.say(format!("! {note}"));
+                // All in one message, after the summary and as important as an
+                // error from the same sync, so none of them is hidden.
+                if !res.notes.is_empty() {
+                    self.fail(res.notes.iter().map(|n| format!("! {n}")).collect::<Vec<_>>().join(" · "));
                 }
                 if let Some(next) = self.meta_pending.take() {
                     self.start_meta(next);
@@ -1012,6 +1008,8 @@ impl App {
             // Always followed by `Meta`, which ends the busy state.
             Msg::MetaError(e) => self.fail(e),
         }
+        // A file that started playing left the queue.
+        self.clamp_selections();
         true
     }
 
@@ -1019,11 +1017,9 @@ impl App {
         match ev {
             PlayerEvent::Started { path } => {
                 self.queue.retain(|q| q.file != path);
-                self.clamp_selections();
                 let (series, items) = self.lib.identify(&self.ctx.cfg, &path);
                 let label = self.lib.label(&series, &items);
                 if let Some(p) = &mut self.playing {
-                    p.path = Some(path);
                     p.label = label;
                     p.pos = 0.0;
                     p.dur = None;
@@ -1036,18 +1032,14 @@ impl App {
                 }
             }
             PlayerEvent::Ended { path, pos, dur, eof } => {
-                match self.ctx.record_playback(&self.lib, &path, pos, dur, eof) {
-                    Ok((series, items, outcome, recorded)) => {
-                        self.ctx.log.merge(&mut self.events, recorded);
-                        let label = self.lib.label(&series, &items);
-                        match outcome {
-                            Outcome::Watched => self.say(format!("✓ watched {label}")),
-                            Outcome::Partial { pos, .. } => {
-                                self.say(format!("◐ {label} stopped at {}", crate::fmt::clock(pos)));
-                            }
-                            Outcome::Nothing => {}
+                match self.ctx.record_playback(&self.lib, &mut self.events, &path, pos, dur, eof) {
+                    Ok((label, outcome)) => match outcome {
+                        Outcome::Watched => self.say(format!("✓ watched {label}")),
+                        Outcome::Partial { pos, .. } => {
+                            self.say(format!("◐ {label} stopped at {}", crate::fmt::clock(pos)));
                         }
-                    }
+                        Outcome::Nothing => {}
+                    },
                     Err(e) => self.fail(format!("could not record playback: {e:#}")),
                 }
                 if let Some(p) = &mut self.playing {
@@ -1061,7 +1053,11 @@ impl App {
                 match (played, error) {
                     (false, error) => {
                         let why = error.as_deref().unwrap_or("mpv exited before playing anything");
-                        self.fail(format!("{why}; the queue is unchanged"));
+                        if self.queue.is_empty() {
+                            self.fail(why);
+                        } else {
+                            self.fail(format!("{why}; the queue is unchanged"));
+                        }
                     }
                     (true, Some(e)) => self.fail(e),
                     (true, None) => {}
@@ -1087,6 +1083,7 @@ impl App {
     }
 
     /// Wait up to `timeout` for one background message.
+    #[doc(hidden)]
     pub fn wait_msg(&mut self, timeout: Duration) {
         if let Ok(m) = self.rx.recv_timeout(timeout) {
             self.on_msg(m);
@@ -1125,6 +1122,12 @@ impl App {
 
     /// Handle a key press.
     pub fn on_key(&mut self, key: KeyEvent) {
+        self.handle_key(key);
+        // Whatever the key changed (the queue, a list), each cursor stays on a row.
+        self.clamp_selections();
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 // Like `q`, but a second Ctrl-C at the prompt quits anyway. Any
@@ -1134,7 +1137,7 @@ impl App {
                     if matches!(self.popup, None | Some(Popup::ConfirmQuit)) {
                         self.request_quit();
                     } else {
-                        self.popup = None;
+                        self.on_popup_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                     }
                 }
                 KeyCode::Char('r') => self.start_meta(MetaRequest::All),
@@ -1169,8 +1172,8 @@ impl App {
             KeyCode::Char(c @ '1'..='5') => {
                 self.view = View::TABS[(c as u8 - b'1') as usize];
             }
-            KeyCode::Tab => self.view = self.view.cycle(true),
-            KeyCode::BackTab => self.view = self.view.cycle(false),
+            KeyCode::Tab => self.view = self.tab().cycle(true),
+            KeyCode::BackTab => self.view = self.tab().cycle(false),
             KeyCode::Char('r') => {
                 self.start_scan();
             }
@@ -1230,7 +1233,6 @@ impl App {
             all[at..].iter().find_map(shown).or_else(|| all[..at].iter().rev().find_map(shown))
         });
         self.detail_state.select(idx.or(Some(0)));
-        self.clamp_selections();
     }
 
     fn open_detail(&mut self, key: String) {
@@ -1293,20 +1295,21 @@ impl App {
     fn on_series_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('/') => {
-                self.popup = Some(Popup::Input {
-                    purpose: InputPurpose::Search,
-                    prompt: "search".into(),
-                    text: self.query.clone(),
-                });
+                self.popup = Some(Popup::Search);
                 return;
             }
             KeyCode::Esc if !self.query.is_empty() => {
-                self.query.clear();
-                self.refresh_series_rows();
+                self.clear_search();
                 return;
             }
             KeyCode::Char('f') => {
-                self.filter = self.filter.next();
+                // A search lists every series: the first `f` ends it, showing
+                // the filter again.
+                if self.query.is_empty() {
+                    self.filter = self.filter.next();
+                } else {
+                    self.query.clear();
+                }
                 self.series_state.select(Some(0));
                 self.refresh_series_rows();
                 return;
@@ -1327,25 +1330,13 @@ impl App {
         match key.code {
             KeyCode::Char('m') => self.popup = Some(Popup::Merge(MergePicker::new(self, &series))),
             KeyCode::Char('R') => {
-                let current = self.lib.get(&series).map(|s| s.title.clone()).unwrap_or_default();
-                self.popup = Some(Popup::Input {
-                    purpose: InputPurpose::Rename { series },
-                    prompt: "title".into(),
-                    text: current,
-                });
+                let text = self.lib.get(&series).map(|s| s.title.clone()).unwrap_or_default();
+                self.popup = Some(Popup::Input { series, purpose: InputPurpose::Rename, text });
             }
             KeyCode::Char('L') => {
-                let current = self
-                    .lib
-                    .get(&series)
-                    .and_then(super::super::library::Series::anilist_id)
-                    .map(|i| i.to_string())
-                    .unwrap_or_default();
-                self.popup = Some(Popup::Input {
-                    purpose: InputPurpose::Link { series },
-                    prompt: "AniList id (empty to unlink)".into(),
-                    text: current,
-                });
+                let text =
+                    self.lib.get(&series).and_then(Series::anilist_id).map(|i| i.to_string()).unwrap_or_default();
+                self.popup = Some(Popup::Input { series, purpose: InputPurpose::Link, text });
             }
             KeyCode::Char('U') => {
                 let aliases = self.lib.get(&series).map(|s| s.aliases.clone()).unwrap_or_default();
@@ -1378,7 +1369,6 @@ impl App {
                 } else if let Some(first) = items.first() {
                     self.queue.push(QueueEntry { series: series.clone(), item: first.key.clone(), file: path });
                 }
-                self.clamp_selections();
                 self.move_cursor(1);
             }
             KeyCode::Char('w') => self.toggle_watched(&series, &items),
@@ -1394,7 +1384,6 @@ impl App {
         match key.code {
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
                 self.queue.remove(i);
-                self.clamp_selections();
             }
             KeyCode::Char('K') if i > 0 => {
                 self.queue.swap(i, i - 1);
@@ -1404,10 +1393,7 @@ impl App {
                 self.queue.swap(i, i + 1);
                 self.queue_state.select(Some(i + 1));
             }
-            KeyCode::Char('c') => {
-                self.queue.clear();
-                self.clamp_selections();
-            }
+            KeyCode::Char('c') => self.queue.clear(),
             KeyCode::Enter => {
                 self.play_queue();
             }
@@ -1428,15 +1414,18 @@ impl App {
         match (key.code, item) {
             (KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left, _) => self.view = self.back,
             (KeyCode::Char('x'), _) => {
-                let shown = self.episodes_shown;
-                let s = lib.get(&series);
-                let rows: Vec<&Item> = self.detail_ix.iter().filter_map(|&i| s?.items.get(i)).collect();
-                self.episodes_shown.extras = !shown.extras;
+                let hiding = self.episodes_shown.extras;
                 // Keep the cursor on the same item if it is still shown, else
                 // on the nearest row above it that is (hiding hides only extras).
+                let rows = self.detail_rows();
                 let upto = self.detail_state.selected().map_or(0, |i| (i + 1).min(rows.len()));
-                let target = rows[..upto].iter().rev().find(|it| !shown.extras || it.key.kind != ItemKind::Extra);
-                self.reselect_detail(target.map(|it| &it.key));
+                let target = rows[..upto]
+                    .iter()
+                    .rev()
+                    .find(|it| !hiding || it.key.kind != ItemKind::Extra)
+                    .map(|it| it.key.clone());
+                self.episodes_shown.extras = !hiding;
+                self.reselect_detail(target.as_ref());
             }
             (KeyCode::Char('d'), item) => {
                 self.episodes_shown.missing = !self.episodes_shown.missing;
@@ -1485,11 +1474,8 @@ impl App {
                 };
                 match pick {
                     Some(st @ (SeriesStatus::Dropped | SeriesStatus::Paused)) => {
-                        self.popup = Some(Popup::Input {
-                            purpose: InputPurpose::Note { series, status: st },
-                            prompt: format!("{st} — note (optional)"),
-                            text: String::new(),
-                        });
+                        self.popup =
+                            Some(Popup::Input { series, purpose: InputPurpose::Note(st), text: String::new() });
                     }
                     Some(st) => self.set_status(&series, st, None),
                     None => self.popup = Some(Popup::Status { series, idx }),
@@ -1511,86 +1497,75 @@ impl App {
                     }
                     KeyCode::Down => picker.step(1),
                     KeyCode::Up => picker.step(-1),
-                    KeyCode::Backspace => {
-                        picker.query.pop();
-                        picker.refresh(self, None);
+                    code => {
+                        if edit_text(&mut picker.query, code) {
+                            picker.refresh(self, None);
+                        }
                     }
-                    KeyCode::Char(c) => {
-                        picker.query.push(c);
-                        picker.refresh(self, None);
-                    }
-                    _ => {}
                 }
                 self.popup = Some(Popup::Merge(picker));
             }
-            Popup::Input { purpose, prompt, mut text } => match key.code {
-                KeyCode::Esc => {
-                    if purpose == InputPurpose::Search {
-                        self.query.clear();
+            // The search applies as it is typed: Enter just closes the box.
+            Popup::Search => match key.code {
+                KeyCode::Esc => self.clear_search(),
+                KeyCode::Enter => {}
+                code => {
+                    if edit_text(&mut self.query, code) {
+                        self.series_state.select(Some(0));
                         self.refresh_series_rows();
                     }
+                    self.popup = Some(Popup::Search);
                 }
-                KeyCode::Enter => self.submit_input(purpose, text),
-                KeyCode::Backspace => {
-                    text.pop();
-                    self.live_input(&purpose, &text);
-                    self.popup = Some(Popup::Input { purpose, prompt, text });
+            },
+            Popup::Input { series, purpose, mut text } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => self.submit_input(series, purpose, &text),
+                code => {
+                    edit_text(&mut text, code);
+                    self.popup = Some(Popup::Input { series, purpose, text });
                 }
-                KeyCode::Char(c) => {
-                    text.push(c);
-                    self.live_input(&purpose, &text);
-                    self.popup = Some(Popup::Input { purpose, prompt, text });
-                }
-                _ => self.popup = Some(Popup::Input { purpose, prompt, text }),
             },
         }
     }
 
+    /// End the Series view's search.
+    fn clear_search(&mut self) {
+        self.query.clear();
+        self.refresh_series_rows();
+    }
+
     /// Candidate series to merge `from` into.
-    pub fn merge_targets(&self, from: &str, query: &str) -> Vec<&Series> {
+    fn merge_targets(&self, from: &str, query: &str) -> Vec<&Series> {
         let from_ix = self.lib.index_of(from);
         let others = self.lib.series.iter().enumerate().filter(move |(i, _)| Some(*i) != from_ix).map(|(_, s)| s);
         if query.is_empty() {
-            let from_title = self.lib.get(from).map(|s| s.title.clone()).unwrap_or_default();
-            // Suggest similarly named series first.
-            let first_word = from_title.split_whitespace().next().unwrap_or("").to_string();
+            let from_title = self.lib.get(from).map(|s| s.title.as_str()).unwrap_or_default();
+            // Similarly named series first, then the rest.
+            let first_word = from_title.split_whitespace().next().unwrap_or("");
             let mut v: Vec<&Series> =
-                fuzzy_rank(others.clone(), &first_word, |s| s.title.as_str().into()).into_iter().map(|x| x.0).collect();
-            if v.is_empty() {
-                v = others.collect();
-            }
+                fuzzy_rank(others.clone(), first_word, |s| s.title.as_str().into()).into_iter().map(|x| x.0).collect();
+            let similar: HashSet<&str> = v.iter().map(|s| s.key.as_str()).collect();
+            v.extend(others.filter(|s| !similar.contains(s.key.as_str())));
             return v;
         }
         fuzzy_rank(others, query, |s| s.search_text().into()).into_iter().map(|x| x.0).collect()
     }
 
-    fn live_input(&mut self, purpose: &InputPurpose, text: &str) {
-        if *purpose == InputPurpose::Search {
-            self.query = text.to_string();
-            self.series_state.select(Some(0));
-            self.refresh_series_rows();
-        }
-    }
-
-    fn submit_input(&mut self, purpose: InputPurpose, text: String) {
+    fn submit_input(&mut self, series: String, purpose: InputPurpose, text: &str) {
+        let text = text.trim();
         match purpose {
-            InputPurpose::Search => {
-                self.query = text;
-                self.refresh_series_rows();
-            }
-            InputPurpose::Note { series, status } => {
-                let note = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+            InputPurpose::Note(status) => {
+                let note = Some(text.to_string()).filter(|t| !t.is_empty());
                 self.set_status(&series, status, note);
             }
-            InputPurpose::Rename { series } => {
-                let t = text.trim().to_string();
-                if !t.is_empty() {
-                    self.record(vec![EventBody::Title { series, title: t }]);
+            InputPurpose::Rename => {
+                if !text.is_empty() {
+                    self.record(vec![EventBody::Title { series, title: text.into() }]);
                 }
             }
-            InputPurpose::Link { series } => {
+            InputPurpose::Link => {
                 // Empty or 0 unlinks.
-                let text = if text.trim().is_empty() { "0" } else { text.trim() };
+                let text = if text.is_empty() { "0" } else { text };
                 let Some(id) = crate::meta::anilist::parse_ref(text) else {
                     self.fail("not an AniList id");
                     return;
@@ -1620,7 +1595,7 @@ impl App {
     }
 
     fn set_status(&mut self, series: &str, status: SeriesStatus, note: Option<String>) {
-        let title = self.lib.get(series).map_or_else(|| series.to_string(), |s| s.title.clone());
+        let title = self.lib.title_of(series);
         self.say(format!("{title} → {status}"));
         let res = self.ctx.set_status(&self.lib, series, status, note);
         self.after_write(res);
@@ -1646,21 +1621,7 @@ impl App {
             let out = crate::app::scan_all(&cfg, &mut db, None, &move |root, n| {
                 let _ = p.send(Msg::ScanProgress(root.to_string(), n));
             })?;
-            let parts: Vec<String> = out
-                .iter()
-                .map(|r| match &r.stats {
-                    Ok(s) if s.new > 0 || s.gone > 0 => {
-                        format!("{root}: +{new} −{gone}", root = r.root, new = s.new, gone = s.gone)
-                    }
-                    Ok(_) => format!("{}: no changes", r.root),
-                    Err(e) => format!("{}: {e}", r.root),
-                })
-                .collect();
-            // Known from the scan itself rather than checked on the UI thread:
-            // looking at a root may block on a network mount. (A root whose
-            // scan could not be recorded is mounted, so not offline.)
-            let offline_roots = out.iter().filter(|r| r.offline).map(|r| r.root.clone()).collect();
-            Ok(ScanSummary { text: parts.join(" · "), offline_roots })
+            Ok(scan_summary(&out))
         });
     }
 
@@ -1725,6 +1686,32 @@ impl App {
 /// How long a status line message is shown.
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(6);
 
+/// What the status line says about a scan of every root.
+fn scan_summary(out: &[crate::app::RootScan]) -> ScanSummary {
+    let parts: Vec<String> = out
+        .iter()
+        .map(|r| {
+            let changes = match &r.stats {
+                Ok(s) if s.new > 0 || s.gone > 0 => format!("+{} −{}", s.new, s.gone),
+                Ok(_) => "no changes".into(),
+                Err(e) => e.to_string(),
+            };
+            match r.errors.len() {
+                0 => format!("{}: {changes}", r.root),
+                n => format!("{}: {changes} ({n} unreadable dirs)", r.root),
+            }
+        })
+        .collect();
+    // Known from the scan itself rather than checked on the UI thread:
+    // looking at a root may block on a network mount. (A root whose
+    // scan could not be recorded is mounted, so not offline.)
+    let offline_roots = out.iter().filter(|r| r.offline).map(|r| r.root.clone()).collect();
+    // An unmounted root is expected (and shown in the header); a root
+    // that scanned but failed to record, or had unreadable folders, is not.
+    let failed = out.iter().any(|r| (r.stats.is_err() && !r.offline) || !r.errors.is_empty());
+    ScanSummary { text: parts.join(" · "), offline_roots, failed }
+}
+
 /// How important a status line message is: errors are shown over info.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -1762,8 +1749,27 @@ pub struct EpisodeFilter {
 
 /// Keep the cursor inside a list of `len` rows (none on an empty list).
 fn clamp_cursor(state: &mut TableState, len: usize) {
-    let sel = state.selected().unwrap_or(0);
-    state.select(len.checked_sub(1).map(|last| sel.min(last)));
+    step_cursor(state, len, 0);
+}
+
+/// A queue entry for `item` of `series`: its best file, if it has one on disk.
+fn entry_for(series: &str, item: &Item) -> Option<QueueEntry> {
+    Some(QueueEntry { series: series.to_string(), item: item.key.clone(), file: item.best_file()?.path.clone() })
+}
+
+/// Apply a text editing key (Backspace, a character) to `text`. True if it was one.
+fn edit_text(text: &mut String, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Backspace => {
+            text.pop();
+            true
+        }
+        KeyCode::Char(c) => {
+            text.push(c);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Move the cursor by `delta` rows, staying inside a list of `len` rows.
@@ -1960,11 +1966,129 @@ mod tests {
         assert_eq!(app.current_message(), Some("first; second"));
     }
 
+    /// A warning that stays (here an unreadable event log file) shows when it
+    /// appears, not again on every reload, where it would hide what each
+    /// action reports.
+    #[test]
+    fn a_lasting_warning_shows_once() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_dir, ctx) = crate::demo::ctx();
+        let other = ctx.paths.events_dir.join("laptop.jsonl");
+        std::fs::write(&other, "").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&other).is_ok() {
+            return; // Running as root: nothing is unreadable.
+        }
+        let mut app = App::new(ctx).unwrap();
+        assert!(app.current_message().is_some_and(|m| m.contains("laptop.jsonl")), "{:?}", app.current_message());
+        app.messages.clear();
+        app.reload();
+        assert_eq!(app.current_message(), None, "not again on a reload");
+    }
+
+    /// Every note of a sync shows, in one message that an error from the same
+    /// sync or later info does not hide.
+    #[test]
+    fn sync_notes_show_together() {
+        let (_dir, mut app) = demo_app();
+        let res = crate::meta::SyncResult { notes: vec!["one".into(), "two".into()], ..Default::default() };
+        app.on_msg(Msg::MetaError("rate limit".into()));
+        app.on_msg(Msg::Meta(res, 0));
+        app.say("later info");
+        assert_eq!(app.current_message(), Some("! one · ! two"));
+    }
+
+    /// A scan reports unreadable folders and roots it could not record, also
+    /// when new shows arrived; an unmounted root alone is no failure.
+    #[test]
+    fn scan_summaries_report_what_failed() {
+        use crate::app::RootScan;
+        use crate::index::db::ScanStats;
+        let root = |name: &str, stats, offline, errors: usize| RootScan {
+            root: name.into(),
+            stats,
+            offline,
+            errors: vec!["x".into(); errors],
+        };
+        let new = Ok(ScanStats { seen: 3, new: 1, gone: 0 });
+        let summary = scan_summary(&[root("Anime", new, false, 2), root("Ext", Err(anyhow::anyhow!("gone")), true, 0)]);
+        assert_eq!(summary.text, "Anime: +1 −0 (2 unreadable dirs) · Ext: gone");
+        assert!(summary.failed);
+        assert_eq!(summary.offline_roots, ["Ext"]);
+        let fine = scan_summary(&[
+            root("Anime", Ok(ScanStats::default()), false, 0),
+            root("Ext", Err(anyhow::anyhow!("gone")), true, 0),
+        ]);
+        assert!(!fine.failed, "an unmounted root is shown in the header instead");
+        let locked = scan_summary(&[root("Anime", Err(anyhow::anyhow!("database is locked")), false, 0)]);
+        assert!(locked.failed);
+
+        let (_dir, mut app) = demo_app();
+        app.on_msg(Msg::ScanDone(Ok(summary)));
+        app.say("later info");
+        assert_eq!(app.current_message(), Some("Anime: +1 −0 (2 unreadable dirs) · Ext: gone"), "shown as an error");
+    }
+
+    /// Tab moves on from the tab Detail was opened from (the one the header
+    /// shows as active).
+    #[test]
+    fn tab_moves_on_from_the_tab_detail_belongs_to() {
+        let (_dir, mut app) = demo_app();
+        app.press("3\n");
+        assert_eq!((app.view, app.tab()), (View::Detail, View::Series));
+        app.press("\t");
+        assert_eq!(app.view, View::Files);
+        app.press("3\n");
+        app.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.view, View::Inbox);
+    }
+
+    /// Ctrl-C in the search box ends the search like Esc does.
+    #[test]
+    fn ctrl_c_in_the_search_box_clears_the_search() {
+        let (_dir, mut app) = demo_app();
+        app.press("3/fri");
+        assert_eq!(app.query, "fri");
+        ctrl_c(&mut app);
+        assert!(app.popup.is_none() && app.query.is_empty());
+        assert_eq!(app.series_ix.len(), app.lib.series.iter().filter(|s| app.filter.accepts(s)).count());
+    }
+
+    /// A search lists every series, so `f` ends it first rather than change a
+    /// filter that does nothing while it lasts.
+    #[test]
+    fn the_filter_key_ends_a_search_first() {
+        let (_dir, mut app) = demo_app();
+        app.press("3/frieren\n");
+        let filter = app.filter;
+        app.press("f");
+        assert_eq!((app.query.as_str(), app.filter), ("", filter));
+        app.press("f");
+        assert_ne!(app.filter, filter);
+    }
+
+    /// Without a query, the merge picker lists similarly named series first,
+    /// then every other one.
+    #[test]
+    fn merge_targets_put_similar_names_first() {
+        let (_dir, app) = demo_app();
+        let from = app.lib.series.iter().find(|s| s.title.contains("Frieren S2")).unwrap();
+        let targets = app.merge_targets(&from.key, "");
+        assert_eq!(targets.len(), app.lib.series.len() - 1, "every other series");
+        assert_eq!(targets[0].title, "Sousou no Frieren");
+    }
+
     /// mpv quitting before playing shows the specific reason it came with
-    /// instead of a generic message.
+    /// instead of a generic message, and says the queue is kept when there
+    /// is one (an episode played from Detail has nothing to do with it).
     #[test]
     fn early_mpv_exit_shows_the_reported_error() {
         let (_dir, mut app) = demo_app();
+        app.queue.push(QueueEntry {
+            series: "x".into(),
+            item: ItemKey::episode(crate::model::EpNo::new(1)),
+            file: "/x.mkv".into(),
+        });
         app.playing = Some(NowPlaying::starting(1));
         let error = Some("mpv exited before playing anything (exit status: 1)".into());
         app.on_player(PlayerEvent::Exited { played: false, error });
@@ -1975,9 +2099,10 @@ mod tests {
         );
 
         // No reason given: the generic message.
+        app.queue.clear();
         app.playing = Some(NowPlaying::starting(1));
         app.on_player(PlayerEvent::Exited { played: false, error: None });
-        assert_eq!(app.current_message(), Some("mpv exited before playing anything; the queue is unchanged"));
+        assert_eq!(app.current_message(), Some("mpv exited before playing anything"));
     }
 
     /// mpv finishing a file and exiting right after reload the library once,
@@ -2020,7 +2145,7 @@ mod tests {
         assert!(app.offline_roots.is_empty(), "unknown before the first scan");
         let done = |offline: &[&str]| {
             let offline_roots = offline.iter().map(|r| (*r).to_string()).collect();
-            Msg::ScanDone(Ok(ScanSummary { text: "done".into(), offline_roots }))
+            Msg::ScanDone(Ok(ScanSummary { text: "done".into(), offline_roots, failed: false }))
         };
         app.on_msg(done(&["Downloads"]));
         assert_eq!(app.offline_roots, ["Downloads"]);

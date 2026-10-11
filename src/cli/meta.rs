@@ -2,10 +2,10 @@
 
 use std::io::Write;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
-use super::{Session, writing};
-use crate::app::{Ctx, find_series};
+use super::{writing, writing_unless};
+use crate::app::{Ctx, Session, find_series};
 use crate::events::now;
 use crate::fmt::{bold, cyan, dim, green, yellow};
 use crate::library::Library;
@@ -22,9 +22,9 @@ pub enum MetaAction {
         /// Only report, don't link.
         #[arg(long)]
         dry_run: bool,
-        /// Also look series with no match up on AniList by title (sends those titles to AniList).
-        /// With `anilist_search = true` in the config this happens without the flag (but not with
-        /// `--dry-run`), and only for series not searched before.
+        /// Also look series with no match up on AniList by title (sends those titles to AniList),
+        /// including those searched before. With `anilist_search = true` in the config this
+        /// happens without the flag (but not with `--dry-run`), for series not searched lately.
         #[arg(long)]
         search: bool,
     },
@@ -57,21 +57,19 @@ fn anilist_arg(s: &str) -> Result<u64, String> {
     anilist::parse_ref(s).ok_or_else(|| "expected an AniList id or https://anilist.co/anime/… URL".into())
 }
 
-/// Print things to tell the user that aren't failures (see
-/// [`SyncResult::notes`]).
-fn print_notes<'a>(out: &mut impl Write, notes: impl IntoIterator<Item = &'a String>) -> Result<()> {
-    for note in notes {
-        writeln!(out, "{warn} {note}", warn = yellow("!"))?;
+/// Why a command that needs the network doesn't run.
+const NETWORK_OFF: &str = "network metadata is turned off (`anilist = false` in the config)";
+
+/// Why a command that needs the offline database doesn't run.
+const NO_DATABASE: &str = "offline database not downloaded; run `anipv meta update`";
+
+/// Print warnings: things that didn't stop the command (see
+/// [`SyncResult::notes`]), or failures it carries on after.
+fn print_warnings(out: &mut impl Write, warnings: impl IntoIterator<Item = impl std::fmt::Display>) -> Result<()> {
+    for w in warnings {
+        writeln!(out, "{warn} {w}", warn = yellow("!"))?;
     }
     Ok(())
-}
-
-/// The downloaded offline database, or an error saying how to get it.
-fn downloaded(ctx: &Ctx) -> Result<OfflineDb> {
-    match OfflineDb::load(&ctx.paths.cache_dir)? {
-        Some(db) => Ok(db),
-        None => bail!("offline database not downloaded; run `anipv meta update`"),
-    }
 }
 
 /// Run a `meta` subcommand.
@@ -80,27 +78,26 @@ pub(super) fn run(ctx: &Ctx, a: MetaAction, out: &mut impl Write) -> Result<()> 
         MetaAction::Update => {
             let urls = offline::source_urls(ctx.cfg.offline_db_url.as_deref());
             writeln!(out, "downloading {} …", dim(&urls[0]))?;
-            let db = OfflineDb::download(&ctx.paths.cache_dir, &urls)?;
-            ctx.store_sync(&SyncResult { db_version: db.version.clone(), ..SyncResult::default() })?;
+            let (db, notes) = OfflineDb::download(&ctx.paths.cache_dir, &urls)?;
+            ctx.store_sync(&SyncResult { db_version: Some(db.version_key().to_string()), ..SyncResult::default() })?;
             writeln!(out, "{ok} {n} anime with AniList ids", ok = green("✓"), n = db.entries.len())?;
-            print_notes(out, &offline::download_notes(&urls[0], db.source.as_deref(), db.version.as_deref(), now()))?;
+            print_warnings(out, &notes)?;
             writeln!(out, "  next: {}", cyan("anipv meta match"))?;
             Ok(())
         }
-        MetaAction::Match { dry_run: true, search } => match_series(ctx, &ctx.library()?, true, search, out),
-        MetaAction::Match { dry_run: false, search } => {
-            writing(ctx, out, |s, out| match_series(ctx, &s.lib, false, search, out))
+        MetaAction::Match { dry_run, search } => {
+            writing_unless(dry_run, ctx, out, |s, out| match_series(ctx, &s.lib, dry_run, search, out))
         }
         MetaAction::Link { series, anilist } => writing(ctx, out, |s, out| link(ctx, s, &series, anilist, out)),
         MetaAction::Refresh { series, all } => {
             // Said here: with the network off, the plan below would just be empty.
             if !ctx.cfg.anilist {
-                bail!("network metadata is turned off (`anilist = false` in the config)");
+                bail!(NETWORK_OFF);
             }
             writing(ctx, out, |s, out| refresh(ctx, s, series.as_deref(), all, out))
         }
         MetaAction::Search { query } => {
-            for e in downloaded(ctx)?.search(&query, 15) {
+            for e in OfflineDb::load(&ctx.paths.cache_dir)?.context(NO_DATABASE)?.search(&query, 15) {
                 writeln!(out, "  {}", e.describe())?;
             }
             Ok(())
@@ -109,50 +106,50 @@ pub(super) fn run(ctx: &Ctx, a: MetaAction, out: &mut impl Write) -> Result<()> 
 }
 
 /// `meta match`: match against the offline database, storing the links
-/// unless `dry_run`. With `search` (or `anilist_search` in the config), series
-/// the database has no match for are also looked up on `AniList` by title.
+/// unless `dry_run`. With `search`, or `anilist_search` in the config (but not
+/// in a dry run, since the titles do go to `AniList`), series it has no match
+/// for are also looked up by title (see [`crate::meta::add_title_search`]),
+/// which needs no database.
 fn match_series(ctx: &Ctx, lib: &Library, dry_run: bool, search: bool, out: &mut impl Write) -> Result<()> {
     if search && !ctx.cfg.anilist {
-        bail!("network metadata is turned off (`anilist = false` in the config)");
+        bail!(NETWORK_OFF);
     }
-    let db = downloaded(ctx)?;
     let ts = now();
-    let mut rep = crate::meta::match_library(lib, &db, ts, None);
-    let (mut searched, mut found) = (None, crate::meta::SearchSummary::default());
-    // A dry run only searches when asked to, since the titles do go to AniList.
-    if search || (ctx.cfg.anilist && ctx.cfg.anilist_search && !dry_run) {
-        let before = rep.rows.len();
-        let version = db.version.clone().unwrap_or_default();
-        // `--search` asks again about series searched before.
-        found = crate::meta::add_title_search(&mut rep, lib, &anilist::Ureq, &version, ts, search);
-        searched = Some(rep.rows.len() - before);
-    }
+    let searching = search || (ctx.cfg.anilist && ctx.cfg.anilist_search && !dry_run);
+    // Without a downloaded database a title search still can: every series
+    // without a link is unmatched then.
+    let mut rep = match OfflineDb::load(&ctx.paths.cache_dir)? {
+        Some(db) => crate::meta::match_library(lib, &db, ts, None),
+        None if searching => crate::meta::unmatched_without_database(lib, None),
+        None => bail!(NO_DATABASE),
+    };
+    let before = rep.rows.len();
+    // `--search` asks again about series searched before.
+    let found = searching.then(|| crate::meta::add_title_search(&mut rep, lib, &anilist::Ureq, ts, search));
     let matched = rep.rows.len();
     if !dry_run {
-        let (rows, attempts, db_version) = (rep.rows, rep.attempts, db.version);
+        let (rows, attempts) = (std::mem::take(&mut rep.rows), std::mem::take(&mut rep.attempts));
+        let db_version = Some(rep.db_version.clone());
         ctx.store_sync(&SyncResult { rows, attempts, db_version, ..SyncResult::default() })?;
     }
     writeln!(out, "{ok} matched {matched} series", ok = green("✓"))?;
-    if let Some(n) = searched {
-        writeln!(out, "  {n} of them by title on AniList")?;
+    if let Some(found) = found {
+        writeln!(out, "  {n} of them by title on AniList", n = matched - before)?;
+        print_warnings(out, &found.stopped)?;
+        if found.skipped > 0 {
+            writeln!(out, "  {n} more not searched this time; run again", n = found.skipped)?;
+        }
     }
-    for e in &found.errors {
-        writeln!(out, "{warn} AniList: {e:#}", warn = yellow("!"))?;
-    }
-    print_notes(out, &found.notes)?;
-    if found.skipped > 0 {
-        writeln!(out, "  {n} more not searched this time; run again", n = found.skipped)?;
-    }
-    if !rep.ambiguous.is_empty() {
+    if rep.ambiguous().next().is_some() {
         writeln!(out, "\n{} (link with {}):", bold("ambiguous"), cyan("anipv meta link <series> <anilist-id>"))?;
-        for (k, c) in rep.ambiguous.iter().take(40) {
-            writeln!(out, "  {}", yellow(k))?;
-            for x in c.iter().take(4) {
+        for u in rep.ambiguous().take(40) {
+            writeln!(out, "  {}", yellow(&u.series))?;
+            for x in u.candidates.iter().take(4) {
                 writeln!(out, "    {}", dim(x))?;
             }
         }
     }
-    writeln!(out, "{} series without a match", rep.unmatched.len())?;
+    writeln!(out, "{} series without a match", rep.unmatched().count())?;
     Ok(())
 }
 
@@ -182,9 +179,7 @@ fn link(ctx: &Ctx, s: &mut Session, query: &str, anilist: u64, out: &mut impl Wr
     };
     writeln!(out, "{ok} {title} → {target}", ok = green("✓"), title = bold(&title))?;
     // The link is recorded either way: a failed lookup is retried by the next update.
-    for e in &res.errors {
-        writeln!(out, "{warn} {e}", warn = yellow("!"))?;
-    }
+    print_warnings(out, &res.errors)?;
     Ok(())
 }
 
@@ -213,7 +208,7 @@ fn refresh(ctx: &Ctx, s: &Session, series: Option<&str>, all: bool, out: &mut im
     });
     shown?;
     ctx.store_sync(&res)?;
-    print_notes(out, &res.notes)?;
+    print_warnings(out, &res.notes)?;
     // A failed download (with `--all`) or AniList error fails the command.
     if let Some(e) = res.errors.first() {
         bail!("{e}");

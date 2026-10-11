@@ -21,17 +21,6 @@ fn touch(p: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Paths for a demo home directory.
-pub fn paths(home: &Path) -> Paths {
-    Paths {
-        config_file: home.join("config/config.toml"),
-        events_dir: home.join("data/events"),
-        db_file: home.join("data/index.db"),
-        cache_dir: home.join("cache"),
-        runtime_dir: home.join("cache"),
-    }
-}
-
 /// A demo context in a new temporary directory, which goes away when the
 /// returned handle is dropped.
 #[cfg(test)]
@@ -44,6 +33,10 @@ pub(crate) fn ctx() -> (tempfile::TempDir, Ctx) {
 /// Create a demo library under `home` and return a ready context.
 /// `ts` is "now" for the generated history (pass `events::now()`).
 pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
+    // Never over an existing home: the demo writes a config and event logs.
+    if std::fs::read_dir(home).is_ok_and(|mut d| d.next().is_some()) {
+        anyhow::bail!("{} is not empty; the demo needs a new or empty folder", home.display());
+    }
     let media = home.join("media");
     let dl = media.join("Downloads");
     let anime = media.join("Anime");
@@ -102,7 +95,7 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         ],
         ..Config::default()
     };
-    let paths = paths(home);
+    let paths = Paths::under(home);
     cfg.save(&paths.config_file)?;
     let mut ctx = Ctx::open(cfg, paths)?;
     ctx.scan(None, &|_, _| {})?;
@@ -196,6 +189,17 @@ pub fn setup_now(home: &Path) -> Result<Ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The demo never goes over an existing home (its config, its event logs).
+    #[test]
+    fn demo_needs_an_empty_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_now(dir.path()).unwrap();
+        let events = std::fs::read_to_string(dir.path().join("data/events/desktop.jsonl")).unwrap();
+        let err = setup_now(dir.path()).err().unwrap();
+        assert!(err.to_string().contains("not empty"), "{err}");
+        assert_eq!(std::fs::read_to_string(dir.path().join("data/events/desktop.jsonl")).unwrap(), events);
+    }
 
     #[test]
     fn demo_library_is_sensible() {

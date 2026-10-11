@@ -7,10 +7,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::config::{Config, RootKind};
-use crate::identity::{label_key, legacy_name_key, series_key, series_name};
+use crate::identity::{legacy_name_key, series_key, series_name};
 use crate::index::FileRow;
 use crate::model::{ItemKey, ItemKind};
-use crate::parse::{Parsed, clean_dir_name, parse};
+use crate::parse::{Parsed, clean_dir_name, extra_label, parse};
 
 /// A file's place in the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,23 +38,49 @@ impl Classified {
 /// file whose root is no longer configured).
 pub type FileClass = Option<(RootKind, Classified)>;
 
-/// Classify every row under its configured root.
-pub fn classify_rows(cfg: &Config, files: &[FileRow]) -> Vec<FileClass> {
-    let kinds: HashMap<&str, RootKind> = cfg.roots.iter().map(|r| (r.name.as_str(), r.kind)).collect();
-    files.iter().map(|row| classify_row(cfg, &kinds, row)).collect()
+/// Rows per thread below which [`classify_rows`] does not spread the work.
+const CHUNK_MIN: usize = 1024;
+
+/// Most threads [`classify_rows`] uses.
+const MAX_THREADS: usize = 8;
+
+/// Classify every row under its configured root, taking a row's
+/// classification from `known` where it has one (made under the same `cfg`).
+///
+/// Parsing every file name is most of what loading the library costs, so a
+/// large index is split over a few threads.
+pub fn classify_rows<'a>(
+    cfg: &Config,
+    files: &[FileRow],
+    known: impl Fn(&FileRow) -> Option<&'a FileClass> + Sync,
+) -> Vec<FileClass> {
+    let kinds = cfg.root_kinds();
+    let classify = |rows: &[FileRow]| -> Vec<FileClass> {
+        rows.iter().map(|row| known(row).cloned().unwrap_or_else(|| classify_row(cfg, &kinds, row))).collect()
+    };
+    let threads = std::thread::available_parallelism().map_or(1, usize::from).min(MAX_THREADS);
+    let chunk = files.len().div_ceil(threads).max(CHUNK_MIN);
+    if files.len() <= chunk {
+        return classify(files);
+    }
+    std::thread::scope(|s| {
+        #[expect(clippy::needless_collect, reason = "every thread starts before the first is joined")]
+        let parts: Vec<_> = files.chunks(chunk).map(|rows| s.spawn(move || classify(rows))).collect();
+        parts.into_iter().flat_map(|p| p.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    })
 }
 
 /// Classify one row under its root, given the kind of each configured root.
-pub fn classify_row(cfg: &Config, kinds: &HashMap<&str, RootKind>, row: &FileRow) -> FileClass {
+fn classify_row(cfg: &Config, kinds: &HashMap<&str, RootKind>, row: &FileRow) -> FileClass {
     let kind = *kinds.get(row.root.as_str())?;
     Some((kind, classify(cfg, kind, &row.rel)))
 }
 
-/// Expand `ep..=ep_end` into one key per episode.
+/// Expand `ep..=ep_end` into one key per episode (or special).
 pub fn expand_items(p: &Parsed) -> Vec<ItemKey> {
     let first = p.item_key();
     match (p.kind, p.ep, p.ep_end) {
-        (ItemKind::Episode, Some(a), Some(b)) if b > a && a.is_whole() => {
+        (ItemKind::Episode | ItemKind::Special, Some(a), Some(b)) if b > a && a.is_whole() => {
             (a.whole()..=b.whole()).map(|n| ItemKey { ep: Some(crate::model::EpNo::new(n)), ..first.clone() }).collect()
         }
         _ => vec![first],
@@ -73,61 +99,62 @@ pub fn classify(cfg: &Config, kind: RootKind, rel: &Path) -> Classified {
     let mut parsed = parse(file);
     let stem = crate::parse::stem(file);
 
-    let in_dir = |list: &[String]| dirs.iter().any(|d| list.iter().any(|x| x.eq_ignore_ascii_case(d)));
-    if in_dir(&cfg.extras_dirs) && parsed.kind != ItemKind::Extra {
-        parsed.kind = ItemKind::Extra;
-        parsed.label = label_key(stem);
-        if parsed.label.is_empty() {
-            parsed.label = stem.to_string();
-        }
-        parsed.ep = None;
-        parsed.ep_end = None;
-    } else if in_dir(&cfg.specials_dirs) && parsed.kind == ItemKind::Episode {
-        parsed.kind = ItemKind::Special;
-        parsed.label = "special".into();
-    }
-
-    let ((series, title), legacy_series) = if let (RootKind::Archive, Some(top)) = (kind, dirs.first()) {
-        let t = clean_dir_name(top);
+    // The innermost `Season N` folder, if any.
+    let dir_season = season_from_dirs(dirs);
+    // The name the series is called by, and its season.
+    let (name, season) = if let (RootKind::Archive, Some(top)) = (kind, dirs.first()) {
         // The folder names the show; a later season inside it (`S02E01` in the
         // file name, or a `Season 2` folder) must not collapse into season 1.
-        let season = parsed.season.or_else(|| season_from_dirs(&dirs[1..]));
-        let named = series_name(&t, season);
-        let legacy = legacy_name_key(&named.0, &t, season);
-        (named, legacy)
+        (clean_dir_name(top), parsed.season.or_else(|| season_from_dirs(&dirs[1..])))
     } else {
         let mut title = parsed.title.clone();
         let mut season = parsed.season;
-        if title.is_empty() {
-            // `Batch/01 - Name.mkv`: borrow the nearest named folder. A
-            // `Season 2` folder is not a name: it gives the season, and the
-            // show's folder above it gives the title.
-            if let Some(d) = dirs.iter().rev().find(|d| !in_dir_list(cfg, d) && season_dir(d).is_none()) {
-                title = clean_dir_name(d);
-                season = season_from_dirs(dirs);
-            }
+        // `Batch/01 - Name.mkv`: borrow the nearest named folder. A `Season 2`
+        // folder is not a name: it gives the season (unless the file name has
+        // one), and the show's folder above it gives the title.
+        if title.is_empty()
+            && let Some(d) = dirs.iter().rev().find(|d| !is_generic_dir(cfg, d))
+        {
+            title = clean_dir_name(d);
+            season = season.or(dir_season);
         }
         if title.is_empty() {
             title = file.to_string();
         }
-        // `JoJos.Bizarre.Adventure.S06E02` → "JoJos Bizarre Adventure S6".
-        let named = series_name(&title, season);
-        let legacy = legacy_name_key(&named.0, &title, season);
-        (named, legacy)
+        (title, season)
     };
+    // `JoJos.Bizarre.Adventure.S06E02` → "JoJos Bizarre Adventure S6".
+    let (mut series, title) = series_name(&name, season);
+    let mut legacy_series = legacy_name_key(&series, &name, season);
+    if series.is_empty() {
+        series = series_key(file);
+        legacy_series = legacy_name_key(&series, file, None);
+    }
+
+    let in_dir = |is: fn(&Config, &str) -> bool| dirs.iter().any(|d| is(cfg, d));
+    if in_dir(Config::is_extras_dir) && parsed.kind != ItemKind::Extra {
+        parsed.kind = ItemKind::Extra;
+        parsed.label = extra_label(stem);
+        // `Show/Extras/Show - Fanart.mkv` → `fanart`: the series names the show already.
+        if let Some(rest) = parsed.label.strip_prefix(series.as_str()).and_then(|r| r.strip_prefix(' '))
+            && rest.chars().count() >= 3
+        {
+            parsed.label = rest.to_string();
+        }
+        parsed.ep = None;
+        parsed.ep_end = None;
+    } else if parsed.kind == ItemKind::Episode
+        && (in_dir(Config::is_specials_dir) || parsed.season.or(dir_season) == Some(0))
+    {
+        // A `Season 0` / `S00` folder holds specials (like an `S00E05` name),
+        // unless the file name says another season.
+        parsed.make_special();
+    }
 
     // Movies inside a series folder are told apart by their own title.
     if parsed.kind == ItemKind::Movie && parsed.label.is_empty() && parsed.title.is_empty() {
         parsed.title = stem.to_string();
     }
-
-    let (series, legacy_series) = if series.is_empty() {
-        let key = series_key(file);
-        let legacy = legacy_name_key(&key, file, None);
-        (key, legacy)
-    } else {
-        (series, legacy_series)
-    };
     Classified { series, legacy_series, title, parsed }
 }
 
@@ -143,8 +170,16 @@ fn season_dir(name: &str) -> Option<u32> {
     SEASON_DIR.captures(name.trim()).and_then(|c| c[1].parse().ok())
 }
 
-fn in_dir_list(cfg: &Config, d: &str) -> bool {
-    cfg.extras_dirs.iter().chain(&cfg.specials_dirs).any(|x| x.eq_ignore_ascii_case(d))
+/// True for a folder that says what kind its files are (extras, specials):
+/// not a name to borrow.
+fn is_kind_dir(cfg: &Config, d: &str) -> bool {
+    cfg.is_extras_dir(d) || cfg.is_specials_dir(d)
+}
+
+/// True for a folder name that says nothing about which show is in it: a
+/// season (`Season 2`, `S02`) or a kind of file (extras, specials).
+pub fn is_generic_dir(cfg: &Config, d: &str) -> bool {
+    is_kind_dir(cfg, d) || season_dir(d).is_some()
 }
 
 #[cfg(test)]
@@ -154,6 +189,64 @@ mod tests {
 
     fn c(kind: RootKind, rel: &str) -> Classified {
         classify(&Config::default(), kind, Path::new(rel))
+    }
+
+    /// A large index is classified on several threads, in order, and known
+    /// classifications are taken as they are.
+    #[test]
+    fn classify_rows_keeps_the_order_across_threads() {
+        let cfg = Config { roots: vec![crate::config::Root::test("a", "/a", RootKind::Ongoing)], ..Config::default() };
+        let files: Vec<FileRow> =
+            (0..CHUNK_MIN * 3 + 7).map(|n| FileRow::test("a", &format!("Show {n} - 01.mkv"))).collect();
+        let kinds = cfg.root_kinds();
+        let one_by_one: Vec<FileClass> = files.iter().map(|row| classify_row(&cfg, &kinds, row)).collect();
+        assert_eq!(classify_rows(&cfg, &files, |_| None), one_by_one);
+        let known = Some((RootKind::Archive, c(RootKind::Archive, "Known/Known - 01.mkv")));
+        let rows = classify_rows(&cfg, &files, |row| (row.rel == Path::new("Show 5 - 01.mkv")).then_some(&known));
+        assert_eq!(rows[5], known);
+        assert_eq!(rows[6], one_by_one[6]);
+    }
+
+    /// A file without a title of its own keeps its season marker when it
+    /// borrows the folder's name (the marker wins over a season folder too).
+    #[test]
+    fn untitled_files_keep_their_season_marker() {
+        for kind in [RootKind::Ongoing, RootKind::Archive] {
+            assert_eq!(c(kind, "Show/S02E05.mkv").series, "show s2", "{kind:?}");
+            assert_eq!(c(kind, "Show/Season 2/S03E05.mkv").series, "show s3", "{kind:?}");
+            assert_eq!(c(kind, "Show/Season 2/05.mkv").series, "show s2", "{kind:?}");
+        }
+    }
+
+    /// A `Season 0` folder holds specials, like a `Specials` folder: they
+    /// don't collide with the episodes of the same numbers.
+    #[test]
+    fn season_0_folders_hold_specials() {
+        for kind in [RootKind::Ongoing, RootKind::Archive] {
+            for rel in ["Show/Season 0/01.mkv", "Show/S00/Show - 01.mkv", "Show/Season 00/01.mkv"] {
+                let x = c(kind, rel);
+                assert_eq!((x.series.as_str(), x.parsed.kind), ("show", ItemKind::Special), "{kind:?} {rel}");
+            }
+            assert_eq!(c(kind, "Show/01.mkv").parsed.kind, ItemKind::Episode);
+            // The file name's season marker wins over the folder's, either way.
+            let x = c(kind, "Show/Season 0/Show S02E05.mkv");
+            assert_eq!((x.series.as_str(), x.parsed.kind), ("show s2", ItemKind::Episode), "{kind:?}");
+            // An `S00E05` is a special of the series its folder gives, as it
+            // always was (series keys identify watch history).
+            let x = c(kind, "Show/Season 2/S00E05.mkv");
+            assert_eq!((x.series.as_str(), x.parsed.kind), ("show s2", ItemKind::Special), "{kind:?}");
+        }
+        let x = c(RootKind::Archive, "Show/Season 2/Show S00E05.mkv");
+        assert_eq!((x.series.as_str(), x.parsed.kind), ("show s2", ItemKind::Special));
+    }
+
+    /// A range of specials provides each of them, like a range of episodes.
+    #[test]
+    fn special_ranges_provide_each_special() {
+        let x = c(RootKind::Archive, "Show/Specials/Show - 01-02.mkv");
+        assert_eq!(x.parsed.kind, ItemKind::Special);
+        let eps: Vec<Option<EpNo>> = x.items().iter().map(|k| k.ep).collect();
+        assert_eq!(eps, [Some(EpNo::new(1)), Some(EpNo::new(2))]);
     }
 
     #[test]
@@ -196,6 +289,15 @@ mod tests {
         assert_eq!(x.parsed.kind, ItemKind::Extra);
         let x = c(RootKind::Archive, "Aikatsu Stars!/Extras/Aikatsu Stars! BD-BOX 2-1 (BD 1920x1080 x264 AAC).mp4");
         assert_eq!(x.parsed.kind, ItemKind::Extra);
+        // Named without the release tags, and without the show's name.
+        let x = c(
+            RootKind::Archive,
+            "Grand Blue/Extras/[GroupA] Grand Blue (Creditless ED 01) [BDRip 1080p][ABCD0001].mkv",
+        );
+        assert_eq!((x.parsed.kind, x.parsed.label.as_str()), (ItemKind::Extra, "creditless ed 01"));
+        // Unless too little would be left.
+        let x = c(RootKind::Archive, "Bartender/Extras/[GroupA] Bartender M [BDRip 1080p].mkv");
+        assert_eq!(x.parsed.label, "bartender m");
         let x = c(RootKind::Archive, "Show/Specials/Show - 01.mkv");
         assert_eq!(x.parsed.kind, ItemKind::Special);
         let x = c(

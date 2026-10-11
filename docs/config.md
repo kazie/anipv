@@ -35,12 +35,12 @@ kind = "archive"
 | `mpv_args` | `[]` | Extra arguments for every mpv invocation, e.g. `["--fs", "--profile=anime"]`. |
 | `watched_threshold` | `0.85` | Fraction of an episode you must reach for it to count as watched. mpv reaching the end of a file isn't enough on its own, so a partly downloaded episode stays in progress. |
 | `anilist` | `true` | Network metadata: fetch airing info from AniList (anonymous, ids only) and let `ctrl-r`/`M` in the TUI download the offline anime database when it is missing or older than a week. With `false`, matching still uses an already downloaded database. |
-| `anilist_search` | `false` | Also look series the offline database can't match up on AniList **by title** (needs `anilist = true`). **This sends the titles of those series to AniList** (as anipv shows them, parsed from your file and folder names); nothing else (no paths, no watch state). A series links only when an AniList answer goes by its name (title or synonym, normalized like series keys) and can hold the episodes you have (a finished movie never takes a 24-episode series); a TV or ONA entry wins over other formats for a series of episodes. Another season or a same-named show is never linked; several equally good answers are listed as ambiguous by `anipv meta match`. Each series is searched once per offline database version, at most 30 per update (automatic updates keep going until all are done, and retry after a failed request); `anipv meta match --search` asks again about all of them. A link made this way is kept when the offline database later lists nothing, or several entries, for that name. |
+| `anilist_search` | `false` | Also look series the offline database can't match (all of them while none is downloaded) up on AniList **by title** (needs `anilist = true`). **This sends the titles of those series to AniList** (as anipv shows them, parsed from your file and folder names); nothing else (no paths, no watch state). A series links only when an AniList answer goes by its name (title or synonym, normalized like series keys) and can hold the episodes you have (a finished movie never takes a 24-episode series); a TV or ONA entry wins over other formats for a series of episodes. Another season or a same-named show is never linked; several equally good answers are listed as ambiguous by `anipv meta match`. A series is searched again only after a month (a failed search after a day), at most 10 per update, least recently searched first (automatic updates keep going until all are done); a failed request ends that update's searching and is reported, not treated as an error (an earlier answer for that series stays). `anipv meta match --search` asks again about all of them. A link made this way is kept when the offline database later lists nothing, or several entries, for that name. |
 | `offline_db_url` | the [community continuation](https://github.com/cedya77/anime-offline-database), then the archived original | Where `anipv meta update` (and `ctrl-r` in the TUI) downloads the offline anime database from: an `http(s)` URL of `anime-offline-database-minified.json`. When set, only that URL is used. By default the continuation is tried first; the archived [manami-project](https://github.com/manami-project/anime-offline-database) release (frozen since 2026-07-04) is the fallback only when nothing is cached yet, so it never replaces a newer copy. |
 | `roots` | `[]` | Media folders, scanned in order. See below. |
 | `ignore_dirs` | `Screens`, `Screenshots`, … | Directory names never scanned (dot-directories are always skipped). |
 | `extras_dirs` | `Extras`, `NC`, `Menus`, … | Files below these directories are extras (openings, menus, PVs). |
-| `specials_dirs` | `Specials`, `OVA`, … | Numbered files below these directories are specials, not episodes. |
+| `specials_dirs` | `Specials`, `OVA`, … | Numbered files below these directories are specials, not episodes. So are those in a `Season 0` / `S00` folder. |
 
 ## Roots
 
@@ -51,7 +51,8 @@ Each root has a `name` (shown in the UI and stored in the index), a `path`
   name (`[GroupA] Grand Blue S3 - 07 (1080p).mkv` → *Grand Blue S3*,
   episode 7). Files in sub-folders without a usable title borrow the nearest
   named folder's; a `Season 2` / `S02` folder is not a name but gives the
-  season, so `Show/Season 2/01 - Title.mkv` is *Show S2*. A file that has its
+  season, so `Show/Season 2/01 - Title.mkv` is *Show S2* (a season marker in
+  the file name, `Show/S02E01.mkv`, wins over the folder's). A file that has its
   own title keeps it: the sub-folders do not change the series.
 * **`archive`**: one folder per series (`Anime/One Piece/…`). The top-level
   folder name *is* the series title, whatever the files are called, so
@@ -83,7 +84,9 @@ A scan marks files that disappeared as gone (their history is kept), except:
   scan that found files, and which folder that was. A plain local folder you
   emptied is believed, so its files are marked gone. A drive that was mounted
   and is now not (an empty mount-point directory) is ignored as "not mounted".
-  A mount that is still mounted and empty is believed. With no record (an
+  A mount that is still mounted and empty is believed; a folder that has
+  become a mount since is not (it may be an automounter's placeholder that
+  isn't filled yet). With no record (an
   index from an older version, or a root whose `path` changed) an empty plain
   folder is believed too; if it really was an unmounted drive, its files drop
   out of the lists until the next scan with the drive mounted brings them
@@ -99,6 +102,10 @@ Known limits of the mount check (accepted, not planned to change):
   looks like an emptied folder and its files are marked gone (only listing
   state, not history; the next scan with it mounted restores them). Make each
   drive its own root to be safe.
+* **Linked folders are not checked either.** A series folder linked from
+  another drive (`Show -> /mnt/disk2/Show`) points nowhere while that drive
+  is unmounted, and its files are marked gone until a scan with the drive
+  mounted (only listing state, not history).
 * **Bind mounts** of the same filesystem are not detected as mount points, so
   a bind-mounted root behaves like a plain folder.
 * **Non-unix systems** can't tell mount points apart, so there an empty scan

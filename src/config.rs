@@ -3,7 +3,7 @@
 //! Setting `ANIPV_HOME` relocates config, data and cache under a single
 //! directory, which is used by tests and the README demo.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -139,22 +139,45 @@ impl Paths {
         Ok(())
     }
 
+    /// Paths with everything under `home` (`config/`, `data/`, `cache/`), as
+    /// `ANIPV_HOME` lays them out; what `anipv demo` writes.
+    pub fn under(home: &Path) -> Self {
+        Self::layout(&home.join("config"), &home.join("data"), home.join("cache"))
+    }
+
+    fn layout(config_dir: &Path, data_dir: &Path, cache_dir: PathBuf) -> Self {
+        Self {
+            config_file: config_dir.join("config.toml"),
+            events_dir: data_dir.join("events"),
+            db_file: data_dir.join("index.db"),
+            runtime_dir: cache_dir.clone(),
+            cache_dir,
+        }
+    }
+
     /// Compute paths from the environment and (optional) config.
     pub fn resolve(cfg: Option<&Config>) -> Result<Self> {
-        let (config_dir, data_dir, cache_dir) = if let Some(home) = std::env::var_os("ANIPV_HOME") {
-            let home = PathBuf::from(home);
-            (home.join("config"), home.join("data"), home.join("cache"))
+        let mut paths = if let Some(home) = std::env::var_os("ANIPV_HOME") {
+            Self::under(Path::new(&home))
         } else {
             let dirs = directories::ProjectDirs::from("", "", "anipv").context("no home directory")?;
-            (dirs.config_dir().to_path_buf(), dirs.data_dir().to_path_buf(), dirs.cache_dir().to_path_buf())
+            Self::layout(dirs.config_dir(), dirs.data_dir(), dirs.cache_dir().to_path_buf())
         };
-        let config_file =
-            std::env::var_os("ANIPV_CONFIG").map_or_else(|| config_dir.join("config.toml"), PathBuf::from);
-        let events_dir =
-            cfg.and_then(|c| c.events_dir.as_deref()).map_or_else(|| data_dir.join("events"), expand_tilde);
-        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| cache_dir.clone(), PathBuf::from);
-        Ok(Self { config_file, events_dir, db_file: data_dir.join("index.db"), cache_dir, runtime_dir })
+        if let Some(file) = std::env::var_os("ANIPV_CONFIG") {
+            paths.config_file = file.into();
+        }
+        if let Some(dir) = cfg.and_then(|c| c.events_dir.as_deref()) {
+            paths.events_dir = expand_tilde(dir);
+        }
+        paths.runtime_dir = runtime_dir_in(std::env::var_os("XDG_RUNTIME_DIR"), &paths.cache_dir);
+        Ok(paths)
     }
+}
+
+/// The runtime directory: `$XDG_RUNTIME_DIR` (`value`) when it is an absolute
+/// path, like the XDG spec says, else the cache directory.
+fn runtime_dir_in(value: Option<std::ffi::OsString>, cache_dir: &Path) -> PathBuf {
+    value.map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| cache_dir.to_path_buf())
 }
 
 impl Config {
@@ -203,7 +226,7 @@ impl Config {
                 d.display()
             );
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         for r in &self.roots {
             if r.name.trim().is_empty() {
                 anyhow::bail!("a root has an empty `name`; give each `[[roots]]` a short name");
@@ -251,7 +274,8 @@ impl Config {
         let base = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned();
         let mut name = base.clone();
         let mut n = 2;
-        while self.roots.iter().any(|r| r.name == name) {
+        // Unique in any case: `scan --root` picks a root by name in any case.
+        while self.roots.iter().any(|r| r.name.eq_ignore_ascii_case(&name)) {
             name = format!("{base}-{n}");
             n += 1;
         }
@@ -259,12 +283,13 @@ impl Config {
         Ok(())
     }
 
-    /// Write the config file, creating parent directories.
+    /// Write the config file, creating parent directories. It is written
+    /// next to it and renamed into place, so a crash never leaves half a file.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
+        replace_file(path, toml::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 
@@ -275,18 +300,55 @@ impl Config {
 
     /// True if `name` is an ignored directory.
     pub fn is_ignored_dir(&self, name: &str) -> bool {
-        name.starts_with('.') || self.ignore_dirs.iter().any(|d| d.eq_ignore_ascii_case(name))
+        name.starts_with('.') || listed(&self.ignore_dirs, name)
     }
+
+    /// True if `name` is a directory of extras (see `extras_dirs`).
+    pub fn is_extras_dir(&self, name: &str) -> bool {
+        listed(&self.extras_dirs, name)
+    }
+
+    /// True if `name` is a directory of specials (see `specials_dirs`).
+    pub fn is_specials_dir(&self, name: &str) -> bool {
+        listed(&self.specials_dirs, name)
+    }
+
+    /// The kind of each configured root, by name.
+    pub fn root_kinds(&self) -> HashMap<&str, RootKind> {
+        self.roots.iter().map(|r| (r.name.as_str(), r.kind)).collect()
+    }
+}
+
+/// Write `bytes` to `path` through a temporary file next to it (unique per
+/// process and call) that is renamed into place, so nothing ever reads half a
+/// file. The temporary file never stays behind.
+pub fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".part.{}.{nanos}.{seq}", std::process::id()));
+    let res = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// True if `name` is in `list` (directory names, any case).
+fn listed(list: &[String], name: &str) -> bool {
+    list.iter().any(|d| d.eq_ignore_ascii_case(name))
 }
 
 /// True if `name` can be used as-is for an event log file name, i.e. the
 /// event log would not need to sanitize it.
-pub fn is_valid_device(name: &str) -> bool {
+fn is_valid_device(name: &str) -> bool {
     !name.is_empty() && name.chars().all(crate::events::is_device_char)
 }
 
 /// Best-effort hostname without extra dependencies.
-pub fn hostname() -> String {
+fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .or_else(|_| std::fs::read_to_string("/etc/hostname"))
         .ok()
@@ -338,6 +400,38 @@ pub fn expand_tilde(p: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_absolute_runtime_dir_counts() {
+        let cache = Path::new("/c");
+        assert_eq!(runtime_dir_in(Some("/run/user/1000".into()), cache), Path::new("/run/user/1000"));
+        for v in ["", "relative"] {
+            assert_eq!(runtime_dir_in(Some(v.into()), cache), cache, "{v:?}");
+        }
+        assert_eq!(runtime_dir_in(None, cache), cache);
+    }
+
+    /// Root names differ in more than case: `scan --root` ignores case.
+    #[test]
+    fn added_roots_differ_in_more_than_case() {
+        let mut cfg = Config::default();
+        cfg.add_root(Path::new("/a/Anime"), RootKind::Archive).unwrap();
+        cfg.add_root(Path::new("/b/anime"), RootKind::Archive).unwrap();
+        let names: Vec<&str> = cfg.roots.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Anime", "anime-2"]);
+    }
+
+    /// Saving replaces the file whole, leaving nothing else behind.
+    #[test]
+    fn saving_replaces_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "garbage").unwrap();
+        let cfg = Config { device: Some("desk".into()), ..Config::default() };
+        cfg.save(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap().device.as_deref(), Some("desk"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn roundtrip_and_defaults() {

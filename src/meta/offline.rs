@@ -42,8 +42,8 @@ pub const STALE_DATASET_DAYS: i64 = 90;
 /// `lastUpdate`, `version`) is older than [`STALE_DATASET_DAYS`] at `now`.
 /// The original database was archived in 2026-07, and a source that stops
 /// updating can't match newer shows.
-pub fn download_notes(first: &str, source: Option<&str>, version: Option<&str>, now: i64) -> Vec<String> {
-    let fallback = source.filter(|u| *u != first).map(|used| format!("{first} failed; downloaded from {used}"));
+pub fn download_notes(first: &str, source: &str, version: Option<&str>, now: i64) -> Vec<String> {
+    let fallback = (source != first).then(|| format!("{first} failed; downloaded from {source}"));
     let stale = version.and_then(|v| {
         let days = days_since(v, now).filter(|d| *d > STALE_DATASET_DAYS)?;
         Some(format!(
@@ -59,6 +59,10 @@ pub fn download_notes(first: &str, source: Option<&str>, version: Option<&str>, 
 pub fn days_since(date: &str, now: i64) -> Option<i64> {
     let mut parts = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
     let (y, m, d) = (parts.next()??, parts.next()??, parts.next()??);
+    // The date comes from a download: keep the arithmetic below in range.
+    if !(1..=9999).contains(&y) {
+        return None;
+    }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
     let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     if !(1..=12).contains(&m) || !(1..=month_days[usize::try_from(m - 1).ok()?]).contains(&d) {
@@ -70,7 +74,7 @@ pub fn days_since(date: &str, now: i64) -> Option<i64> {
     let yoe = y - era * 400;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(now.div_euclid(86_400) - (era * 146_097 + doe - 719_468))
+    Some(now.div_euclid(super::DAY) - (era * 146_097 + doe - 719_468))
 }
 
 /// One anime entry (only the fields anipv uses).
@@ -108,14 +112,9 @@ pub struct AnimeSeason {
 impl Entry {
     /// One line about the entry: title, format, year, episodes and `AniList` id.
     pub fn describe(&self) -> String {
-        format!(
-            "{} ({}{}, {} eps) anilist:{}",
-            self.title,
-            self.format,
-            self.year().map(|y| format!(" {y}")).unwrap_or_default(),
-            self.episodes,
-            self.anilist_id().unwrap_or(0)
-        )
+        let format = Some(self.format.as_str()).filter(|f| !f.is_empty());
+        let episodes = (self.episodes > 0).then_some(self.episodes);
+        super::describe_anime(&self.title, format, self.year(), episodes, self.anilist_id().unwrap_or(0))
     }
 
     /// `AniList` id from the sources, if any.
@@ -163,12 +162,11 @@ struct File {
 pub struct OfflineDb {
     /// Release date of this database (`lastUpdate`), used to expire "no match" results.
     pub version: Option<String>,
-    /// The URL it was downloaded from (`None` when loaded from the cache).
-    pub source: Option<String>,
     /// All entries that have an `AniList` id.
     pub entries: Vec<Entry>,
-    /// Normalized title/synonym → (entry index, is main title).
-    index: HashMap<String, Vec<(usize, bool)>>,
+    /// Normalized title/synonym → (entry index, is main title), built on
+    /// the first match (see [`OfflineDb::title_index`]).
+    index: std::sync::OnceLock<HashMap<String, Vec<(usize, bool)>>>,
     by_anilist: HashMap<u64, usize>,
 }
 
@@ -184,15 +182,17 @@ pub enum Match<'a> {
 }
 
 impl OfflineDb {
+    /// The version "no match" results are recorded under: `lastUpdate`, or
+    /// `""` for a database without one (so they still count for it).
+    pub fn version_key(&self) -> &str {
+        self.version.as_deref().unwrap_or("")
+    }
+
     /// True if the database was never downloaded or is older than
     /// [`super::OFFLINE_DB_MAX_AGE`].
     pub fn needs_update(cache_dir: &Path) -> bool {
         let max_age = std::time::Duration::from_secs(super::OFFLINE_DB_MAX_AGE.unsigned_abs());
-        std::fs::metadata(Self::path(cache_dir))
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_none_or(|age| age > max_age)
+        modified(cache_dir).and_then(|t| t.elapsed().ok()).is_none_or(|age| age > max_age)
     }
 
     /// Location of the cached database file.
@@ -211,22 +211,31 @@ impl OfflineDb {
         // Each entry's sources are parsed for its id once.
         let (ids, entries): (Vec<u64>, Vec<Entry>) =
             entries.into_iter().filter_map(|e| Some((e.anilist_id()?, e))).unzip();
-        let mut index: HashMap<String, Vec<(usize, bool)>> = HashMap::new();
         let by_anilist: HashMap<u64, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        for (i, e) in entries.iter().enumerate() {
-            let main = series_key(&e.title);
-            index.entry(main.clone()).or_default().push((i, true));
-            for s in &e.synonyms {
-                let k = series_key(s);
-                if !k.is_empty() && k != main {
-                    let v = index.entry(k).or_default();
-                    if !v.iter().any(|(j, _)| *j == i) {
-                        v.push((i, false));
+        Self { version: None, entries, index: std::sync::OnceLock::new(), by_anilist }
+    }
+
+    /// The entries by the key of each title and synonym. Keying every title is
+    /// most of what loading the database costs, so it is done on the first
+    /// match: searching and updating never need it.
+    fn title_index(&self) -> &HashMap<String, Vec<(usize, bool)>> {
+        self.index.get_or_init(|| {
+            let mut index: HashMap<String, Vec<(usize, bool)>> = HashMap::new();
+            for (i, e) in self.entries.iter().enumerate() {
+                let main = series_key(&e.title);
+                index.entry(main.clone()).or_default().push((i, true));
+                for s in &e.synonyms {
+                    let k = series_key(s);
+                    if !k.is_empty() && k != main {
+                        let v = index.entry(k).or_default();
+                        if !v.iter().any(|(j, _)| *j == i) {
+                            v.push((i, false));
+                        }
                     }
                 }
             }
-        }
-        Self { version: None, source: None, entries, index, by_anilist }
+            index
+        })
     }
 
     /// Load from the cache, if it has been downloaded.
@@ -240,18 +249,27 @@ impl OfflineDb {
     }
 
     /// Download the latest release into the cache from `urls`, the first one
-    /// that works. Returns the loaded database.
+    /// that works. Returns the loaded database and what to tell the user about
+    /// it: that a fallback served it, or that it is old (see [`download_notes`]).
     ///
     /// Only the first URL is tried when a copy is cached already: falling back
     /// to the next one (an older, archived source) could replace the cached
     /// copy with an older one. Without a cached copy every URL is tried, and
     /// the error names each failure.
-    pub fn download(cache_dir: &Path, urls: &[String]) -> Result<Self> {
-        Self::download_with(cache_dir, urls, &fetch)
+    pub fn download(cache_dir: &Path, urls: &[String]) -> Result<(Self, Vec<String>)> {
+        let (db, source) = Self::download_with(cache_dir, urls, &fetch)?;
+        let first = urls.first().map_or("", String::as_str);
+        let notes = download_notes(first, &source, db.version.as_deref(), crate::events::now());
+        Ok((db, notes))
     }
 
-    /// [`OfflineDb::download`] reading each URL through `fetch`.
-    fn download_with(cache_dir: &Path, urls: &[String], fetch: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Self> {
+    /// [`OfflineDb::download`] reading each URL through `fetch`; returns the
+    /// URL that served it.
+    fn download_with(
+        cache_dir: &Path,
+        urls: &[String],
+        fetch: &dyn Fn(&str) -> Result<Vec<u8>>,
+    ) -> Result<(Self, String)> {
         std::fs::create_dir_all(cache_dir)?;
         let cached = Self::path(cache_dir).exists();
         let tried = if cached { &urls[..urls.len().min(1)] } else { urls };
@@ -261,7 +279,7 @@ impl OfflineDb {
             match fetch(url).and_then(|json| Ok((Self::from_slice(&json)?, json))) {
                 Ok((db, json)) => {
                     Self::store(cache_dir, &json)?;
-                    return Ok(Self { source: Some(url.clone()), ..db });
+                    return Ok((db, url.clone()));
                 }
                 Err(e) => errors.push(format!("{url}: {e:#}")),
             }
@@ -278,17 +296,7 @@ impl OfflineDb {
     /// id, time and a counter), so two downloads running at once (two anipv
     /// processes) never write into each other's file; the last rename wins.
     fn store(cache_dir: &Path, json: &[u8]) -> Result<()> {
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = cache_dir.join(format!("anime-offline-database.json.part.{}.{nanos}.{seq}", std::process::id()));
-        let stored = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, Self::path(cache_dir)));
-        if let Err(e) = stored {
-            // A partly written copy must not stay behind in the cache.
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e).context("storing anime-offline-database");
-        }
-        Ok(())
+        crate::config::replace_file(&Self::path(cache_dir), json).context("storing anime-offline-database")
     }
 
     /// Entry with the given `AniList` id.
@@ -313,7 +321,7 @@ impl OfflineDb {
     /// 5. with at most one numbered episode, it is TV;
     /// 6. it is known to more sites (better curated than sparse duplicates).
     pub fn match_key(&self, key: &str, title: &str, episodes: usize, max_ep: u32) -> Match<'_> {
-        let Some(cands) = self.index.get(key) else { return Match::None };
+        let Some(cands) = self.title_index().get(key) else { return Match::None };
         let title = title.to_lowercase();
         // Compared lexicographically, most important first.
         let score = |&(i, main): &(usize, bool)| {
@@ -378,10 +386,11 @@ impl OfflineCache {
     }
 
     /// [`OfflineDb::download`], keeping the result for later loads.
-    pub fn download(&self, cache_dir: &Path, urls: &[String]) -> Result<Arc<OfflineDb>> {
-        let db = Arc::new(OfflineDb::download(cache_dir, urls)?);
+    pub fn download(&self, cache_dir: &Path, urls: &[String]) -> Result<(Arc<OfflineDb>, Vec<String>)> {
+        let (db, notes) = OfflineDb::download(cache_dir, urls)?;
+        let db = Arc::new(db);
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = modified(cache_dir).map(|t| (t, Arc::clone(&db)));
-        Ok(db)
+        Ok((db, notes))
     }
 }
 
@@ -523,10 +532,9 @@ pub(crate) mod tests {
         let asked = std::cell::RefCell::new(Vec::new());
         // Nothing cached: the second source serves it, and the error would name both.
         let dir = tempfile::tempdir().unwrap();
-        let db = OfflineDb::download_with(dir.path(), &urls(&["down", "a"]), &fake(&asked)).unwrap();
+        let (db, source) = OfflineDb::download_with(dir.path(), &urls(&["down", "a"]), &fake(&asked)).unwrap();
         assert_eq!(db.version.as_deref(), Some("2026-07-04"));
-        assert_eq!(db.source.as_deref(), Some("a"), "says which source served it");
-        assert_eq!(OfflineDb::load(dir.path()).unwrap().unwrap().source, None);
+        assert_eq!(source, "a", "says which source served it");
         assert_eq!(*asked.borrow(), ["down", "a"]);
         assert_eq!(OfflineDb::load(dir.path()).unwrap().unwrap().entries.len(), 5);
 
@@ -553,8 +561,8 @@ pub(crate) mod tests {
         let get = |url: &str| -> Result<Vec<u8>> {
             Ok(if url == "html" { b"<html>rate limited</html>".to_vec() } else { SAMPLE.as_bytes().to_vec() })
         };
-        let db = OfflineDb::download_with(dir.path(), &urls(&["html", "a"]), &get).unwrap();
-        assert_eq!(db.entries.len(), 5);
+        let (db, source) = OfflineDb::download_with(dir.path(), &urls(&["html", "a"]), &get).unwrap();
+        assert_eq!((db.entries.len(), source.as_str()), (5, "a"));
     }
 
     #[test]
@@ -571,18 +579,18 @@ pub(crate) mod tests {
     fn downloads_say_when_a_fallback_served_them_and_when_they_are_old() {
         let now = 1_791_417_600; // 2026-10-08
         let notes = |source, version| download_notes("https://a/db.json", source, version, now);
-        assert!(notes(Some("https://a/db.json"), Some("2026-10-04")).is_empty(), "first source, fresh");
-        assert!(notes(None, Some("2026-07-10")).is_empty(), "90 days or less");
+        assert!(notes("https://a/db.json", Some("2026-10-04")).is_empty(), "first source, fresh");
+        assert!(notes("https://a/db.json", Some("2026-07-10")).is_empty(), "90 days or less");
         assert_eq!(
-            notes(Some("https://b/db.json"), Some("2026-10-04")),
+            notes("https://b/db.json", Some("2026-10-04")),
             ["https://a/db.json failed; downloaded from https://b/db.json"]
         );
-        let old = notes(Some("https://a/db.json"), Some("2026-07-04"));
+        let old = notes("https://a/db.json", Some("2026-07-04"));
         assert!(
             old.len() == 1 && old[0].contains("2026-07-04 (96 days ago)") && old[0].contains("offline_db_url"),
             "{old:?}"
         );
-        assert!(notes(None, Some("unknown")).is_empty());
+        assert!(notes("https://a/db.json", Some("unknown")).is_empty());
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::identity::label_key;
 use crate::model::{EpNo, ItemKey, ItemKind};
 
 /// File extensions treated as playable video.
-pub const VIDEO_EXTS: &[&str] =
+const VIDEO_EXTS: &[&str] =
     &["mkv", "mp4", "avi", "webm", "m2ts", "ts", "ogm", "wmv", "m4v", "mov", "mpg", "mpeg", "flv", "rmvb"];
 
 /// True if `name` has a video file extension.
@@ -36,8 +36,6 @@ pub fn stem(name: &str) -> &str {
 /// Result of parsing a single file or directory name.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Parsed {
-    /// Group tag (`[GroupA]`, `-GRP`), if any.
-    pub group: Option<String>,
     /// Cleaned human title; may be empty when the name has none (`41 - Foo.mkv`).
     pub title: String,
     /// Season from an `SxxEyy` marker.
@@ -52,11 +50,15 @@ pub struct Parsed {
     pub kind: ItemKind,
     /// Normalized label for specials/extras (`"ova"`, `"fanart corner"`).
     pub label: String,
-    /// CRC32 hash tag, if present.
-    pub hash: Option<String>,
 }
 
 impl Parsed {
+    /// Make this a special (as season 0 or a specials folder does).
+    pub fn make_special(&mut self) {
+        self.kind = ItemKind::Special;
+        self.label = "special".into();
+    }
+
     /// The item key this file maps to within its series.
     pub fn item_key(&self) -> ItemKey {
         let label = match self.kind {
@@ -78,7 +80,6 @@ re!(LEADING_GROUP, r"^\s*[\[(]([^\[\]()]+)[\])]\s*");
 re!(HASH, r"[\[(]([0-9A-Fa-f]{8})[\])]");
 re!(BRACKETS, r"\[[^\[\]]*\]|\(([^()]*)\)|\{[^{}]*\}|【[^】]*】");
 re!(YEAR, r"^(?:19[5-9]\d|20[0-3]\d)$");
-re!(TRAILING_GROUP, r"-([A-Za-z0-9]+)$");
 re!(BATCH_RANGE_DASH, r"(?i)\s[-–]\s\d{1,4}\s?[-~]\s?\d{1,4}\b");
 re!(BATCH_WORDS, r"(?i)\b(?:\d{1,4}\s?[-~]\s?\d{1,4}\s+)?(?:batch|complete(?:\s+series)?)\b");
 re!(SPACES, r"\s{2,}");
@@ -161,14 +162,18 @@ fn cut_at_quality(title: &str, cut_year: bool) -> &str {
     let mut end = title.len();
     let mut offset = 0;
     for tok in title.split(' ') {
-        let t = tok.trim_matches(|c: char| !c.is_alphanumeric());
-        if !t.is_empty() && offset > 0 && (QUALITY.is_match(t) || (cut_year && YEAR.is_match(tok))) {
+        if offset > 0 && (is_tag_word(tok) || (cut_year && YEAR.is_match(tok))) {
             end = offset;
             break;
         }
         offset += tok.len() + 1;
     }
-    &title[..end.min(title.len())]
+    &title[..end]
+}
+
+/// A technical word (resolution, codec, source), punctuation around it aside.
+fn is_tag_word(word: &str) -> bool {
+    QUALITY.is_match(word.trim_matches(|c: char| !c.is_alphanumeric()))
 }
 
 /// A title cut at the first technical token (not at a year) and tidied.
@@ -186,18 +191,49 @@ fn label_of(s: &str) -> String {
     label_key(cut_at_quality(s.trim(), false))
 }
 
+/// The label of a file in an extras folder: its name without the release
+/// group, checksum and release tags. Other bracketed text stays, as it is
+/// often the extra's own name; a one-word tag after the release tags is a
+/// group's (`Rock Me [1080p] [GroupB]`).
+///
+/// ```
+/// use anipv::parse::extra_label;
+/// assert_eq!(extra_label("[GroupA] Show (Creditless ED 01) [BD 1080p][1234ABCD]"), "show creditless ed 01");
+/// ```
+pub fn extra_label(stem: &str) -> String {
+    let normalized = normalize_separators(stem);
+    let mut tagged = false;
+    let text = BRACKETS.replace_all(strip_group(&normalized), |c: &Captures<'_>| {
+        let inner = c[0].trim_matches(['[', ']', '(', ')', '{', '}', '【', '】']);
+        let words: Vec<&str> = inner.split([' ', '_']).filter(|w| !w.is_empty()).collect();
+        let tags = words.iter().filter(|w| is_tag_word(w)).count();
+        // Mostly release tags (`[BD 1080p]`), not a name with one in it (`(BD Illustration 01)`).
+        let tag = HASH.is_match(&c[0]) || (tags > 0 && 2 * tags >= words.len());
+        tagged |= tag;
+        // A one-word tag after them is a group's (`[GroupB]`); one ending in a number
+        // tells parts apart (`[Disc2]`).
+        let group = tagged && words.len() <= 1 && !inner.ends_with(|ch: char| ch.is_ascii_digit());
+        if tag || group { " ".to_string() } else { format!(" {inner} ") }
+    });
+    let label = label_key(&text);
+    if !label.is_empty() {
+        return label;
+    }
+    // Nothing but tags (or no letters at all): the name as it is.
+    let label = label_key(stem);
+    if label.is_empty() { stem.to_string() } else { label }
+}
+
 /// Parse an optional capture group (episode, version, season…).
 fn cap<T: std::str::FromStr>(m: Option<regex::Match<'_>>) -> Option<T> {
     m.and_then(|m| m.as_str().parse().ok())
 }
 
-/// Split off a leading `[Group]` / `(Group)` tag (not a year or a checksum).
-fn take_group(s: &str) -> (Option<String>, &str) {
+/// `s` without a leading `[Group]` / `(Group)` tag (a year or a checksum stays).
+fn strip_group(s: &str) -> &str {
     match LEADING_GROUP.captures(s) {
-        Some(c) if !YEAR.is_match(c[1].trim()) && !HASH.is_match(&c[0]) => {
-            (Some(c[1].trim().to_string()), &s[c.get_match().end()..])
-        }
-        _ => (None, s),
+        Some(c) if !YEAR.is_match(c[1].trim()) && !HASH.is_match(&c[0]) => &s[c.get_match().end()..],
+        _ => s,
     }
 }
 
@@ -213,17 +249,15 @@ fn strip_noise(s: &str, dir: bool) -> String {
 
 /// `Show Movie 2 - Subtitle` → the second movie of Show. Returns true if matched.
 fn movie_n(text: &str, out: &mut Parsed) -> bool {
-    match MOVIE_N.captures(text) {
-        Some(c) if c.get(0).is_some_and(|m| m.start() > 0) => {
-            let m = c.get_match();
-            out.kind = ItemKind::Movie;
-            out.label = format!("movie {}", &c[1]);
-            out.title = tidy(&text[..m.start()]);
-            out.ep = None;
-            true
-        }
-        _ => false,
-    }
+    let Some(c) = MOVIE_N.captures(text).filter(|c| c.get_match().start() > 0) else { return false };
+    out.kind = ItemKind::Movie;
+    // `Movie 02` and `Movie 2` are the same movie (`\d` also matches digits
+    // like `２` that don't parse: those stay as written).
+    let n = cap::<u32>(c.get(1)).map_or_else(|| c[1].to_string(), |n| n.to_string());
+    out.label = format!("movie {n}");
+    out.title = tidy(&text[..c.get_match().start()]);
+    out.ep = None;
+    true
 }
 
 /// Whether the text after an episode number marks an extra (`- 20 Next Ep PV`).
@@ -237,6 +271,16 @@ fn is_extra_tail(tail: &str) -> bool {
     let Some(c) = extra_kw(&text) else { return false };
     let kw = kw(&c);
     kw.start() == 1 && only_number_after(&text[kw.end()..])
+}
+
+/// The special the text after an episode number marks (`- 05 OVA` → `ova`).
+///
+/// Like [`is_extra_tail`], only when the text is nothing but the keyword (and
+/// a number): `- 05 Special Training` is episode 5 with a title.
+fn special_tail(tail: &str) -> Option<String> {
+    let text = format!(" {tail} ");
+    let c = SPECIAL_KW.captures(&text).filter(|c| c.get_match().start() == 0)?;
+    only_number_after(&text[c.get_match().end()..]).then(|| c[1].to_lowercase())
 }
 
 /// The first extras keyword in `s` (the case-insensitive words, else the
@@ -354,7 +398,7 @@ fn weak_episode(s: &str) -> Option<Hit> {
 /// ```
 pub fn clean_dir_name(name: &str) -> String {
     let normalized = normalize_separators(name);
-    let s = strip_noise(take_group(&normalized).1, true);
+    let s = strip_noise(strip_group(&normalized), true);
     let s = SPACES.replace_all(s.trim(), " ");
     let t = clean_title(&s);
     if t.is_empty() { tidy(name) } else { t }
@@ -371,13 +415,14 @@ fn with_episode(s: &str, hit: &Hit, mut out: Parsed) -> Parsed {
     out.kind = ItemKind::Episode;
 
     // `Show S00E05` / `Show 0x05` → special #5 of Show (season 0 is specials).
+    // The season is cleared: in a `Season 2` folder it is a special of season
+    // 2's series, as it always was (series keys identify watch history).
     if out.season == Some(0) {
         out.season = None;
-        out.kind = ItemKind::Special;
-        out.label = label_key("special");
+        out.make_special();
     }
     // `Show OVA - 02` → special #2 of Show.
-    if let Some(c) = SPECIAL_KW.captures(&title).filter(|c| c.get(0).is_some_and(|m| m.start() > 0))
+    if let Some(c) = SPECIAL_KW.captures(&title).filter(|c| c.get_match().start() > 0)
         && c.get(2).is_none()
     {
         out.kind = ItemKind::Special;
@@ -392,7 +437,7 @@ fn with_episode(s: &str, hit: &Hit, mut out: Parsed) -> Parsed {
         return out;
     }
     let rest_trim = cut_at_quality(s[hit.end..].trim(), false);
-    if let Some(c) = EXTRA_KW.captures(&title).filter(|c| c.get(1).is_some_and(|m| m.start() > 0)) {
+    if let Some(c) = EXTRA_KW.captures(&title).filter(|c| kw(c).start() > 0) {
         // `Show - Drama CD 3 - 1` → extra, the number is part of the extra.
         let kw = kw(&c);
         let ep = out.ep.take().map(|e| e.to_string()).unwrap_or_default();
@@ -403,11 +448,10 @@ fn with_episode(s: &str, hit: &Hit, mut out: Parsed) -> Parsed {
         // `Show - 20 Next Ep PV` → extra attached to episode 20.
         out.kind = ItemKind::Extra;
         out.label = label_of(rest_trim);
-    } else if let Some(c) = SPECIAL_KW.captures(&format!(" {rest_trim} "))
-        && c.get(0).is_some_and(|m| m.start() == 0)
-    {
+    } else if let Some(special) = special_tail(rest_trim) {
+        // `Show - 05 OVA` → special #5 (`- 05 Special Training` is episode 5).
         out.kind = ItemKind::Special;
-        out.label = c[1].to_lowercase();
+        out.label = special;
     }
     out.title = clean_title(&title);
     out
@@ -429,23 +473,17 @@ fn with_episode(s: &str, hit: &Hit, mut out: Parsed) -> Parsed {
 /// ```
 pub fn parse(name: &str) -> Parsed {
     let stem = stem(name);
-    let hash = HASH.captures_iter(stem).last().map(|c| c[1].to_uppercase());
-
     let normalized = normalize_separators(stem);
-    let (mut group, rest) = take_group(&normalized);
-    if group.is_none() && !stem.contains(' ') {
-        group = TRAILING_GROUP.captures(stem).map(|c| c[1].to_string()).filter(|g| !QUALITY.is_match(g));
-    }
-
-    let mut s = strip_noise(rest, !is_video(name));
+    let mut s = strip_noise(strip_group(&normalized), !is_video(name));
     let mut version = None;
     if let Some(c) = VERSION_TOKEN.captures(&s) {
         version = cap(c.get(1));
-        s = VERSION_TOKEN.replace(&s, " ").into_owned();
+        let token = c.get_match().range();
+        s.replace_range(token, " ");
     }
     s = SPACES.replace_all(s.trim(), " ").into_owned();
 
-    let mut out = Parsed { group, version, hash, ..Parsed::default() };
+    let mut out = Parsed { version, ..Parsed::default() };
 
     if let Some(hit) = strong_episode(&s) {
         return with_episode(&s, &hit, out);
@@ -462,18 +500,18 @@ pub fn parse(name: &str) -> Parsed {
     // After a number the keyword must end the name (`Show 05 PV`,
     // `Show 5 Go Go! NCOP`), so `Show 03 - Interview with the Vampire` stays an episode.
     let weak = weak_episode(s);
-    let extra = extra.filter(|c| {
-        let kw = kw(c);
-        weak.as_ref().is_none_or(|w| kw.start() < w.end || only_number_after(&full[kw.end()..]))
-    });
-    let special = SPECIAL_KW.captures(s).filter(|c| c.get(1).is_some_and(|m| m.start() > 0));
-    let pick_special = match (&extra, &special) {
-        (Some(e), Some(sp)) => sp.get(0).map(|m| m.start()) < e.get(0).map(|m| m.start()),
-        (None, Some(_)) => true,
-        _ => false,
+    let ends_name = |text: &str, kw: regex::Match<'_>| {
+        weak.as_ref().is_none_or(|w| kw.start() < w.end || only_number_after(&text[kw.end()..]))
     };
-    if pick_special {
-        let c = special.expect("checked");
+    let extra = extra.filter(|c| ends_name(&full, kw(c)));
+    // A special keyword wins over an extras keyword that comes after it. After
+    // a number it must end the name too (`Show 05 Special Training` is episode 5).
+    let special = SPECIAL_KW.captures(s).filter(|c| {
+        kw(c).start() > 0
+            && extra.as_ref().is_none_or(|e| c.get_match().start() < e.get_match().start())
+            && ends_name(s, kw(c))
+    });
+    if let Some(c) = special {
         let kw = kw(&c);
         out.kind = ItemKind::Special;
         out.label = kw.as_str().to_lowercase();
@@ -550,9 +588,7 @@ mod tests {
 
     #[test]
     fn bracketed_dash_number() {
-        let p = check("[GroupA] Grand Blue S3 - 07 (1080p) [1234ABCD].mkv", "Grand Blue S3", Some("7"), Episode);
-        assert_eq!(p.group.as_deref(), Some("GroupA"));
-        assert_eq!(p.hash.as_deref(), Some("1234ABCD"));
+        check("[GroupA] Grand Blue S3 - 07 (1080p) [1234ABCD].mkv", "Grand Blue S3", Some("7"), Episode);
         check("[GroupA] One Piece - 1180 (1080p) [0000F00D].mkv", "One Piece", Some("1180"), Episode);
         check(
             "[GroupB] Super no Ura de Yani Suu Futari - 01.mkv",
@@ -609,7 +645,6 @@ mod tests {
     fn dotted_season_episode() {
         let p = check("Chainsmoker.Cat.S01E07.1080p.WEB.AAC2.0.H.264-GRP.mkv", "Chainsmoker Cat", Some("7"), Episode);
         assert_eq!(p.season, Some(1));
-        assert_eq!(p.group.as_deref(), Some("GRP"));
         let p = check(
             "Ranma.1-2.2024.S03E01.Training.Meals.1080p.WEB.DUAL.AAC2.0.H.264-GRP.mkv",
             "Ranma 1-2 2024",
@@ -869,6 +904,13 @@ mod tests {
             None,
             Special,
         );
+        // After an episode number, only a bare keyword makes a special; words
+        // after it are the episode's title.
+        let p = check("[GroupA] Kino Journey - 05 OVA [1080p].mkv", "Kino Journey", Some("5"), Special);
+        assert_eq!(p.label, "ova");
+        check("[GroupA] Kino Journey - 05 Special Training [1080p].mkv", "Kino Journey", Some("5"), Episode);
+        check("Kino Journey 05 Special Training.mkv", "Kino Journey", Some("5"), Episode);
+        check("Kino Journey - 05 Recap of the Year.mkv", "Kino Journey", Some("5"), Episode);
     }
 
     #[test]
@@ -907,6 +949,10 @@ mod tests {
         );
         assert_eq!(p.label, "movie 2");
         assert_eq!(p.item_key().label, "movie 2");
+        // A leading zero names the same movie; other digits stay as written.
+        let p = check("[GroupB] Pocket Monsters Movie 02 - Subtitle v2 [ABCD0102].mkv", "Pocket Monsters", None, Movie);
+        assert_eq!(p.label, "movie 2");
+        assert_eq!(check("Pocket Monsters Movie ２.mkv", "Pocket Monsters", None, Movie).label, "movie ２");
         let p =
             check("[GroupC] Girls und Panzer - Drama CD 3 - 1 [1080p][ABCD0031].mkv", "Girls und Panzer", None, Extra);
         assert_eq!(p.label, "drama cd 3 1");
@@ -934,6 +980,33 @@ mod tests {
         let p = check("Show.S02E07E08.mkv", "Show", Some("7"), Episode);
         assert_eq!(p.ep_end, ep("8"));
         assert_eq!(p.season, Some(2));
+    }
+
+    #[test]
+    fn extra_labels_drop_release_tags() {
+        for (stem, label) in [
+            ("[GroupA] Grand Blue (Creditless ED 01) [BDRip 1920x1080 HEVC TrueHD]", "grand blue creditless ed 01"),
+            (
+                "[GroupA] Kino Journey - Card 02 (Small-clawed otter) [ABCD0002]",
+                "kino journey card 02 small clawed otter",
+            ),
+            ("[Group_C]Kino_Journey_Promos_4_(ABCD0004)", "kino journey promos 4"),
+            // The bracketed text is the extra's name.
+            ("[GroupA] Kino Journey - 001 - H.T. [Creditless Opening]", "kino journey 001 h t creditless opening"),
+            // A one-word tag after the release tags is the group's.
+            ("Rock Song [1080p_Hi10P_Blu-Ray_FLAC] [GroupB] [ABCD0005]", "rock song"),
+            ("Rock Song (Live) [540p_Hi10P_DVD_FLAC] [GroupB] [ABCD0006]", "rock song live"),
+            // Unbracketed text is not cut at a tag word: the promos stay apart.
+            ("Kino Journey - DVD Promotion - Kino Version[ABCD0007]", "kino journey dvd promotion kino version"),
+            ("Kino Journey - DVD Promotion - Hermes Version[ABCD0008]", "kino journey dvd promotion hermes version"),
+            // A name with a tag word in it, and numbered parts, stay apart.
+            ("[GroupA] Kino Journey (BD Illustration 01) [1080p]", "kino journey bd illustration 01"),
+            ("[GroupA] Kino Journey - Bonus [BD 1080p][Disc2]", "kino journey bonus disc2"),
+            // Nothing but tags: the name as it is.
+            ("[1080p][ABCD0009]", "1080p abcd0009"),
+        ] {
+            assert_eq!(extra_label(stem), label, "{stem:?}");
+        }
     }
 
     #[test]
