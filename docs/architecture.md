@@ -27,7 +27,7 @@ calls `cli::main()`.
 | `index::db` | SQLite cache: files, scans (one row per root scan, with completeness), metadata, match attempts, and per root whether it was a mount point and at which path (`root_mounted:<name>` in `kv`, dropped with the root), which decides if an empty scan means "emptied" or "unmounted". Also when each AniList id was last asked about and whether it was found (`anilist_checks`), so unknown ids are retried daily rather than on every start. Disposable: a schema version change drops and rebuilds it; only purely additive versions are upgraded in place (`UPGRADABLE`). |
 | `events` | Append-only per-device log, replay into `State`. The source of truth. |
 | `library` | Joins classified files with the replayed events and the cached index; maps history recorded under legacy series keys onto the keys of the series on disk (`Ctx::library` then makes that permanent with an `alias` event and moves cached rows); computes next-up, new counts, search text. |
-| `mpv` | Builds command lines, spawns mpv with `--input-ipc-server`, follows `path`/`time-pos`/`duration` and `end-file`. |
+| `mpv` | Builds command lines, spawns mpv with `--input-ipc-server`, follows `path`/`time-pos`/`duration`/`pause` and `end-file` (including the file mpv is already on when anipv connects), and hands out a `Remote` that sends `keypress` commands over the same socket. |
 | `import_fish` | Parses fish history, extracts `mpv` file arguments, plans watched events (full path first, then a unique base name; ambiguous names are skipped). |
 | `meta` | Offline anime DB matching; anonymous AniList airing queries. |
 | `tui` | ratatui front-end: `app.rs` (state, keys, background work), `ui.rs` (rendering). |
@@ -41,7 +41,7 @@ channel fed by background threads:
 
 * **scan**: opens its own SQLite connection (WAL mode), reports progress, then `ScanDone`.
 * **metadata**: matches unmatched series against the offline DB, then refreshes stale airing info from AniList.
-* **mpv**: one per playback; forwards `PlayerEvent`s.
+* **mpv**: one per playback; forwards `PlayerEvent`s. Its first is `Connected`, carrying the `Remote` the UI thread uses to send keys in remote mode.
 
 The UI thread is the only one that writes events, and the library is rebuilt
 after every change (≈ 50 ms for 13k files). It keeps the event log, the
@@ -78,4 +78,10 @@ anipv process writing) or after a scan, and only new files are classified.
 * `tests/parser_corpus.rs`: one synthetic file name per naming convention with expected parses (golden file).
 * `tests/tui.rs`: renders every screen of the demo library on a `TestBackend` and snapshots it with `insta`.
 * `tests/cli.rs`: runs the binary end-to-end, including playback against
-  `tests/fixtures/fake-mpv.py`, a stand-in that speaks mpv's IPC protocol.
+  `anipv fake-mpv` (hidden; `src/fake_mpv.rs`), a stand-in that speaks mpv's IPC protocol.
+
+The demo library (`src/demo.rs`, `anipv demo`) and the fake player exist only
+with the `demo` Cargo feature, never in a regular build. Tests and examples
+turn it on through the crate's dev-dependency on itself, so a plain
+`cargo test` has them; `just demo`, `just record` and the recording workflow
+pass `--features demo`.

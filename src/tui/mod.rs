@@ -2,8 +2,10 @@
 //!
 //! * `app` — state, key handling and background work (scan, metadata, mpv)
 //! * `ui`  — rendering
+//! * `remote` — key names for remote mode (keys sent to mpv)
 
 pub mod app;
+mod remote;
 pub mod ui;
 
 use std::time::{Duration, Instant};

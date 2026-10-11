@@ -34,6 +34,7 @@ kind = "archive"
 | `mpv` | `"mpv"` | Player executable. |
 | `mpv_args` | `[]` | Extra arguments for every mpv invocation, e.g. `["--fs", "--profile=anime"]`. |
 | `watched_threshold` | `0.85` | Fraction of an episode you must reach for it to count as watched. mpv reaching the end of a file isn't enough on its own, so a partly downloaded episode stays in progress. |
+| `remote_auto` | `true` | Start every TUI playback in remote mode: keys go to mpv (through its IPC `keypress` command, so your `input.conf` bindings apply) until `ctrl-c` hands them back to anipv. With `false`, press `v` while mpv plays to turn it on. |
 | `anilist` | `true` | Network metadata: fetch airing info from AniList (anonymous, ids only) and let `ctrl-r`/`M` in the TUI download the offline anime database when it is missing or older than a week. With `false`, matching still uses an already downloaded database. |
 | `anilist_search` | `false` | Also look series the offline database can't match (all of them while none is downloaded) up on AniList **by title** (needs `anilist = true`). **This sends the titles of those series to AniList** (as anipv shows them, parsed from your file and folder names); nothing else (no paths, no watch state). A series links only when an AniList answer goes by its name (title or synonym, normalized like series keys) and can hold the episodes you have (a finished movie never takes a 24-episode series); a TV or ONA entry wins over other formats for a series of episodes. Another season or a same-named show is never linked; several equally good answers are listed as ambiguous by `anipv meta match`. A series is searched again only after a month (a failed search after a day), at most 10 per update, least recently searched first (automatic updates keep going until all are done); a failed request ends that update's searching and is reported, not treated as an error (an earlier answer for that series stays). `anipv meta match --search` asks again about all of them. A link made this way is kept when the offline database later lists nothing, or several entries, for that name. |
 | `offline_db_url` | the [community continuation](https://github.com/cedya77/anime-offline-database), then the archived original | Where `anipv meta update` (and `ctrl-r` in the TUI) downloads the offline anime database from: an `http(s)` URL of `anime-offline-database-minified.json`. When set, only that URL is used. By default the continuation is tried first; the archived [manami-project](https://github.com/manami-project/anime-offline-database) release (frozen since 2026-07-04) is the fallback only when nothing is cached yet, so it never replaces a newer copy. |
@@ -119,7 +120,7 @@ Known limits of the mount check (accepted, not planned to change):
 | Variable | Effect |
 | --- | --- |
 | `ANIPV_CONFIG` | Path of the config file. |
-| `ANIPV_HOME` | Put config, data and cache under one directory (`config/`, `data/`, `cache/`). Handy for trying things out: `anipv demo /tmp/x && ANIPV_HOME=/tmp/x anipv`. |
+| `ANIPV_HOME` | Put config, data and cache under one directory (`config/`, `data/`, `cache/`). Handy for trying things out: `just demo` (a demo library under `ANIPV_HOME`). |
 | `NO_COLOR` | Disable colors in CLI output. |
 | `XDG_RUNTIME_DIR` | Where mpv IPC sockets are created. |
 

@@ -12,7 +12,7 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 
-use super::app::{App, MergePicker, Popup, Severity, View};
+use super::app::{App, MergePicker, NowPlaying, Popup, Severity, View};
 use crate::fmt::{ago, ago_opt, clock};
 use crate::library::Hint;
 use crate::library::{Item, Library, Series};
@@ -66,7 +66,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_footer(f, app, footer);
 
     match &mut app.popup {
-        Some(Popup::Help) => draw_help(f),
+        Some(Popup::Help { scroll }) => draw_help(f, scroll),
         Some(Popup::Status { series, idx }) => draw_status_popup(f, &app.lib, series, *idx),
         Some(Popup::Merge(picker)) => draw_merge(f, &app.lib, picker),
         Some(Popup::Search) => draw_search(f, &app.query),
@@ -540,9 +540,17 @@ fn draw_playing(f: &mut Frame, app: &App, area: Rect) {
     let Some(p) = &app.playing else { return };
     let ratio = p.dur.map_or(0.0, |d| (p.pos / d).clamp(0.0, 1.0));
     let (position, current, total) = (position_text(p.pos, p.dur), (p.done + 1).min(p.total), p.total);
-    let label = format!("▶ {title}  {position}  [{current}/{total}]", title = p.label);
+    let icon = if p.paused { "⏸" } else { "▶" };
+    let mut label = format!("{icon} {title}  {position}  [{current}/{total}]", title = p.label);
+    // Remote mode looks different: keys typed now go to mpv, not to anipv.
+    let fill = if app.remote_active() {
+        label.push_str("  · REMOTE: keys go to mpv, ctrl-c for anipv");
+        Color::Indexed(23)
+    } else {
+        Color::Indexed(53)
+    };
     let g = Gauge::default()
-        .gauge_style(Style::new().fg(Color::Indexed(53)).bg(Color::Indexed(235)))
+        .gauge_style(Style::new().fg(fill).bg(Color::Indexed(235)))
         .ratio(ratio)
         .label(Span::styled(label, Style::new().fg(Color::White).bold()))
         .use_unicode(true);
@@ -550,6 +558,9 @@ fn draw_playing(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.remote_active() {
+        return vec![("keys", "go to mpv"), ("ctrl-c", "back to anipv")];
+    }
     let mut v: Vec<(&str, &str)> = match app.view {
         View::UpNext => vec![
             ("space", "queue next"),
@@ -579,6 +590,10 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     };
     if !app.queue.is_empty() && app.view != View::Queue {
         v.insert(0, ("p", "play queue"));
+    }
+    // Only once keys can reach mpv (it has connected).
+    if app.playing.as_ref().is_some_and(NowPlaying::connected) {
+        v.insert(0, ("v", "control mpv"));
     }
     v.push(("?", "help"));
     v
@@ -622,6 +637,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("g/G", "top / bottom"),
             ("p", "play queue (or the next episode under the cursor)"),
             ("y", "copy mpv command for the queue"),
+            ("v", "while mpv plays: remote mode, keys go to mpv"),
             ("s", "set series status (in the Inbox: skip)"),
             ("r", "rescan media folders"),
             ("M", "refresh metadata for the series under the cursor"),
@@ -677,9 +693,15 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     ("Queue", &[("J/K", "move entry down / up"), ("d", "remove"), ("c", "clear"), ("⏎", "play")]),
+    (
+        "Remote mode (while mpv plays)",
+        &[("any key", "pressed in mpv, so your input.conf applies"), ("ctrl-c", "keys back to anipv (v: back to mpv)")],
+    ),
 ];
 
-fn draw_help(f: &mut Frame) {
+/// The key help; taller than the terminal, it scrolls (`scroll` is clamped
+/// to the last full page).
+fn draw_help(f: &mut Frame, scroll: &mut u16) {
     let mut lines = Vec::new();
     for (section, keys) in HELP {
         lines.push(Line::from(Span::styled(*section, Style::new().fg(ACCENT).bold())));
@@ -688,10 +710,18 @@ fn draw_help(f: &mut Frame) {
         }
         lines.push(Line::from(""));
     }
-    let h = cells(lines.len()).saturating_add(2);
-    let area = centered(f.area(), 64, h);
+    lines.pop(); // no blank line after the last section
+    let total = cells(lines.len());
+    let area = centered(f.area(), 64, total.saturating_add(2));
+    let shown = area.height.saturating_sub(2);
+    *scroll = (*scroll).min(total.saturating_sub(shown));
+    let title = if shown < total {
+        format!(" Keys {}-{} of {total} · j/k scroll · other keys close ", *scroll + 1, *scroll + shown)
+    } else {
+        " Keys · any key closes ".to_string()
+    };
     f.render_widget(Clear, area);
-    f.render_widget(Paragraph::new(lines).block(block(" Keys · any key closes ")), area);
+    f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)).block(block(title)), area);
 }
 
 fn draw_status_popup(f: &mut Frame, lib: &Library, series: &str, idx: usize) {

@@ -12,6 +12,13 @@ keywords = ["anime", "mpv", "tui", "tracker", "ratatui"]
 categories = ["command-line-utilities", "multimedia::video"]
 exclude = ["assets/", ".github/"]
 
+[features]
+# Demo and test tooling, never in a regular build: `anipv demo DIR` (a demo
+# library) and `anipv fake-mpv` (a stand-in for mpv). Tests and examples
+# turn it on themselves (the dev-dependency on this crate below); the README
+# recording builds with `--features demo`.
+demo = []
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "color", "wrap_help"] }
@@ -30,6 +37,7 @@ unicode-width = "0.2.2"
 ureq = { version = "3.4.2", features = ["json"] }
 
 [dev-dependencies]
+anipv = { path = ".", features = ["demo"] }
 assert_cmd = "2.2.2"
 insta = "1.49.0"
 predicates = "3.1.4"

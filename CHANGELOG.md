@@ -8,6 +8,17 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Remote mode in the TUI: while mpv plays, keys are pressed in mpv (over its
+  IPC socket, as mpv key names), so your own `input.conf` decides what they
+  do: pause, seek, quit and so on, without reaching for the player window.
+  It starts with every playback (`remote_auto = false` turns that off);
+  `ctrl-c` hands the keys back to anipv and `v` hands them to mpv again. The
+  playing bar shows when mpv is paused.
+- The demo library (`just demo`) can play: its player is a fake mpv built
+  into the demo build, so remote mode can be tried without real videos. The
+  README recording now shows playing an episode, skipping, pausing and
+  quitting the player from anipv.
+
 - `anilist_search = true` (off by default) and `anipv meta match --search`:
   series the offline database has no match for are looked up on AniList by
   title, so shows newer than the dataset can still get episode totals and
@@ -18,7 +29,25 @@ project uses [Semantic Versioning](https://semver.org/).
   downloaded offline database every series without a link counts as
   unmatched; a failed search keeps the answer from the last one.
 
+### Fixed
+
+- The first file of a playback session was often not tracked: mpv had
+  usually started it before anipv connected to its IPC socket, so that
+  episode was neither marked watched nor counted in the playing bar. anipv
+  now follows the file mpv is already on when it connects. Since mpv only
+  reports a value that changed, each file also starts out with the last
+  path and duration mpv reported (two files of the same length in a row
+  could lose the duration).
+
 ### Changed
+
+- The integration tests' stand-in for mpv is now written in Rust (the hidden
+  `anipv fake-mpv`) instead of Python, so the tests no longer need (or
+  quietly skip without) `python3`. Its `--demo` mode plays in real time and
+  answers remote-mode keys.
+- `anipv demo` and `anipv fake-mpv` are only built with the new `demo` Cargo
+  feature: a regular build carries no demo or test tooling. Tests and
+  examples enable it themselves; `just demo` and `just record` pass it.
 
 - The offline anime database now comes from the community continuation
   (`cedya77/anime-offline-database`) because the original manami-project

@@ -201,11 +201,20 @@ fn main() -> anyhow::Result<()> {
         Ok(app)
     };
 
-    // Up next with two episodes queued and one playing.
+    // Up next with two episodes queued and one playing, keys going to mpv
+    // (remote mode, as every playback starts).
     let mut app = fresh(home.path())?;
     app.press("j  ");
-    app.playing =
-        Some(NowPlaying { label: "Sousou no Frieren 29".into(), pos: 802.0, dur: Some(1420.0), total: 3, done: 0 });
+    let (ours, _mpv) = std::os::unix::net::UnixStream::pair()?;
+    app.playing = Some(NowPlaying {
+        label: "Sousou no Frieren 29".into(),
+        pos: 802.0,
+        dur: Some(1420.0),
+        total: 3,
+        remote: Some(anipv::mpv::Remote::new(ours)),
+        remote_on: true,
+        ..NowPlaying::default()
+    });
     write("up-next.svg", &shot(&mut app, 14), "anipv — up next")?;
     app.playing = None;
 

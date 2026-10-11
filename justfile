@@ -72,7 +72,7 @@ record: _need-vhs demo-home
 # Fresh demo library in assets/demo-home, as the recordings expect.
 demo-home:
     rm -rf assets/demo-home
-    cargo run -q -- demo assets/demo-home
+    cargo run -q --features demo -- demo assets/demo-home
 
 _need-vhs:
     #!/bin/sh
@@ -88,5 +88,5 @@ update-fixtures:
 # Try the TUI against a throwaway demo library.
 demo:
     rm -rf /tmp/anipv-demo
-    cargo run -- demo /tmp/anipv-demo
-    ANIPV_HOME=/tmp/anipv-demo cargo run
+    cargo run --features demo -- demo /tmp/anipv-demo
+    ANIPV_HOME=/tmp/anipv-demo cargo run --features demo

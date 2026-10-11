@@ -131,8 +131,11 @@ impl InputPurpose {
 /// Modal overlays.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Popup {
-    /// Key help.
-    Help,
+    /// Key help, scrolled down this many lines (clamped when drawn).
+    Help {
+        /// First line shown.
+        scroll: u16,
+    },
     /// Choose a status for a series.
     Status {
         /// Series key.
@@ -214,7 +217,7 @@ enum RowId {
 }
 
 /// Live playback info.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct NowPlaying {
     /// Display label for the current file.
     pub label: String,
@@ -226,12 +229,23 @@ pub struct NowPlaying {
     pub total: usize,
     /// Files finished so far.
     pub done: usize,
+    /// mpv is paused.
+    pub paused: bool,
+    /// Sends keys to mpv, once connected.
+    pub remote: Option<crate::mpv::Remote>,
+    /// Remote mode: keys go to mpv (see [`App::remote_active`]).
+    pub remote_on: bool,
 }
 
 impl NowPlaying {
     /// A session of `total` files that has not started playing yet.
     fn starting(total: usize) -> Self {
-        Self { label: "starting mpv…".into(), pos: 0.0, dur: None, total, done: 0 }
+        Self { label: "starting mpv…".into(), total, ..Self::default() }
+    }
+
+    /// Keys can reach mpv: it has connected.
+    pub fn connected(&self) -> bool {
+        self.remote.is_some()
     }
 }
 
@@ -706,7 +720,7 @@ impl App {
         match &mut self.popup {
             Some(Popup::Status { series, .. } | Popup::Input { series, .. }) => resolve(series),
             Some(Popup::Merge(picker)) => resolve(&mut picker.from),
-            Some(Popup::Help | Popup::ConfirmQuit | Popup::Search) | None => {}
+            Some(Popup::Help { .. } | Popup::ConfirmQuit | Popup::Search) | None => {}
         }
         let running = self.meta_running.as_mut().map(|(r, _)| r);
         for request in running.into_iter().chain(&mut self.meta_pending) {
@@ -1015,6 +1029,17 @@ impl App {
 
     fn on_player(&mut self, ev: PlayerEvent) {
         match ev {
+            PlayerEvent::Connected(remote) => {
+                if let Some(p) = &mut self.playing {
+                    p.remote = Some(remote);
+                    p.remote_on = self.ctx.cfg.remote_auto;
+                }
+            }
+            PlayerEvent::Paused(paused) => {
+                if let Some(p) = &mut self.playing {
+                    p.paused = paused;
+                }
+            }
             PlayerEvent::Started { path } => {
                 self.queue.retain(|q| q.file != path);
                 let (series, items) = self.lib.identify(&self.ctx.cfg, &path);
@@ -1122,6 +1147,11 @@ impl App {
 
     /// Handle a key press.
     pub fn on_key(&mut self, key: KeyEvent) {
+        // A key for mpv changes nothing here.
+        if self.remote_active() {
+            self.on_remote_key(key);
+            return;
+        }
         self.handle_key(key);
         // Whatever the key changed (the queue, a list), each cursor stays on a row.
         self.clamp_selections();
@@ -1162,12 +1192,39 @@ impl App {
         }
     }
 
+    /// Remote mode is on: keys go to mpv. An open popup (opened while mpv
+    /// was starting, or the quit prompt) keeps its keys until it closes.
+    pub fn remote_active(&self) -> bool {
+        self.popup.is_none() && self.playing.as_ref().is_some_and(|p| p.remote_on && p.connected())
+    }
+
+    /// A key in remote mode: Ctrl-C hands the keys back to anipv, anything
+    /// else is pressed in mpv.
+    fn on_remote_key(&mut self, key: KeyEvent) {
+        let Some(p) = &mut self.playing else { return };
+        // `C` too: Caps Lock, or Ctrl-Shift-C.
+        if matches!(key.code, KeyCode::Char('c' | 'C')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+            p.remote_on = false;
+            return;
+        }
+        let (Some(remote), Some(name)) = (&p.remote, super::remote::mpv_key(key)) else { return };
+        if let Err(e) = remote.keypress(&name) {
+            p.remote_on = false;
+            self.fail(format!("could not send {name} to mpv: {e}"));
+        }
+    }
+
     /// Keys that work in every view. Returns true if handled.
     fn on_global_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            KeyCode::Char('v') => match &mut self.playing {
+                Some(p) if p.connected() => p.remote_on = true,
+                Some(_) => self.say("mpv is still starting"),
+                None => self.say("mpv is not running"),
+            },
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('?') => {
-                self.popup = Some(Popup::Help);
+                self.popup = Some(Popup::Help { scroll: 0 });
             }
             KeyCode::Char(c @ '1'..='5') => {
                 self.view = View::TABS[(c as u8 - b'1') as usize];
@@ -1199,10 +1256,10 @@ impl App {
                 self.move_cursor(-1);
             }
             KeyCode::PageDown => {
-                self.move_cursor(15);
+                self.move_cursor(PAGE.into());
             }
             KeyCode::PageUp => {
-                self.move_cursor(-15);
+                self.move_cursor(-isize::from(PAGE));
             }
             KeyCode::Home | KeyCode::Char('g') => {
                 self.move_cursor(isize::MIN / 2);
@@ -1450,7 +1507,17 @@ impl App {
     fn on_popup_key(&mut self, key: KeyEvent) {
         let Some(popup) = self.popup.take() else { return };
         match popup {
-            Popup::Help => {}
+            // j/k scroll (the help can be taller than the terminal); any other key closes.
+            Popup::Help { scroll } => {
+                let scroll = match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1),
+                    KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
+                    KeyCode::PageDown | KeyCode::Char(' ') => scroll.saturating_add(PAGE.into()),
+                    KeyCode::PageUp => scroll.saturating_sub(PAGE.into()),
+                    _ => return,
+                };
+                self.popup = Some(Popup::Help { scroll });
+            }
             Popup::ConfirmQuit => {
                 if matches!(key.code, KeyCode::Char('y' | 'q') | KeyCode::Enter) {
                     self.quit = true;
@@ -1685,6 +1752,9 @@ impl App {
 
 /// How long a status line message is shown.
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Rows PgUp/PgDn move in lists and the help.
+const PAGE: u8 = 15;
 
 /// What the status line says about a scan of every root.
 fn scan_summary(out: &[crate::app::RootScan]) -> ScanSummary {
@@ -2076,6 +2146,101 @@ mod tests {
         let targets = app.merge_targets(&from.key, "");
         assert_eq!(targets.len(), app.lib.series.len() - 1, "every other series");
         assert_eq!(targets[0].title, "Sousou no Frieren");
+    }
+
+    /// mpv connecting to a playback (started now unless one is): returns
+    /// mpv's end of the connection, where the keys sent arrive.
+    fn connect_mpv(app: &mut App) -> std::os::unix::net::UnixStream {
+        app.playing.get_or_insert_with(|| NowPlaying::starting(1));
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        app.on_player(PlayerEvent::Connected(crate::mpv::Remote::new(ours)));
+        theirs
+    }
+
+    /// Remote mode: on as soon as mpv connects (with `remote_auto`), keys
+    /// go to mpv by their mpv names, Ctrl-C hands them back, `v` hands them
+    /// to mpv again, and mpv quitting ends it.
+    #[test]
+    fn remote_mode_forwards_keys_to_mpv() {
+        let (_dir, mut app) = demo_app();
+        let mut mpv = std::io::BufReader::new(connect_mpv(&mut app));
+        let mut pressed = || crate::fake_mpv::request(&mut mpv).unwrap()["command"][1].as_str().unwrap().to_owned();
+        assert!(app.remote_active());
+
+        let view = app.view;
+        app.press(" q1");
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        for want in ["SPACE", "q", "1", "Ctrl+RIGHT", "ESC"] {
+            assert_eq!(pressed(), want);
+        }
+        assert_eq!((app.view, &app.popup), (view, &None), "anipv itself saw none of them");
+
+        app.on_player(PlayerEvent::Paused(true));
+        assert!(app.playing.as_ref().unwrap().paused);
+
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.remote_active());
+        assert_eq!(app.popup, None, "ctrl-c only left remote mode");
+        app.press("2");
+        assert_eq!(app.view, View::Inbox, "keys are anipv's again");
+        app.press("v");
+        assert!(app.remote_active());
+        // Caps Lock (or Ctrl-Shift-C) leaves too, rather than reaching mpv.
+        app.on_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+        assert!(!app.remote_active());
+        app.press("v");
+
+        app.on_player(PlayerEvent::Exited { played: true, error: None });
+        assert!(!app.remote_active());
+        app.press("v");
+        assert_eq!(app.current_message(), Some("mpv is not running"));
+    }
+
+    /// A popup open when mpv connects (or opened from the quit key) keeps
+    /// its keys; remote mode takes over once it closes.
+    #[test]
+    fn remote_mode_waits_for_an_open_popup() {
+        let (_dir, mut app) = demo_app();
+        app.playing = Some(NowPlaying::starting(1));
+        app.press("3/");
+        assert_eq!(app.popup, Some(Popup::Search));
+        let _mpv = connect_mpv(&mut app);
+        assert!(!app.remote_active(), "the search is typed into");
+        app.press("frieq");
+        assert_eq!(app.query, "frieq", "every key reached the search");
+        app.press("\n");
+        assert_eq!(app.popup, None);
+        assert!(app.remote_active());
+    }
+
+    /// A player that stops reading its socket can't freeze the TUI: sending
+    /// keys gives up after the write timeout and remote mode ends with an error.
+    #[test]
+    fn remote_mode_gives_up_on_a_stuck_player() {
+        let (_dir, mut app) = demo_app();
+        let _never_read = connect_mpv(&mut app);
+        let started = Instant::now();
+        while app.remote_active() {
+            assert!(started.elapsed() < Duration::from_secs(10), "still sending after 10 s");
+            app.press("l");
+        }
+        assert!(
+            app.current_message().is_some_and(|m| m.starts_with("could not send l to mpv")),
+            "{:?}",
+            app.current_message()
+        );
+    }
+
+    /// With `remote_auto = false` playback starts with the keys in anipv.
+    #[test]
+    fn remote_mode_can_wait_for_v() {
+        let (_dir, mut app) = demo_app();
+        app.ctx.cfg.remote_auto = false;
+        let _mpv = connect_mpv(&mut app);
+        assert!(!app.remote_active());
+        app.press("v");
+        assert!(app.remote_active());
     }
 
     /// mpv quitting before playing shows the specific reason it came with

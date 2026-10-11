@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/rust-1.89%2B-orange.svg" alt="MSRV 1.89">
 </p>
 
-<p align="center"><img src="assets/img/demo.gif" alt="anipv demo: queueing episodes from Up next, reordering the queue, searching the series list, browsing episodes and extras, setting a status" width="900"></p>
+<p align="center"><img src="assets/img/demo.gif" alt="anipv demo: queueing episodes from Up next, reordering the queue, searching the series list, playing an episode and controlling the player from anipv, browsing extras, setting a status" width="900"></p>
 
 You keep anime in a downloads folder and an archive. You play episodes with
 `mpv A.mkv B.mkv …`, and your memory of where you were lives in your shell
@@ -20,6 +20,7 @@ history. anipv replaces that:
 - **Inbox**: new shows that appear in your download folder, newest first, with a new season of something you watch at the top. Follow (`f`), skip (`s`) or leave it for later (`z`).
 - **Queue & play**: mark episodes from several shows, press `p`, and they play in one mpv session, just like `mpv A B C`.
 - **Automatic tracking**: anipv follows mpv over its IPC socket. Finished episodes are marked watched; stop half-way and it resumes there next time.
+- **Remote control**: while mpv plays, keys typed in anipv go to mpv, so your `input.conf` bindings (pause, seek, quit, …) work from the terminal even when the video is fullscreen on another screen. `ctrl-c` takes the keys back, `v` hands them over again.
 - **Your library, understood**: bracketed (`[Group] Show - 07 (1080p)`), dotted (`Show.S01E07.1080p…`), underscored and numbered file names, `v2` versions, `S02E01` / `1x05` markers, season folders (inside an archive series folder, `Season 1` and `Season 2` stay separate seasons of the same title), OVAs, openings/endings, previews, multi-episode files. Parsed and grouped, with a test corpus covering each naming convention.
 - **Statuses**: following, paused ("dropped too early, might resume"), dropped (with a note), completed, skipped. A status you set on a series you've already finished stays, so you can follow it again for a rewatch.
 - **Local first, multi-device**: history is an append-only log per device. Sync the folder however you like; merging is conflict-free.
@@ -77,8 +78,9 @@ anipv meta refresh --all
 anipv
 ```
 
-Just want to look around? `anipv demo /tmp/anipv-demo && ANIPV_HOME=/tmp/anipv-demo anipv`
-opens a fake library.
+Just want to look around? `just demo` opens a fake library. The demo
+library and the fake player behind the tests are left out of regular builds;
+they come with the `demo` Cargo feature (`cargo run --features demo -- demo /tmp/anipv-demo`).
 
 ## The TUI
 

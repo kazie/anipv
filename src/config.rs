@@ -58,6 +58,9 @@ pub struct Config {
     pub mpv_args: Vec<String>,
     /// Fraction of an episode that counts as watched.
     pub watched_threshold: f64,
+    /// Send keys to mpv (remote mode) as soon as it starts from the TUI;
+    /// with `false`, `v` turns remote mode on.
+    pub remote_auto: bool,
     /// Media roots, scanned in order.
     pub roots: Vec<Root>,
     /// Directory names that are never scanned.
@@ -84,6 +87,7 @@ impl Default for Config {
             mpv: "mpv".into(),
             mpv_args: Vec::new(),
             watched_threshold: 0.85,
+            remote_auto: true,
             roots: Vec::new(),
             ignore_dirs: ["Screens", "Screenshots", "Thumbs", "@eaDir", "lost+found"].map(String::from).to_vec(),
             extras_dirs: [

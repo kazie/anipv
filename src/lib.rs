@@ -8,8 +8,12 @@
 pub mod app;
 pub mod cli;
 pub mod config;
+#[cfg(any(test, feature = "demo"))]
 pub mod demo;
 pub mod events;
+#[cfg(any(test, feature = "demo"))]
+#[doc(hidden)]
+pub mod fake_mpv;
 pub mod fmt;
 pub mod identity;
 pub mod import_fish;

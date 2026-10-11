@@ -23,7 +23,7 @@ jobs:
         with:
           tool: just
       # The tape runs `anipv` from PATH.
-      - run: cargo install --path . --locked
+      - run: cargo install --path . --locked --features demo
       # Same preparation as `just record`.
       - name: Demo library
         run: just demo-home

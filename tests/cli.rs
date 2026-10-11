@@ -398,19 +398,28 @@ fn init_refuses_to_overwrite() {
     assert!(cfg.contains("kind = \"archive\""));
 }
 
-/// Demo library whose `mpv` is a fake speaking the JSON IPC protocol
-/// (`None` if python3 is unavailable).
-fn fake_mpv_demo() -> Option<tempfile::TempDir> {
-    if std::process::Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("python3 not available; skipping");
-        return None;
-    }
+/// Demo library whose `mpv` is `anipv fake-mpv`, a fake speaking the JSON
+/// IPC protocol (see `src/fake_mpv.rs`).
+fn fake_mpv_demo() -> tempfile::TempDir {
     let d = demo();
     let cfg_path = d.path().join("config/config.toml");
     let mut cfg = anipv::config::Config::load(&cfg_path).unwrap();
-    cfg.mpv = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-mpv.py").display().to_string();
+    cfg.mpv = env!("CARGO_BIN_EXE_anipv").into();
+    cfg.mpv_args = vec!["fake-mpv".into()];
     cfg.save(&cfg_path).unwrap();
-    Some(d)
+    d
+}
+
+/// `anipv demo` plays with this binary as a real-time fake mpv, so the
+/// demo (and the README recording) can show playback.
+#[test]
+fn demo_command_plays_with_the_fake_player() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join("demo");
+    anipv(home.path()).arg("demo").arg(&dir).assert().success();
+    let cfg = anipv::config::Config::load(&dir.join("config/config.toml")).unwrap();
+    assert_eq!(Path::new(&cfg.mpv).file_name(), Path::new(env!("CARGO_BIN_EXE_anipv")).file_name());
+    assert_eq!(cfg.mpv_args, ["fake-mpv", "--demo"]);
 }
 
 /// `anipv play …` with its own runtime dir and a timeout.
@@ -423,7 +432,7 @@ fn play(home: &Path, args: &[&str]) -> Command {
 /// Full playback loop against a fake mpv.
 #[test]
 fn play_tracks_progress_via_ipc() {
-    let Some(d) = fake_mpv_demo() else { return };
+    let d = fake_mpv_demo();
     play(d.path(), &["frieren", "-n", "2"]).assert().success().stdout(
         predicate::str::contains("watched Sousou no Frieren 29").and(predicate::str::contains("stopped at 12:00")),
     );
@@ -433,7 +442,7 @@ fn play_tracks_progress_via_ipc() {
 /// Without `XDG_RUNTIME_DIR` the socket goes to a fallback dir that must be created.
 #[test]
 fn play_tracks_without_runtime_dir() {
-    let Some(d) = fake_mpv_demo() else { return };
+    let d = fake_mpv_demo();
     play(d.path(), &["frieren"])
         .env_remove("XDG_RUNTIME_DIR")
         .assert()
@@ -445,7 +454,7 @@ fn play_tracks_without_runtime_dir() {
 #[test]
 fn play_keeps_going_when_a_write_fails() {
     use std::os::unix::fs::PermissionsExt;
-    let Some(d) = fake_mpv_demo() else { return };
+    let d = fake_mpv_demo();
     let log = d.path().join("data/events/desktop.jsonl");
     std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o444)).unwrap();
     if std::fs::OpenOptions::new().append(true).open(&log).is_ok() {

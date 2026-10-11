@@ -13,6 +13,7 @@ Press `?` in the TUI to see these at any time.
 | `g/G` | top / bottom |
 | `p` | play queue (or the next episode under the cursor) |
 | `y` | copy mpv command for the queue |
+| `v` | while mpv plays: remote mode, keys go to mpv |
 | `s` | set series status (in the Inbox: skip) |
 | `r` | rescan media folders |
 | `M` | refresh metadata for the series under the cursor |
@@ -74,3 +75,10 @@ Press `?` in the TUI to see these at any time.
 | `d` | remove |
 | `c` | clear |
 | `⏎` | play |
+
+## Remote mode (while mpv plays)
+
+| Key | Action |
+| --- | --- |
+| `any key` | pressed in mpv, so your input.conf applies |
+| `ctrl-c` | keys back to anipv (v: back to mpv) |

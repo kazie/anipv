@@ -357,12 +357,70 @@ fn ctrl_r_refreshes_everything_and_queues_while_busy() {
     assert!(app.current_message().unwrap_or_default().starts_with("metadata:"));
 }
 
+/// Playing in remote mode: the bar says so (and shows a pause), the footer
+/// lists only the keys anipv keeps; after ctrl-c the usual hints are back,
+/// with `v` to hand the keys to mpv again.
+#[test]
+fn now_playing_in_remote_mode() {
+    use anipv::tui::app::Msg;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_d, mut app) = app();
+    let (ours, _mpv) = std::os::unix::net::UnixStream::pair().unwrap();
+    app.queue.push(anipv::app::QueueEntry {
+        series: "one piece".into(),
+        item: anipv::model::ItemKey::episode(anipv::model::EpNo::new(1182)),
+        file: "/m/op.mkv".into(),
+    });
+    app.playing = Some(anipv::tui::app::NowPlaying {
+        label: "Sousou no Frieren 29".into(),
+        pos: 802.0,
+        dur: Some(1420.0),
+        total: 3,
+        ..Default::default()
+    });
+    // Until mpv connects, keys can't reach it: no `v`, and the queue can still be played.
+    let s = render(&mut app);
+    assert!(!s.contains("control mpv") && s.contains("p play queue"), "{s}");
+    app.on_msg(Msg::Player(anipv::mpv::PlayerEvent::Connected(anipv::mpv::Remote::new(ours))));
+    app.on_msg(Msg::Player(anipv::mpv::PlayerEvent::Paused(true)));
+    let s = render(&mut app);
+    assert!(s.contains("⏸ Sousou no Frieren 29"), "{s}");
+    assert!(s.contains("REMOTE: keys go to mpv, ctrl-c for anipv"), "{s}");
+    assert!(s.contains("ctrl-c back to anipv") && !s.contains("queue next"), "{s}");
+    insta::assert_snapshot!("now_playing_remote", s);
+
+    app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    let s = render(&mut app);
+    assert!(!s.contains("REMOTE"), "{s}");
+    assert!(s.contains("v control mpv") && s.contains("queue next"), "{s}");
+}
+
+/// On a short terminal the help scrolls with j/k (and stops at its end);
+/// any other key closes it.
+#[test]
+fn help_scrolls_when_taller_than_the_terminal() {
+    let (_d, mut app) = app();
+    app.press("?");
+    let s = render(&mut app);
+    let total = anipv::tui::ui::HELP.iter().map(|(_, keys)| keys.len() + 2).sum::<usize>() - 1;
+    assert!(s.contains(&format!("Keys 1-24 of {total} · j/k scroll")), "{s}");
+    assert!(!s.contains("Remote mode (while mpv plays)"), "the end is below:\n{s}");
+    app.press(&"j".repeat(200));
+    let s = render(&mut app);
+    assert!(s.contains(&format!("of {total} ·")) && s.contains("Remote mode (while mpv plays)"), "{s}");
+    assert!(s.contains(&format!("Keys {}-{total} of", total - 23)), "scrolling stops at the end:\n{s}");
+    app.press("k");
+    assert!(render(&mut app).contains(&format!("Keys {}-{} of", total - 24, total - 1)));
+    app.press("x");
+    assert!(app.popup.is_none());
+}
+
 #[test]
 fn help_and_quit() {
     let (_d, mut app) = app();
     app.press("?");
     let s = render(&mut app);
-    assert!(s.contains("Keys · any key closes"), "{s}");
+    assert!(s.contains("Keys") && s.contains("scroll · other keys close"), "{s}");
     app.press("x");
     assert!(app.popup.is_none());
     app.press("q");

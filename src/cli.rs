@@ -141,10 +141,22 @@ enum Cmd {
     /// Print the man page (roff).
     Man,
     /// Create a demo library in DIR (for trying anipv out / screenshots).
+    #[cfg(feature = "demo")]
     #[command(hide = true)]
     Demo {
         /// Directory to create it in.
         dir: PathBuf,
+    },
+    /// Stand in for mpv, speaking its JSON IPC (tests, the README recording).
+    #[cfg(feature = "demo")]
+    #[command(hide = true)]
+    FakeMpv {
+        /// Play in real time and answer remote-mode keys.
+        #[arg(long)]
+        demo: bool,
+        /// mpv's arguments: `--input-ipc-server=PATH` and the files.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
     },
 }
 
@@ -243,14 +255,22 @@ fn run(cli: Cli) -> Result<()> {
             clap_mangen::Man::new(command()).render(&mut out)?;
             Ok(())
         }
+        #[cfg(feature = "demo")]
         Cmd::Demo { dir } => {
             std::fs::create_dir_all(&dir)?;
             let dir = dir.canonicalize()?;
-            crate::demo::setup(&dir, now())?;
+            let mut ctx = crate::demo::setup(&dir, now())?;
+            // Playing works too: this very binary stands in for mpv, in real
+            // time and answering remote-mode keys.
+            ctx.cfg.mpv = std::env::current_exe()?.display().to_string();
+            ctx.cfg.mpv_args = vec!["fake-mpv".into(), "--demo".into()];
+            ctx.cfg.save(&ctx.paths.config_file)?;
             writeln!(out, "{ok} demo library in {dir}", ok = green("✓"), dir = dir.display())?;
             writeln!(out, "  try: {}", cyan(&format!("ANIPV_HOME={} anipv", dir.display())))?;
             Ok(())
         }
+        #[cfg(feature = "demo")]
+        Cmd::FakeMpv { demo, args } => crate::fake_mpv::run(demo, &args),
     }
 }
 
@@ -714,7 +734,7 @@ fn play_blocking(ctx: &Ctx, s: &mut Session, files: &[crate::mpv::PlayFile], out
                 written = written.and(res);
                 break;
             }
-            PlayerEvent::Progress { .. } => Ok(()),
+            PlayerEvent::Progress { .. } | PlayerEvent::Connected(_) | PlayerEvent::Paused(_) => Ok(()),
         };
         written = written.and(res);
     }
