@@ -45,6 +45,11 @@ pub enum MetaAction {
         /// it is missing or older than a week.
         #[arg(long, conflicts_with = "series")]
         all: bool,
+        /// With --all, also every linked series that isn't tracked (untracked,
+        /// dropped, skipped), for their score and popularity. Sends AniList the
+        /// id of every anime in your library.
+        #[arg(long, requires = "all")]
+        untracked: bool,
     },
     /// Search the offline database.
     Search {
@@ -89,12 +94,12 @@ pub(super) fn run(ctx: &Ctx, a: MetaAction, out: &mut impl Write) -> Result<()> 
             writing_unless(dry_run, ctx, out, |s, out| match_series(ctx, &s.lib, dry_run, search, out))
         }
         MetaAction::Link { series, anilist } => writing(ctx, out, |s, out| link(ctx, s, &series, anilist, out)),
-        MetaAction::Refresh { series, all } => {
+        MetaAction::Refresh { series, all, untracked } => {
             // Said here: with the network off, the plan below would just be empty.
             if !ctx.cfg.anilist {
                 bail!(NETWORK_OFF);
             }
-            writing(ctx, out, |s, out| refresh(ctx, s, series.as_deref(), all, out))
+            writing(ctx, out, |s, out| refresh(ctx, s, series.as_deref(), all, untracked, out))
         }
         MetaAction::Search { query } => {
             for e in OfflineDb::load(&ctx.paths.cache_dir)?.context(NO_DATABASE)?.search(&query, 15) {
@@ -123,16 +128,20 @@ fn match_series(ctx: &Ctx, lib: &Library, dry_run: bool, search: bool, out: &mut
         None if searching => crate::meta::unmatched_without_database(lib, None),
         None => bail!(NO_DATABASE),
     };
-    let before = rep.rows.len();
+    let before = rep.rows.len() - rep.scored;
     // `--search` asks again about series searched before.
     let found = searching.then(|| crate::meta::add_title_search(&mut rep, lib, &anilist::Ureq, ts, search));
-    let matched = rep.rows.len();
+    // Rows that only add a score to a link already made aren't matches.
+    let matched = rep.rows.len() - rep.scored;
     if !dry_run {
         let (rows, attempts) = (std::mem::take(&mut rep.rows), std::mem::take(&mut rep.attempts));
         let db_version = Some(rep.db_version.clone());
         ctx.store_sync(&SyncResult { rows, attempts, db_version, ..SyncResult::default() })?;
     }
     writeln!(out, "{ok} matched {matched} series", ok = green("✓"))?;
+    if rep.scored > 0 {
+        writeln!(out, "{ok} scored {n} series already matched", ok = green("✓"), n = rep.scored)?;
+    }
     if let Some(found) = found {
         writeln!(out, "  {n} of them by title on AniList", n = matched - before)?;
         print_warnings(out, &found.stopped)?;
@@ -184,7 +193,14 @@ fn link(ctx: &Ctx, s: &mut Session, query: &str, anilist: u64, out: &mut impl Wr
 }
 
 /// `meta refresh`: refresh from `AniList` (see [`MetaAction::Refresh`]).
-fn refresh(ctx: &Ctx, s: &Session, series: Option<&str>, all: bool, out: &mut impl Write) -> Result<()> {
+fn refresh(
+    ctx: &Ctx,
+    s: &Session,
+    series: Option<&str>,
+    all: bool,
+    untracked: bool,
+    out: &mut impl Write,
+) -> Result<()> {
     let lib = &s.lib;
     let request = match (series, all) {
         (Some(q), _) => Request::Series(find_series(lib, q)?.key.clone()),
@@ -197,7 +213,7 @@ fn refresh(ctx: &Ctx, s: &Session, series: Option<&str>, all: bool, out: &mut im
         return Ok(());
     };
     // Only `--all` updates the offline database.
-    let opts = SyncOptions { update_offline: all, ..opts };
+    let opts = SyncOptions { update_offline: all, untracked, ..opts };
     let mut shown = Ok(());
     let first_url = opts.offline_urls.first().map_or("", String::as_str);
     let http = Some(&anilist::Ureq as &dyn anilist::Http);

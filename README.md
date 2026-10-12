@@ -24,7 +24,7 @@ history. anipv replaces that:
 - **Your library, understood**: bracketed (`[Group] Show - 07 (1080p)`), dotted (`Show.S01E07.1080p…`), underscored and numbered file names, `v2` versions, `S02E01` / `1x05` markers, season folders (inside an archive series folder, `Season 1` and `Season 2` stay separate seasons of the same title), OVAs, openings/endings, previews, multi-episode files. Parsed and grouped, with a test corpus covering each naming convention.
 - **Statuses**: following, paused ("dropped too early, might resume"), dropped (with a note), completed, skipped. A status you set on a series you've already finished stays, so you can follow it again for a rewatch.
 - **Local first, multi-device**: history is an append-only log per device. Sync the folder however you like; merging is conflict-free.
-- **Optional metadata**: episode totals and airing dates from the offline [anime-offline-database] (the community-maintained continuation of manami-project's archived dataset) and anonymous [AniList] queries. No account needed, and nothing about your watching leaves your machine.
+- **Optional metadata**: episode totals, airing dates and audience scores from the offline [anime-offline-database] (the community-maintained continuation of manami-project's archived dataset) and anonymous [AniList] queries. No account needed, and nothing about your watching leaves your machine.
 - **Bootstrap from fish**: imports the `mpv …` commands already in your fish history.
 
 ## Install
@@ -73,6 +73,8 @@ anipv import-fish --apply-status   # mark watched + follow recent shows
 # 4. Optional: episode totals and airing times
 #    (or press ctrl-r in the TUI, which downloads the anime database for you).
 anipv meta refresh --all
+#    Add --untracked once for scores of the rest of your library too
+#    (sends AniList the id of every anime in it).
 
 # 5. Go.
 anipv
@@ -97,11 +99,11 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 
 <p align="center"><img src="assets/img/inbox.svg" alt="inbox with a new season on top" width="900"></p>
 
-**Inbox**: everything new in your download folder that you haven't decided on yet. A new season of something you watch is flagged and sorted first (by title, and by AniList's prequel links); specials of other shows go last.
+**Inbox**: everything new in your download folder that you haven't decided on yet. A new season of something you watch is flagged and sorted first (by title, and by AniList's prequel links); specials of other shows go last. The Score column (AniList's average, 0–100; the anime database's until AniList has been asked) gives a first idea of how well liked a show is, and `o` opens its AniList page.
 
 Common keys: `1`–`5` switch views, `space` queues, `p` plays, `s` sets the
 status, `/` searches, `M` refreshes metadata for the series under the cursor,
-`ctrl-r` refreshes all of it, `q` or `ctrl-c` quits (after asking), `?` shows everything. Full list: [docs/keybindings.md](docs/keybindings.md).
+`ctrl-r` refreshes all of it, `o` opens the series on AniList, `q` or `ctrl-c` quits (after asking), `?` shows everything. Full list: [docs/keybindings.md](docs/keybindings.md).
 
 ## The CLI
 
@@ -147,7 +149,7 @@ anipv makes two kinds of network requests by default, both optional, and a third
 
 1. `anipv meta update` downloads the public [anime-offline-database] JSON from GitHub. The original [manami-project] dataset was archived in July 2026, so by default this comes from its community continuation (the archived original is the fallback when nothing is cached yet). Set `offline_db_url` to use another source.
 2. For series you *follow*, it asks [AniList]'s public API about the anime by id
-   (`next airing episode`, `episode count`). No account or token is involved, and
+   (`next airing episode`, `episode count`, `average score`, `popularity`). No account or token is involved, and
    nothing is ever sent about what you watched. Set `anilist = false` to turn it off.
 3. **Off by default**: with `anilist_search = true` (or `anipv meta match --search`),
    series the offline database can't match (all of them while none is
@@ -156,6 +158,13 @@ anipv makes two kinds of network requests by default, both optional, and a third
    shows for those series (parsed from your file and folder names), nothing
    else: no paths, no watch history. Each series is asked about at most once a
    month, at most 10 per update.
+
+`anipv meta refresh --all --untracked` asks the same about every anime in your
+library, tracked or not: AniList then sees which anime you have, though still
+nothing about what you watched. It only runs when you ask for it.
+
+Pressing `o` opens an AniList page in your browser; that request is yours,
+made only when you ask.
 
 More: [configuration](docs/config.md) · [architecture](docs/architecture.md) · [event log](docs/events.md) · [keys](docs/keybindings.md)
 

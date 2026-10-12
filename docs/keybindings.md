@@ -17,6 +17,7 @@ Press `?` in the TUI to see these at any time.
 | `s` | set series status (in the Inbox: skip) |
 | `r` | rescan media folders |
 | `M` | refresh metadata for the series under the cursor |
+| `o` | open the series under the cursor on AniList |
 | `ctrl-r` | refresh all metadata now (updates the anime database if old) |
 | `?` | this help |
 | `q / ctrl-c` | quit (asks first: q, y or ⏎ confirms); ctrl-c closes an open popup first |

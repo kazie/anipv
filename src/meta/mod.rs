@@ -31,8 +31,10 @@ use offline::{Match, OfflineDb};
 /// title, see [`add_title_search`]).
 #[derive(Debug, Default)]
 pub struct MatchReport {
-    /// New or changed links.
+    /// New or changed links, and rows of unchanged links given a score.
     pub rows: Vec<SeriesMeta>,
+    /// How many of `rows` are unchanged links only given a score.
+    pub scored: usize,
     /// Results to record: new ones, and "nothing to link" for a cached link
     /// that no longer matches (which drops it).
     pub attempts: Vec<MatchAttempt>,
@@ -112,8 +114,15 @@ pub fn match_library(lib: &Library, db: &OfflineDb, ts: i64, only: Option<&str>)
             }
         }
         match found {
-            // Same id as cached: keep the row (it may hold fresher AniList data).
-            Some(e) if e.anilist_id() == current => {}
+            // Same id as cached: keep the row (it may hold fresher AniList
+            // data), only filling in a score it lacks (rows from before scores
+            // were kept).
+            Some(e) if e.anilist_id() == current => {
+                if let Some(m) = s.meta.as_ref().filter(|m| m.score.is_none() && e.score.is_some()) {
+                    rep.rows.push(SeriesMeta { score: e.score, ..m.clone() });
+                    rep.scored += 1;
+                }
+            }
             Some(e) => rep.rows.push(e.to_meta(&s.key)),
             // A link a title search made (see `SeriesMeta::search_linked`)
             // isn't undone by the database matching nothing, or several
@@ -232,13 +241,19 @@ fn stale_id(s: &Series, m: Option<&SeriesMeta>, checks: &Checks, ts: i64, max_ag
 }
 
 /// `AniList` ids to refresh because the user asked for it: every tracked series
-/// (or just `only`, whatever its status), regardless of age or "finished".
-pub fn requested_ids(lib: &Library, fresh: &HashMap<String, SeriesMeta>, only: Option<&str>) -> Vec<(String, u64)> {
+/// (every linked one with `untracked`, or just `only`, whatever its status),
+/// regardless of age or "finished".
+pub fn requested_ids(
+    lib: &Library,
+    fresh: &HashMap<String, SeriesMeta>,
+    only: Option<&str>,
+    untracked: bool,
+) -> Vec<(String, u64)> {
     lib.series
         .iter()
         .filter(|s| match only {
             Some(k) => s.key == k,
-            None => s.status.is_tracked(),
+            None => untracked || s.status.is_tracked(),
         })
         .filter_map(|s| Some((s.key.clone(), s.anilist_id_with(meta_of(s, fresh))?)))
         .collect()
@@ -421,6 +436,9 @@ pub struct SyncOptions {
     pub rematch: bool,
     /// Limit matching and refreshing to this series key.
     pub only: Option<String>,
+    /// A requested refresh of everything also asks about series that aren't
+    /// tracked (untracked, dropped, skipped): their ids go to `AniList`.
+    pub untracked: bool,
     /// Download the offline database first if it is missing or older than
     /// [`OFFLINE_DB_MAX_AGE`]. A failed download is reported in
     /// [`SyncResult::errors`] and the cached copy (if any) is used.
@@ -449,6 +467,7 @@ impl Default for SyncOptions {
             refresh: Refresh::default(),
             rematch: false,
             only: None,
+            untracked: false,
             update_offline: false,
             offline: std::sync::Arc::default(),
             offline_urls: offline::source_urls(None),
@@ -613,7 +632,7 @@ pub fn sync_with_progress(
         // refresh the old anime's data, which would write the link back.
         let unlinked: HashSet<&str> = out.attempts.iter().map(|a| a.series.as_str()).collect();
         let wanted = match &opts.refresh {
-            Refresh::Requested => requested_ids(lib, &fresh, only),
+            Refresh::Requested => requested_ids(lib, &fresh, only, opts.untracked),
             Refresh::Stale { ids, max_age, checks } => {
                 let rechecked = lib.series.iter().filter_map(|s| {
                     let m = fresh.get(&s.key)?;
@@ -720,6 +739,29 @@ mod tests {
         assert!(match_library(&after, &db, 6, None).attempts.is_empty(), "checked series aren't re-recorded");
     }
 
+    /// A cached row for the matched id is kept, AniList data and all; only a
+    /// missing score is filled in from the database.
+    #[test]
+    fn cached_rows_get_missing_scores() {
+        let db = OfflineDb::from_slice(offline::tests::SAMPLE.as_bytes()).unwrap();
+        let cached = SeriesMeta {
+            series: "one piece".into(),
+            anilist: Some(21),
+            next_ep: Some(1181),
+            popularity: Some(612_000),
+            refreshed_at: Some(3),
+            ..SeriesMeta::default()
+        };
+        let rep = match_library(&lib(&[], std::slice::from_ref(&cached)), &db, 5, None);
+        let row = rep.rows.iter().find(|r| r.series == "one piece").unwrap();
+        assert_eq!(*row, SeriesMeta { score: Some(87), ..cached.clone() });
+        assert_eq!(rep.scored, 1);
+        let scored = SeriesMeta { score: Some(90), ..cached };
+        let rep = match_library(&lib(&[], &[scored]), &db, 5, None);
+        assert!(rep.rows.iter().all(|r| r.series != "one piece"), "a scored row is left alone");
+        assert_eq!(rep.scored, 0);
+    }
+
     #[test]
     fn unlinked_series_are_not_rematched() {
         let db = OfflineDb::from_slice(offline::tests::SAMPLE.as_bytes()).unwrap();
@@ -817,8 +859,9 @@ mod tests {
         let db = OfflineDb::from_slice(offline::tests::SAMPLE.as_bytes()).unwrap();
         let l = lib(&[skip], &[db.by_anilist(21).unwrap().to_meta("one piece")]);
         assert!(stale_ids(&l, &Checks::new(), 5, 43_200).is_empty());
-        assert!(requested_ids(&l, &HashMap::new(), None).is_empty());
-        assert_eq!(requested_ids(&l, &HashMap::new(), Some("one piece")), vec![("one piece".to_string(), 21)]);
+        assert!(requested_ids(&l, &HashMap::new(), None, false).is_empty());
+        assert_eq!(requested_ids(&l, &HashMap::new(), None, true), vec![("one piece".to_string(), 21)]);
+        assert_eq!(requested_ids(&l, &HashMap::new(), Some("one piece"), false), vec![("one piece".to_string(), 21)]);
     }
 
     /// A manual link without any cached row (no offline database) still gets

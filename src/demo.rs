@@ -154,6 +154,22 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         log.append_events(&mine)?;
     }
 
+    // Audience score and popularity, roughly as on AniList; the newest show has
+    // too few ratings yet.
+    let score = |id: u64| -> Option<(u8, u32)> {
+        Some(match id {
+            182_255 => (90, 412_000),
+            21 => (88, 612_000),
+            185_660 => (85, 198_000),
+            190_000 => (74, 31_000),
+            1 => (86, 455_000),
+            477 => (78, 24_000),
+            5680 => (77, 298_000),
+            98444 => (83, 251_000),
+            153_518 => (86, 287_000),
+            _ => return None,
+        })
+    };
     let meta = |series: &str, id: u64, eps: Option<u32>, status: &str, next: Option<(u32, i64)>| SeriesMeta {
         series: series.into(),
         anilist: Some(id),
@@ -166,6 +182,8 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         next_airing: next.map(|n| n.1),
         refreshed_at: Some(ts),
         search_linked: false,
+        score: score(id).map(|s| s.0),
+        popularity: score(id).map(|s| s.1),
     };
     ctx.db.put_metas(&[
         meta("sousou no frieren", 182_255, Some(38), "RELEASING", Some((32, ts + 3 * DAY + 5 * 3600))),
@@ -176,6 +194,8 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         meta("aria the animation", 477, Some(13), "FINISHED", None),
         meta("k on", 5680, Some(13), "FINISHED", None),
         meta("yuru camp", 98444, Some(12), "FINISHED", None),
+        // In the Inbox: score and popularity help decide whether to follow it.
+        meta("dungeon meshi", 153_518, Some(24), "FINISHED", None),
         meta("meitantei precure", 195_000, Some(48), "RELEASING", Some((4, ts + 4 * DAY))),
     ])?;
     Ok(ctx)

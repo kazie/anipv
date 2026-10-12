@@ -347,6 +347,38 @@ fn m_refreshes_metadata_for_the_focused_series() {
     assert!(msg.starts_with("Yuru Camp:") && msg.contains("12 eps"), "{msg}");
 }
 
+/// `o` opens the focused series' AniList page (here: recorded, not opened);
+/// an unlinked series says how to link it, and a failing opener shows the URL.
+#[test]
+fn o_opens_the_anilist_page() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let (_d, mut app) = app();
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let rec = Rc::clone(&opened);
+    app.opener = Box::new(move |url| {
+        rec.borrow_mut().push(url.to_string());
+        Ok(())
+    });
+    app.press("2jo");
+    assert_eq!(*opened.borrow(), ["https://anilist.co/anime/153518"], "Dungeon Meshi, from the Inbox");
+    assert_eq!(app.current_message(), Some("opened https://anilist.co/anime/153518"));
+    app.press("jo");
+    assert_eq!(opened.borrow().len(), 1, "Kusuriya no Hitorigoto S3 isn't linked");
+    assert!(app.current_message().unwrap_or_default().contains("not linked to AniList"));
+}
+
+/// When no browser can be started, `o` shows the URL instead.
+#[test]
+fn o_shows_the_url_without_an_opener() {
+    let (_d, mut app) = app();
+    app.opener = Box::new(|_| anyhow::bail!("no opener"));
+    app.press("3/yuru\n\no");
+    assert_eq!(app.current_message(), Some("https://anilist.co/anime/98444"));
+    let s = render(&mut app);
+    assert!(s.contains("★ 83 · 251k members") && s.contains("anilist.co/anime/98444"), "{s}");
+}
+
 /// `ctrl-r` refreshes everything; asking again while it runs queues one more.
 #[test]
 fn ctrl_r_refreshes_everything_and_queues_while_busy() {

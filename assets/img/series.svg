@@ -12,15 +12,18 @@
 <text x="889.6" y="47.0" fill="#6c7086" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">desktop </text>
 <text x="16.0" y="66.0" fill="#6c7086" xml:space="preserve" textLength="940.8" lengthAdjust="spacingAndGlyphs">╭ Series · on disk 13 ─────────────────────────────────────────────────────────────────────────────────────────╮</text>
 <text x="16.0" y="85.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="85.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="924.0" lengthAdjust="spacingAndGlyphs"> Series                                            Status     Watched    Disk  Last   Seen  Airing            </text>
+<text x="24.4" y="85.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="924.0" lengthAdjust="spacingAndGlyphs"> Series                                      Status     Score Watched    Disk  Last   Seen  Airing            </text>
 <text x="948.4" y="85.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="104.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<rect x="24.4" y="90.0" width="428.4" height="19" fill="#313244"/>
-<text x="24.4" y="104.0" fill="#cdd6f4" font-weight="bold" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs">▌Aria The Animation                                </text>
-<rect x="452.8" y="90.0" width="84.0" height="19" fill="#313244"/>
-<text x="452.8" y="104.0" fill="#f9e2af" font-weight="bold" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">paused    </text>
-<rect x="536.8" y="90.0" width="151.2" height="19" fill="#313244"/>
-<text x="536.8" y="104.0" fill="#cdd6f4" font-weight="bold" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 7/13       13    </text>
+<rect x="24.4" y="90.0" width="378.0" height="19" fill="#313244"/>
+<text x="24.4" y="104.0" fill="#cdd6f4" font-weight="bold" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs">▌Aria The Animation                          </text>
+<rect x="402.4" y="90.0" width="84.0" height="19" fill="#313244"/>
+<text x="402.4" y="104.0" fill="#f9e2af" font-weight="bold" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">paused    </text>
+<rect x="486.4" y="90.0" width="8.4" height="19" fill="#313244"/>
+<rect x="494.8" y="90.0" width="16.8" height="19" fill="#313244"/>
+<text x="494.8" y="104.0" fill="#a6e3a1" font-weight="bold" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">78</text>
+<rect x="511.6" y="90.0" width="176.4" height="19" fill="#313244"/>
+<text x="511.6" y="104.0" fill="#cdd6f4" font-weight="bold" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs">    7/13       13    </text>
 <rect x="688.0" y="90.0" width="50.4" height="19" fill="#313244"/>
 <text x="688.0" y="104.0" fill="#6c7086" font-weight="bold" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">13    </text>
 <rect x="738.4" y="90.0" width="8.4" height="19" fill="#313244"/>
@@ -32,85 +35,97 @@
 <rect x="864.4" y="90.0" width="84.0" height="19" fill="#313244"/>
 <text x="948.4" y="104.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="123.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="123.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Cowboy Bebop                                      </text>
-<text x="452.8" y="123.0" fill="#94e2d5" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">completed </text>
-<text x="536.8" y="123.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 26/26      26    </text>
+<text x="24.4" y="123.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Cowboy Bebop                                </text>
+<text x="402.4" y="123.0" fill="#94e2d5" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">completed </text>
+<text x="494.8" y="123.0" fill="#a6e3a1" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">86</text>
+<text x="511.6" y="123.0" fill="#cdd6f4" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs">    26/26      26    </text>
 <text x="688.0" y="123.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">26    </text>
 <text x="746.8" y="123.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">42w  </text>
 <text x="797.2" y="123.0" fill="#6c7086" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">finished</text>
 <text x="948.4" y="123.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="142.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="142.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Dandadan S2                                       </text>
-<text x="452.8" y="142.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
-<text x="536.8" y="142.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 5/12       4     </text>
+<text x="24.4" y="142.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Dandadan S2                                 </text>
+<text x="402.4" y="142.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
+<text x="494.8" y="142.0" fill="#a6e3a1" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">85</text>
+<text x="511.6" y="142.0" fill="#cdd6f4" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs">    5/12       4     </text>
 <text x="688.0" y="142.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">8     </text>
 <text x="746.8" y="142.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">7d   </text>
 <text x="797.2" y="142.0" fill="#89b4fa" xml:space="preserve" textLength="109.2" lengthAdjust="spacingAndGlyphs">ep 9 in 1d 7h</text>
 <text x="948.4" y="142.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="161.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="161.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Dungeon Meshi                                     </text>
-<text x="452.8" y="161.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
-<text x="536.8" y="161.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 0/?        3     </text>
+<text x="24.4" y="161.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Dungeon Meshi                               </text>
+<text x="402.4" y="161.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
+<text x="494.8" y="161.0" fill="#a6e3a1" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">86</text>
+<text x="511.6" y="161.0" fill="#cdd6f4" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs">    0/24       3     </text>
 <text x="688.0" y="161.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">3     </text>
+<text x="797.2" y="161.0" fill="#6c7086" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">finished</text>
 <text x="948.4" y="161.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="180.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="180.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Kusuriya no Hitorigoto S3                         </text>
-<text x="452.8" y="180.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
-<text x="536.8" y="180.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 0/?        1     </text>
+<text x="24.4" y="180.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Kusuriya no Hitorigoto S3                   </text>
+<text x="402.4" y="180.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
+<text x="494.8" y="180.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">–</text>
+<text x="503.2" y="180.0" fill="#cdd6f4" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">     0/?        1     </text>
 <text x="688.0" y="180.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">1     </text>
 <text x="948.4" y="180.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="199.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="199.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Laid-Back Camp The Movie (2022)                   </text>
-<text x="452.8" y="199.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
-<text x="536.8" y="199.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 0/?        1     </text>
+<text x="24.4" y="199.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Laid-Back Camp The Movie (2022)             </text>
+<text x="402.4" y="199.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
+<text x="494.8" y="199.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">–</text>
+<text x="503.2" y="199.0" fill="#cdd6f4" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">     0/?        1     </text>
 <text x="948.4" y="199.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="218.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="218.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Meitantei Precure!                                </text>
-<text x="452.8" y="218.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
-<text x="536.8" y="218.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 1/48       3     </text>
+<text x="24.4" y="218.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Meitantei Precure!                          </text>
+<text x="402.4" y="218.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
+<text x="494.8" y="218.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">–</text>
+<text x="503.2" y="218.0" fill="#cdd6f4" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">     1/48       3     </text>
 <text x="688.0" y="218.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">3     </text>
 <text x="746.8" y="218.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">3d   </text>
 <text x="797.2" y="218.0" fill="#89b4fa" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">ep 4 in 4d</text>
 <text x="948.4" y="218.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="237.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="237.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> One Piece                                         </text>
-<text x="452.8" y="237.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
-<text x="536.8" y="237.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 11/?       13    </text>
+<text x="24.4" y="237.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> One Piece                                   </text>
+<text x="402.4" y="237.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
+<text x="494.8" y="237.0" fill="#a6e3a1" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">88</text>
+<text x="511.6" y="237.0" fill="#cdd6f4" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs">    11/?       13    </text>
 <text x="688.0" y="237.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">1182  </text>
 <text x="746.8" y="237.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">10d  </text>
 <text x="797.2" y="237.0" fill="#89b4fa" xml:space="preserve" textLength="134.4" lengthAdjust="spacingAndGlyphs">ep 1183 in 5d 2h</text>
 <text x="948.4" y="237.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="256.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="256.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> One Piece Fan Letter                              </text>
-<text x="452.8" y="256.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
-<text x="536.8" y="256.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 0/?        1     </text>
+<text x="24.4" y="256.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> One Piece Fan Letter                        </text>
+<text x="402.4" y="256.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
+<text x="494.8" y="256.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">–</text>
+<text x="503.2" y="256.0" fill="#cdd6f4" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">     0/?        1     </text>
 <text x="948.4" y="256.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="275.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="275.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Ranma 1-2 2024 S3                                 </text>
-<text x="452.8" y="275.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
-<text x="536.8" y="275.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 0/12       2     </text>
+<text x="24.4" y="275.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Ranma 1-2 2024 S3                           </text>
+<text x="402.4" y="275.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
+<text x="486.4" y="275.0" fill="#cdd6f4" xml:space="preserve" textLength="201.6" lengthAdjust="spacingAndGlyphs"> 74    0/12       2     </text>
 <text x="688.0" y="275.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">2     </text>
 <text x="746.8" y="275.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">2d   </text>
 <text x="797.2" y="275.0" fill="#89b4fa" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">ep 3 in 6d</text>
 <text x="948.4" y="275.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="294.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="294.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Sousou no Frieren                                 </text>
-<text x="452.8" y="294.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
-<text x="536.8" y="294.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 28/38      5     </text>
+<text x="24.4" y="294.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Sousou no Frieren                           </text>
+<text x="402.4" y="294.0" fill="#a6e3a1" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">following </text>
+<text x="494.8" y="294.0" fill="#a6e3a1" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">90</text>
+<text x="511.6" y="294.0" fill="#cdd6f4" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs">    28/38      5     </text>
 <text x="688.0" y="294.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">31    </text>
 <text x="746.8" y="294.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs">12d  </text>
 <text x="797.2" y="294.0" fill="#89b4fa" xml:space="preserve" textLength="117.6" lengthAdjust="spacingAndGlyphs">ep 32 in 3d 5h</text>
 <text x="948.4" y="294.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="313.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="313.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Sousou no Frieren S2                              </text>
-<text x="452.8" y="313.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
-<text x="536.8" y="313.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 0/?        1     </text>
+<text x="24.4" y="313.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Sousou no Frieren S2                        </text>
+<text x="402.4" y="313.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
+<text x="494.8" y="313.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">–</text>
+<text x="503.2" y="313.0" fill="#cdd6f4" xml:space="preserve" textLength="184.8" lengthAdjust="spacingAndGlyphs">     0/?        1     </text>
 <text x="688.0" y="313.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">1     </text>
 <text x="948.4" y="313.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="332.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="24.4" y="332.0" fill="#cdd6f4" xml:space="preserve" textLength="428.4" lengthAdjust="spacingAndGlyphs"> Yuru Camp                                         </text>
-<text x="452.8" y="332.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
-<text x="536.8" y="332.0" fill="#cdd6f4" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs"> 0/12       12    </text>
+<text x="24.4" y="332.0" fill="#cdd6f4" xml:space="preserve" textLength="378.0" lengthAdjust="spacingAndGlyphs"> Yuru Camp                                   </text>
+<text x="402.4" y="332.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">untracked </text>
+<text x="494.8" y="332.0" fill="#a6e3a1" xml:space="preserve" textLength="16.8" lengthAdjust="spacingAndGlyphs">83</text>
+<text x="511.6" y="332.0" fill="#cdd6f4" xml:space="preserve" textLength="176.4" lengthAdjust="spacingAndGlyphs">    0/12       12    </text>
 <text x="688.0" y="332.0" fill="#6c7086" xml:space="preserve" textLength="50.4" lengthAdjust="spacingAndGlyphs">12    </text>
 <text x="797.2" y="332.0" fill="#6c7086" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">finished</text>
 <text x="948.4" y="332.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
@@ -129,10 +144,12 @@
 <text x="184.0" y="427.0" fill="#6c7086" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs"> filter  </text>
 <text x="259.6" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">s</text>
 <text x="268.0" y="427.0" fill="#6c7086" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs"> status  </text>
-<text x="343.6" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">m</text>
-<text x="352.0" y="427.0" fill="#6c7086" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs"> merge  </text>
-<text x="419.2" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">M</text>
-<text x="427.6" y="427.0" fill="#6c7086" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs"> metadata  </text>
-<text x="520.0" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">?</text>
-<text x="528.4" y="427.0" fill="#6c7086" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs"> help  </text>
+<text x="343.6" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">o</text>
+<text x="352.0" y="427.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs"> AniList  </text>
+<text x="436.0" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">m</text>
+<text x="444.4" y="427.0" fill="#6c7086" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs"> merge  </text>
+<text x="511.6" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">M</text>
+<text x="520.0" y="427.0" fill="#6c7086" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs"> metadata  </text>
+<text x="612.4" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">?</text>
+<text x="620.8" y="427.0" fill="#6c7086" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs"> help  </text>
 </svg>

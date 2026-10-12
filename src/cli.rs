@@ -980,6 +980,8 @@ mod tests {
         Cli::try_parse_from(["anipv", "meta", "refresh", "frieren"]).unwrap();
         Cli::try_parse_from(["anipv", "meta", "refresh", "--all"]).unwrap();
         assert!(Cli::try_parse_from(["anipv", "meta", "refresh", "frieren", "--all"]).is_err());
+        Cli::try_parse_from(["anipv", "meta", "refresh", "--all", "--untracked"]).unwrap();
+        assert!(Cli::try_parse_from(["anipv", "meta", "refresh", "--untracked"]).is_err(), "only with --all");
         Cli::try_parse_from(["anipv", "init", "--ongoing", "~/dl", "--archive", "~/anime"]).unwrap();
         assert!(Cli::try_parse_from(["anipv", "status", "x", "bogus"]).is_err());
     }

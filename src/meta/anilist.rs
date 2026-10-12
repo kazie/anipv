@@ -17,7 +17,7 @@ pub const ENDPOINT: &str = "https://graphql.anilist.co";
 const QUERY: &str = "query ($ids: [Int]) {
   Page(perPage: 50) {
     media(id_in: $ids, type: ANIME) {
-      id episodes status format seasonYear
+      id episodes status format seasonYear averageScore popularity
       title { romaji english }
       nextAiringEpisode { episode airingAt }
     }
@@ -105,6 +105,12 @@ pub struct Media {
     pub title: Titles,
     /// Next episode, while airing.
     pub next_airing_episode: Option<Airing>,
+    /// Weighted mean of user scores, 0–100 (null until enough users scored it).
+    #[serde(default)]
+    pub average_score: Option<u8>,
+    /// Number of users with the anime on their list.
+    #[serde(default)]
+    pub popularity: Option<u32>,
     /// Alternative titles (searches only).
     #[serde(default)]
     pub synonyms: Vec<String>,
@@ -158,6 +164,8 @@ impl Media {
         m.year = self.season_year.or(m.year);
         m.next_ep = self.next_airing_episode.as_ref().map(|a| a.episode);
         m.next_airing = self.next_airing_episode.as_ref().map(|a| a.airing_at);
+        m.score = self.average_score.or(m.score);
+        m.popularity = self.popularity.or(m.popularity);
         m.refreshed_at = Some(now);
     }
 }
@@ -245,7 +253,7 @@ fn page_media(http: &dyn Http, body: &Value) -> Result<Value> {
 const SEARCH_QUERY: &str = "query ($q: String) {
   Page(perPage: 10) {
     media(search: $q, type: ANIME) {
-      id episodes status format seasonYear
+      id episodes status format seasonYear averageScore popularity
       title { romaji english native }
       synonyms
       nextAiringEpisode { episode airingAt }
@@ -303,6 +311,7 @@ impl Http for Echo {
             ids.iter()
                 .map(|id| {
                     json!({"id": id, "episodes": 10, "status": "FINISHED", "format": "TV",
+                   "averageScore": 81, "popularity": 12_345,
                    "title": {"romaji": "Refreshed"}, "nextAiringEpisode": null, "relations": {"edges": []}})
                 })
                 .collect()
@@ -332,6 +341,7 @@ mod tests {
     fn reply() -> Value {
         json!({"data": {"Page": {"media": [
             {"id": 21, "episodes": null, "status": "RELEASING", "format": "TV", "seasonYear": 1999,
+             "averageScore": null, "popularity": 612_000,
              "title": {"romaji": "ONE PIECE", "english": "One Piece"},
              "nextAiringEpisode": {"episode": 1181, "airingAt": 1_791_500_000}}
         ]}}})
@@ -407,9 +417,12 @@ mod tests {
     #[test]
     fn apply_keeps_known_totals() {
         let m: Media = serde_json::from_value(reply()["data"]["Page"]["media"][0].clone()).unwrap();
-        let mut row = SeriesMeta { series: "one piece".into(), episodes: Some(1168), ..SeriesMeta::default() };
+        let mut row =
+            SeriesMeta { series: "one piece".into(), episodes: Some(1168), score: Some(87), ..SeriesMeta::default() };
         m.apply(&mut row, 9);
         assert_eq!(row.episodes, Some(1168), "null total doesn't erase the offline count");
+        assert_eq!(row.score, Some(87), "null score doesn't erase the offline one");
+        assert_eq!(row.popularity, Some(612_000));
         assert_eq!(row.next_ep, Some(1181));
         assert_eq!(row.status.as_deref(), Some("RELEASING"));
         assert_eq!(row.title.as_deref(), Some("ONE PIECE"));

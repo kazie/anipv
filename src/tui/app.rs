@@ -279,6 +279,9 @@ pub struct ScanSummary {
     pub failed: bool,
 }
 
+/// Opens a URL; fails if no opener could be started.
+pub type Opener = Box<dyn FnMut(&str) -> Result<()>>;
+
 /// The whole TUI state.
 pub struct App {
     /// Shared context.
@@ -363,6 +366,8 @@ pub struct App {
     last_progress: Option<Instant>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
+    /// Opens a URL in the browser (`o`); tests swap in a recorder.
+    pub opener: Opener,
 }
 
 impl App {
@@ -417,6 +422,7 @@ impl App {
             last_progress: None,
             tx,
             rx,
+            opener: Box::new(open_url),
         };
         app.warn_all();
         if !completed.is_empty() {
@@ -936,6 +942,19 @@ impl App {
         }
     }
 
+    /// Open the focused series' `AniList` page in the browser (or show its URL).
+    fn open_anilist(&mut self) {
+        let Some(s) = self.focused_series() else { return self.say("no series under the cursor") };
+        let Some(id) = s.anilist_id() else {
+            return self.fail(format!("{}: not linked to AniList (L links it)", s.title));
+        };
+        let url = format!("https://anilist.co/anime/{id}");
+        match (self.opener)(&url) {
+            Ok(()) => self.say(format!("opened {url}")),
+            Err(_) => self.say(url),
+        }
+    }
+
     /// Copy the mpv command for the queue to the clipboard (or show it).
     fn yank(&mut self) {
         if self.queue.is_empty() {
@@ -1243,6 +1262,7 @@ impl App {
                 Some(key) => self.start_meta(MetaRequest::Series(key)),
                 None => self.say("no series under the cursor"),
             },
+            KeyCode::Char('o') => self.open_anilist(),
             KeyCode::Char('p') => self.play_key(),
             KeyCode::Char('y') => {
                 self.yank();
@@ -1932,6 +1952,21 @@ pub use crate::meta::Request as MetaRequest;
 
 /// The automatic update on start: only what is missing or stale.
 pub const STARTUP: MetaRequest = MetaRequest::Auto { max_age: crate::meta::STARTUP_MAX_AGE };
+
+/// Open `url` with the desktop's opener, without waiting for the browser.
+fn open_url(url: &str) -> Result<()> {
+    use std::process::{Command, Stdio};
+    for cmd in ["xdg-open", "open"] {
+        if let Ok(mut child) =
+            Command::new(cmd).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        {
+            // Reaped in the background, so it doesn't linger as a zombie.
+            std::thread::spawn(move || child.wait());
+            return Ok(());
+        }
+    }
+    anyhow::bail!("no URL opener found")
+}
 
 fn copy_to_clipboard(bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;

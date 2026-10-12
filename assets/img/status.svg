@@ -19,7 +19,7 @@
 <text x="494.8" y="85.0" fill="#89b4fa" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">ep 4 in 4d</text>
 <text x="578.8" y="85.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs"> (TV)</text>
 <text x="948.4" y="85.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
-<text x="16.0" y="104.0" fill="#6c7086" xml:space="preserve" textLength="151.2" lengthAdjust="spacingAndGlyphs">│meitantei precure</text>
+<text x="16.0" y="104.0" fill="#6c7086" xml:space="preserve" textLength="361.2" lengthAdjust="spacingAndGlyphs">│meitantei precure  anilist.co/anime/195000</text>
 <text x="948.4" y="104.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="123.0" fill="#6c7086" xml:space="preserve" textLength="940.8" lengthAdjust="spacingAndGlyphs">╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
 <text x="16.0" y="142.0" fill="#6c7086" xml:space="preserve" textLength="940.8" lengthAdjust="spacingAndGlyphs">╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────╮</text>
@@ -113,10 +113,10 @@
 <text x="494.8" y="427.0" fill="#6c7086" xml:space="preserve" textLength="75.6" lengthAdjust="spacingAndGlyphs"> extras  </text>
 <text x="570.4" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">d</text>
 <text x="578.8" y="427.0" fill="#6c7086" xml:space="preserve" textLength="117.6" lengthAdjust="spacingAndGlyphs"> not on disk  </text>
-<text x="696.4" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">M</text>
-<text x="704.8" y="427.0" fill="#6c7086" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs"> metadata  </text>
-<text x="797.2" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">esc</text>
-<text x="822.4" y="427.0" fill="#6c7086" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs"> back  </text>
-<text x="881.2" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">?</text>
-<text x="889.6" y="427.0" fill="#6c7086" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs"> help  </text>
+<text x="696.4" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">o</text>
+<text x="704.8" y="427.0" fill="#6c7086" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs"> AniList  </text>
+<text x="788.8" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">M</text>
+<text x="797.2" y="427.0" fill="#6c7086" xml:space="preserve" textLength="92.4" lengthAdjust="spacingAndGlyphs"> metadata  </text>
+<text x="889.6" y="427.0" fill="#cba6f7" font-weight="bold" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">esc</text>
+<text x="914.8" y="427.0" fill="#6c7086" xml:space="preserve" textLength="42.0" lengthAdjust="spacingAndGlyphs"> back</text>
 </svg>

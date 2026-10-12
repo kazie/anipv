@@ -187,6 +187,33 @@ fn queued_set(app: &App) -> HashSet<(&str, &ItemKey)> {
     app.queue.iter().map(|q| (q.series.as_str(), &q.item)).collect()
 }
 
+/// Audience score (0–100) for a table cell: green when well liked, dim when
+/// not, a dash when unknown.
+fn score_span(s: &Series) -> Span<'static> {
+    match s.meta.as_ref().and_then(|m| m.score) {
+        Some(n) if n >= 75 => Span::styled(n.to_string(), Style::new().fg(Color::Green)),
+        Some(n) if n < 60 => Span::styled(n.to_string(), Style::new().dark_gray()),
+        Some(n) => Span::raw(n.to_string()),
+        None => Span::styled("–", Style::new().dark_gray()),
+    }
+}
+
+/// A member count, short: `843`, `12k`, `1.2M`.
+fn short_count(n: u32) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..999_500 => format!("{}k", (n + 500) / 1_000),
+        _ => {
+            let tenths = (n + 50_000) / 100_000;
+            if tenths.is_multiple_of(10) {
+                format!("{}M", tenths / 10)
+            } else {
+                format!("{}.{}M", tenths / 10, tenths % 10)
+            }
+        }
+    }
+}
+
 fn airing_span(s: &Series, ts: i64) -> Span<'static> {
     match s.airing(ts) {
         Some((text, true)) => Span::styled(text, Style::new().fg(Color::Blue)),
@@ -281,6 +308,7 @@ fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
                 if matches!(hint, Some(Hint::PartOf(_))) { Style::new().dark_gray() } else { Style::new() };
             Row::new(vec![
                 Cell::from(s.title.clone()).style(title_style),
+                Cell::from(score_span(s)),
                 Cell::from(s.disk_range()),
                 Cell::from(ago_opt(s.last_added(), ts)).dark_gray(),
                 Cell::from(airing_span(s, ts)),
@@ -291,13 +319,14 @@ fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
     // The hint column fits its longest text (up to 48), the title takes the rest.
     let widths = [
         Constraint::Fill(1),
+        Constraint::Length(5),
         Constraint::Length(9),
         Constraint::Length(5),
         Constraint::Length(16),
         Constraint::Length(cells(app.inbox_hint_width().min(48))),
     ];
     let title = format!(" Inbox · new in your download folders · {len} ");
-    let table = list_table(rows, widths, Some(["Series", "On disk", "Added", "Airing", ""]), title);
+    let table = list_table(rows, widths, Some(["Series", "Score", "On disk", "Added", "Airing", ""]), title);
     window.render(f, table, area, &mut app.inbox_state);
     if len == 0 {
         empty_hint(
@@ -325,6 +354,7 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
             Row::new(vec![
                 Cell::from(s.title.clone()),
                 Cell::from(s.status.as_str()).fg(status_color(s.status)),
+                Cell::from(score_span(s)),
                 Cell::from(s.progress()),
                 Cell::from(s.on_disk_items().to_string()).style(disk_style),
                 Cell::from(latest).dark_gray(),
@@ -344,13 +374,14 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
     let widths = [
         Constraint::Fill(1),
         Constraint::Length(10),
+        Constraint::Length(5),
         Constraint::Length(10),
         Constraint::Length(5),
         Constraint::Length(6),
         Constraint::Length(5),
         Constraint::Length(18),
     ];
-    let header = ["Series", "Status", "Watched", "Disk", "Last", "Seen", "Airing"];
+    let header = ["Series", "Status", "Score", "Watched", "Disk", "Last", "Seen", "Airing"];
     window.render(f, list_table(rows, widths, Some(header), Line::from(title)), area, &mut app.series_state);
 }
 
@@ -467,9 +498,18 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         if !fmt_year.is_empty() {
             l1.push(Span::styled(format!(" ({fmt_year})"), Style::new().dark_gray()));
         }
+        if m.score.is_some() {
+            l1.extend([Span::raw("  ★ "), score_span(s)]);
+        }
+        if let Some(p) = m.popularity {
+            l1.push(Span::styled(format!(" · {} members", short_count(p)), Style::new().dark_gray()));
+        }
     }
     info.push(Line::from(l1));
     let mut l2 = vec![Span::styled(s.key.clone(), Style::new().dark_gray())];
+    if let Some(id) = s.anilist_id() {
+        l2.push(Span::styled(format!("  anilist.co/anime/{id}"), Style::new().dark_gray()));
+    }
     if !s.aliases.is_empty() {
         l2.push(Span::styled(format!("  also: {}", s.aliases.join(", ")), Style::new().dark_gray()));
     }
@@ -570,10 +610,26 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("P", "paused"),
         ],
         View::Inbox => {
-            vec![("f", "follow"), ("s", "skip"), ("z", "later"), ("space", "queue ep 1"), ("⏎", "open"), ("m", "merge")]
+            vec![
+                ("f", "follow"),
+                ("s", "skip"),
+                ("z", "later"),
+                ("space", "queue ep 1"),
+                ("⏎", "open"),
+                ("o", "AniList"),
+                ("m", "merge"),
+            ]
         }
         View::Series => {
-            vec![("⏎", "open"), ("/", "search"), ("f", "filter"), ("s", "status"), ("m", "merge"), ("M", "metadata")]
+            vec![
+                ("⏎", "open"),
+                ("/", "search"),
+                ("f", "filter"),
+                ("s", "status"),
+                ("o", "AniList"),
+                ("m", "merge"),
+                ("M", "metadata"),
+            ]
         }
         View::Files => vec![("space", "queue"), ("w", "watched"), ("⏎", "series")],
         View::Queue => vec![("⏎/p", "play"), ("J/K", "move"), ("d", "remove"), ("c", "clear"), ("y", "copy cmd")],
@@ -584,6 +640,7 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("W", "seen up to here"),
             ("x", "extras"),
             ("d", "not on disk"),
+            ("o", "AniList"),
             ("M", "metadata"),
             ("esc", "back"),
         ],
@@ -641,6 +698,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("s", "set series status (in the Inbox: skip)"),
             ("r", "rescan media folders"),
             ("M", "refresh metadata for the series under the cursor"),
+            ("o", "open the series under the cursor on AniList"),
             ("ctrl-r", "refresh all metadata now (updates the anime database if old)"),
             ("?", "this help"),
             ("q / ctrl-c", "quit (asks first: q, y or ⏎ confirms); ctrl-c closes an open popup first"),
@@ -816,6 +874,15 @@ mod tests {
         *state.offset_mut() = offset;
         let w = Window::of(&state, len, height);
         (w.range, w.selected)
+    }
+
+    #[test]
+    fn member_counts_are_short() {
+        let got: Vec<String> = [0, 843, 999, 1_000, 12_345, 999_499, 999_500, 1_000_000, 1_249_999, 1_250_000]
+            .into_iter()
+            .map(short_count)
+            .collect();
+        assert_eq!(got, ["0", "843", "999", "1k", "12k", "999k", "1M", "1M", "1.2M", "1.3M"]);
     }
 
     #[test]

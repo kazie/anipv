@@ -100,6 +100,24 @@ pub struct Entry {
     /// Alternative titles.
     #[serde(default)]
     pub synonyms: Vec<String>,
+    /// Aggregated user score across the sources, 0–100.
+    #[serde(default, deserialize_with = "score")]
+    pub score: Option<u8>,
+}
+
+/// The database's `score` object (1–10 scale) as 0–100, from its
+/// arithmetic-geometric mean.
+fn score<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Score {
+        arithmetic_geometric_mean: f64,
+    }
+    let s: Option<Score> = Option::deserialize(d)?;
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "clamped to 0–100 first")]
+    Ok(s.map(|s| s.arithmetic_geometric_mean)
+        .filter(|v| v.is_finite())
+        .map(|v| (v * 10.0).round().clamp(0.0, 100.0) as u8))
 }
 
 /// Airing season.
@@ -146,6 +164,8 @@ impl Entry {
             next_airing: None,
             refreshed_at: None,
             search_linked: false,
+            score: self.score,
+            popularity: None,
         }
     }
 }
@@ -404,7 +424,7 @@ pub(crate) mod tests {
     use super::*;
 
     pub const SAMPLE: &str = r#"{"lastUpdate":"2026-07-04","data":[
-      {"sources":["https://anilist.co/anime/21","https://myanimelist.net/anime/21","https://anidb.net/anime/69"],"title":"One Piece","type":"TV","episodes":1168,"status":"ONGOING","animeSeason":{"season":"FALL","year":1999},"synonyms":["OP","ONE PIECE"]},
+      {"sources":["https://anilist.co/anime/21","https://myanimelist.net/anime/21","https://anidb.net/anime/69"],"title":"One Piece","type":"TV","episodes":1168,"status":"ONGOING","animeSeason":{"season":"FALL","year":1999},"synonyms":["OP","ONE PIECE"],"score":{"arithmeticGeometricMean":8.6849,"arithmeticMean":8.69,"median":8.7}},
       {"sources":["https://animenewsnetwork.com/encyclopedia/anime.php?id=836"],"title":"One Piece","type":"TV","episodes":1174,"status":"FINISHED","synonyms":[]},
       {"sources":["https://anilist.co/anime/199111","https://myanimelist.net/anime/62542"],"title":"Grand Blue Season 3","type":"TV","episodes":12,"status":"UPCOMING","animeSeason":{"year":2026},"synonyms":["Grand Blue S3","Grand Blue"]},
       {"sources":["https://anilist.co/anime/100922","https://myanimelist.net/anime/37105","https://anidb.net/anime/13734"],"title":"Grand Blue","type":"TV","episodes":12,"status":"FINISHED","synonyms":["Grand Blue Dreaming"]},
@@ -455,6 +475,8 @@ pub(crate) mod tests {
         assert_eq!(m.status.as_deref(), Some("RELEASING"));
         assert_eq!(m.year, Some(1999));
         assert_eq!(m.episodes, Some(1168));
+        assert_eq!(m.score, Some(87));
+        assert_eq!(db.by_anilist(100_922).unwrap().to_meta("grand blue").score, None, "no score in the entry");
     }
 
     #[test]

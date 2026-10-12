@@ -16,7 +16,7 @@ use super::scan::ScannedFile;
 
 /// Bump on any schema change; older caches are dropped and rebuilt (unless
 /// listed in `UPGRADABLE`).
-pub const SCHEMA_VERSION: i32 = 6;
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// Older schema versions brought up to date in place rather than rebuilt:
 /// [`SCHEMA`] only adds to them (`CREATE … IF NOT EXISTS`), and [`upgrade`]
@@ -24,7 +24,8 @@ pub const SCHEMA_VERSION: i32 = 6;
 ///
 /// * 4 → 5: the `anilist_checks` table, seeded from `prequels`.
 /// * 5 → 6: `series_meta.search_linked`.
-const UPGRADABLE: [i32; 2] = [4, 5];
+/// * 6 → 7: `series_meta.score` and `series_meta.popularity`.
+const UPGRADABLE: [i32; 3] = [4, 5, 6];
 
 /// `kv` key prefix (followed by the root name) remembering whether the root
 /// directory was a mount point at its last non-empty scan, and which
@@ -120,7 +121,9 @@ CREATE TABLE IF NOT EXISTS series_meta(
     next_ep     INTEGER,
     next_airing INTEGER,
     refreshed_at INTEGER,
-    search_linked INTEGER NOT NULL DEFAULT 0
+    search_linked INTEGER NOT NULL DEFAULT 0,
+    score       INTEGER,
+    popularity  INTEGER
 );
 ";
 
@@ -221,6 +224,11 @@ pub struct SeriesMeta {
     /// that finds nothing for the series keeps it. A row written for any other
     /// reason (the database, a manual link) replaces it, and the mark with it.
     pub search_linked: bool,
+    /// Audience score, 0–100: `AniList`'s average once refreshed, the offline
+    /// database's aggregate until then.
+    pub score: Option<u8>,
+    /// Users with the anime on their `AniList` list (from `AniList` only).
+    pub popularity: Option<u32>,
 }
 
 /// "Matching ran for this series and found nothing to link": against the
@@ -683,7 +691,8 @@ impl Db {
     /// All cached metadata.
     pub fn all_meta(&self) -> Result<Vec<SeriesMeta>> {
         let mut st = self.conn.prepare_cached(
-            "SELECT series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked
+            "SELECT series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked,
+                    score, popularity
              FROM series_meta",
         )?;
         let rows = st.query_map([], |r| {
@@ -699,6 +708,8 @@ impl Db {
                 next_airing: r.get(8)?,
                 refreshed_at: r.get(9)?,
                 search_linked: r.get(10)?,
+                score: r.get(11)?,
+                popularity: r.get(12)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -721,14 +732,23 @@ fn upgrade(conn: &Connection, version: i32) -> Result<()> {
         )?;
     }
     if version <= 5 {
-        let has: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('series_meta') WHERE name = 'search_linked')",
-            [],
-            |r| r.get(0),
-        )?;
-        if !has {
-            conn.execute_batch("ALTER TABLE series_meta ADD COLUMN search_linked INTEGER NOT NULL DEFAULT 0;")?;
-        }
+        add_meta_column(conn, "search_linked", "INTEGER NOT NULL DEFAULT 0")?;
+    }
+    if version <= 6 {
+        add_meta_column(conn, "score", "INTEGER")?;
+        add_meta_column(conn, "popularity", "INTEGER")?;
+    }
+    Ok(())
+}
+
+/// Add a column to `series_meta` unless it is there already.
+fn add_meta_column(conn: &Connection, name: &str, decl: &str) -> Result<()> {
+    let has: bool =
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('series_meta') WHERE name = ?1)", [name], |r| {
+            r.get(0)
+        })?;
+    if !has {
+        conn.execute_batch(&format!("ALTER TABLE series_meta ADD COLUMN {name} {decl};"))?;
     }
     Ok(())
 }
@@ -757,8 +777,9 @@ fn write_kv(conn: &Connection, k: &str, v: &str) -> Result<()> {
 
 fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
     let mut put = conn.prepare_cached(
-        "INSERT OR REPLACE INTO series_meta(series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT OR REPLACE INTO series_meta(series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked,
+                                            score, popularity)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
     for m in rows {
         put.execute(params![
@@ -772,7 +793,9 @@ fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
             m.next_ep,
             m.next_airing,
             m.refreshed_at,
-            m.search_linked
+            m.search_linked,
+            m.score,
+            m.popularity
         ])?;
     }
     Ok(())
@@ -1084,6 +1107,35 @@ mod tests {
         let a = SeriesMeta { series: "a".into(), anilist: Some(5), ..SeriesMeta::default() };
         assert_eq!(db.all_meta().unwrap(), vec![a]);
         assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// A version 6 cache gets the `score` and `popularity` columns, keeps its
+    /// rows, and stores both from then on.
+    #[test]
+    fn version_6_caches_are_upgraded_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE series_meta;
+                     CREATE TABLE series_meta(series TEXT PRIMARY KEY, anilist INTEGER, title TEXT, episodes INTEGER,
+                         status TEXT, format TEXT, year INTEGER, next_ep INTEGER, next_airing INTEGER, refreshed_at INTEGER,
+                         search_linked INTEGER NOT NULL DEFAULT 0);
+                     INSERT INTO series_meta(series, anilist, search_linked) VALUES ('a', 5, 1);",
+                )
+                .unwrap();
+            db.conn.pragma_update(None, "user_version", 6).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(!db.was_rebuilt());
+        let a = SeriesMeta { series: "a".into(), anilist: Some(5), search_linked: true, ..SeriesMeta::default() };
+        assert_eq!(db.all_meta().unwrap(), vec![a]);
+        assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
+        let b = SeriesMeta { series: "b".into(), score: Some(78), popularity: Some(123_456), ..SeriesMeta::default() };
+        db.put_match_results(std::slice::from_ref(&b), &[]).unwrap();
+        assert!(db.all_meta().unwrap().contains(&b));
     }
 
     /// Results are stored by name; one this version doesn't know (from a newer

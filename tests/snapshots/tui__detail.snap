@@ -1,12 +1,12 @@
 ---
 source: tests/tui.rs
-assertion_line: 84
+assertion_line: 112
 expression: s
 ---
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
 ╭ Series ────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │Meitantei Precure!  following  watched 1/48  on disk 3  ep 4 in 4d (TV)                                     │
-│meitantei precure                                                                                           │
+│meitantei precure  anilist.co/anime/195000                                                                  │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Episodes · x shows 3 extras ───────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                │
@@ -30,4 +30,4 @@ expression: s
 │                                                                                                            │
 │                                                                                                            │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  M metadata  esc back  ? help
+ space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  o AniList  M metadata  esc ba
