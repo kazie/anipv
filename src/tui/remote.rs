@@ -23,10 +23,10 @@ pub fn mpv_key(key: KeyEvent) -> Option<String> {
     let prefix = |on: bool, p: &'static str| if on { p } else { "" };
     let shift = !matches!(key.code, KeyCode::Char(_)) && mods.contains(KeyModifiers::SHIFT);
     Some(format!(
-        "{}{}{}{name}",
-        prefix(shift, "Shift+"),
-        prefix(mods.contains(KeyModifiers::CONTROL), "Ctrl+"),
-        prefix(mods.contains(KeyModifiers::ALT), "Alt+"),
+        "{shift}{ctrl}{alt}{name}",
+        shift = prefix(shift, "Shift+"),
+        ctrl = prefix(mods.contains(KeyModifiers::CONTROL), "Ctrl+"),
+        alt = prefix(mods.contains(KeyModifiers::ALT), "Alt+"),
     ))
 }
 

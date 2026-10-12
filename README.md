@@ -80,7 +80,7 @@ anipv
 
 Just want to look around? `just demo` opens a fake library. The demo
 library and the fake player behind the tests are left out of regular builds;
-they come with the `demo` Cargo feature (`cargo run --features demo -- demo /tmp/anipv-demo`).
+they come with the `demo` Cargo feature (`cargo run --features demo -- demo target/anipv-demo`).
 
 ## The TUI
 

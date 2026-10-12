@@ -123,7 +123,28 @@ const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// IPC connection, shared with its follower. Each command is written whole
 /// under one lock, so commands from the two threads never interleave.
 #[derive(Clone)]
-pub struct Remote(Arc<Mutex<UnixStream>>);
+pub struct Remote(Arc<Mutex<Writer>>);
+
+/// The writing end of the IPC connection.
+struct Writer {
+    stream: UnixStream,
+    /// The last command failed (the write timeout cut it off): mpv may have
+    /// part of a line.
+    torn: bool,
+}
+
+impl Writer {
+    /// Write `cmd` as one line. After a command that failed, the line it may
+    /// have begun is ended first (mpv rejects what it got of it, and skips an
+    /// empty line), so this one isn't appended to it and lost as well.
+    fn send(&mut self, cmd: &Value) -> std::io::Result<()> {
+        let line = format!("{end}{cmd}\n", end = if self.torn { "\n" } else { "" });
+        self.torn = true;
+        self.stream.write_all(line.as_bytes())?;
+        self.torn = false;
+        Ok(())
+    }
+}
 
 impl Remote {
     /// A remote writing to `stream` (a clone of the followed connection;
@@ -132,20 +153,30 @@ impl Remote {
     pub fn new(stream: UnixStream) -> Self {
         // A timeout is all that can fail here, and without one sending still works.
         let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
-        Self(Arc::new(Mutex::new(stream)))
+        Self(Arc::new(Mutex::new(Writer { stream, torn: false })))
     }
 
     /// Press (and release) the mpv key `name` (`SPACE`, `Ctrl+LEFT`, `q`, …),
     /// as if typed in the player: the user's `input.conf` bindings and
     /// scripts decide what it does.
+    ///
+    /// Fails after half a second when mpv takes no commands, and at once when
+    /// it has closed the connection (see [`closed`]).
     pub fn keypress(&self, name: &str) -> std::io::Result<()> {
         self.send(&serde_json::json!({ "command": ["keypress", name] }))
     }
 
     /// Send one IPC command, whole, under the lock.
     fn send(&self, cmd: &Value) -> std::io::Result<()> {
-        send(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner), cmd)
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).send(cmd)
     }
+}
+
+/// Whether `e`, from sending mpv a command, means mpv closed the connection:
+/// it is quitting, and the session's end is on its way.
+pub fn closed(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, NotConnected};
+    matches!(e.kind(), BrokenPipe | ConnectionReset | ConnectionAborted | NotConnected)
 }
 
 impl std::fmt::Debug for Remote {
@@ -290,12 +321,6 @@ fn close(cur: &mut Option<Current>, eof: bool, emit: &dyn Fn(PlayerEvent)) {
     }
 }
 
-/// Send one IPC message: a command to mpv, or the fake mpv's messages.
-pub(crate) fn send(stream: &mut impl Write, cmd: &Value) -> std::io::Result<()> {
-    stream.write_all(format!("{cmd}\n").as_bytes())?;
-    stream.flush()
-}
-
 /// Read mpv IPC messages from `reader` until it closes, emitting events;
 /// commands go out through `remote`.
 ///
@@ -401,6 +426,15 @@ fn track(socket: &Path, mut child: Child, emit: &dyn Fn(PlayerEvent)) {
     let _ = child.wait();
     let _ = std::fs::remove_file(socket);
     emit(PlayerEvent::Exited { played: played.get(), error });
+}
+
+/// A temporary directory for a test's IPC socket: in the temporary directory,
+/// or in `/tmp` when a socket path there would be too long (a deep `TMPDIR`).
+#[cfg(test)]
+pub(crate) fn socket_test_dir() -> tempfile::TempDir {
+    // Named like `tempdir`'s own.
+    let base = crate::app::socket_temp_dir(Path::new(".tmpXXXXXX/sock"));
+    tempfile::tempdir_in(base).expect("a temporary directory")
 }
 
 /// What an ended file means for the watch log.
@@ -681,7 +715,7 @@ mod tests {
     /// reason in `Exited`, reported once.
     #[test]
     fn early_exit_reason_is_in_exited() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_test_dir();
         let child = Command::new("false").spawn().unwrap();
         let evs = std::cell::RefCell::new(Vec::new());
         track(&dir.path().join("sock"), child, &|e| evs.borrow_mut().push(e));
@@ -744,7 +778,7 @@ mod tests {
         if !have("ffmpeg", "-version") || !have("mpv", "--version") {
             return; // CI installs both, so this runs there.
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = socket_test_dir();
         // The first outlasts the late connect below; the second plays twice
         // (no path or duration change for mpv to report).
         let makers: Vec<(PathBuf, std::process::Child)> = [("a", 1.2), ("b", 0.5)]
@@ -856,5 +890,42 @@ mod tests {
             })
             .collect();
         assert_eq!(progress, vec![("/a.mkv".into(), 1439.0), ("/b.mkv".into(), 0.5)]);
+    }
+
+    /// A command the write timeout cut off leaves part of a line with mpv:
+    /// the next command goes on a line of its own, not appended to that one.
+    #[test]
+    fn a_command_cut_off_by_the_timeout_spoils_only_itself() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let remote = Remote::new(ours.try_clone().unwrap());
+        // Sooner than mpv is given (the timeout is the socket's, not the handle's).
+        ours.set_write_timeout(Some(Duration::from_millis(50))).unwrap();
+        drop(ours);
+        // More than the socket holds while mpv isn't reading: only part of it goes.
+        let huge = "x".repeat(4 << 20);
+        let err = remote.keypress(&huge).expect_err("cut off");
+        assert!(!closed(&err), "{err:?}");
+        // mpv reads again.
+        let reader = std::thread::spawn(move || {
+            BufReader::new(theirs).split(b'\n').map(Result::unwrap).collect::<Vec<Vec<u8>>>()
+        });
+        remote.keypress("SPACE").unwrap();
+        drop(remote);
+        let lines = reader.join().unwrap();
+        let [cut, next] = &lines[..] else { panic!("{} lines", lines.len()) };
+        assert!(cut.len() < huge.len() && serde_json::from_slice::<Value>(cut).is_err());
+        assert_eq!(
+            serde_json::from_slice::<Value>(next).unwrap(),
+            serde_json::json!({ "command": ["keypress", "SPACE"] })
+        );
+    }
+
+    /// Writing to an mpv that quit fails at once, and says so.
+    #[test]
+    fn sending_to_an_mpv_that_quit_fails_as_closed() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let err = Remote::new(ours).keypress("q").expect_err("nobody is there");
+        assert!(closed(&err), "{err:?}");
     }
 }

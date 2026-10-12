@@ -414,12 +414,17 @@ fn fake_mpv_demo() -> tempfile::TempDir {
 /// demo (and the README recording) can show playback.
 #[test]
 fn demo_command_plays_with_the_fake_player() {
-    let home = tempfile::tempdir().unwrap();
+    // On the binary's file system, so it is linked, not copied.
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let dir = home.path().join("demo");
     anipv(home.path()).arg("demo").arg(&dir).assert().success();
     let cfg = anipv::config::Config::load(&dir.join("config/config.toml")).unwrap();
-    assert_eq!(Path::new(&cfg.mpv).file_name(), Path::new(env!("CARGO_BIN_EXE_anipv")).file_name());
     assert_eq!(cfg.mpv_args, ["fake-mpv", "--demo"]);
+    // Its own copy of this binary, which other builds don't replace.
+    assert_eq!(Path::new(&cfg.mpv), dir.canonicalize().unwrap().join("bin/anipv"));
+    let len = |p: &Path| std::fs::metadata(p).unwrap().len();
+    assert_eq!(len(cfg.mpv.as_ref()), len(env!("CARGO_BIN_EXE_anipv").as_ref()));
+    Command::new(&cfg.mpv).arg("fake-mpv").assert().failure().stderr(predicate::str::contains("--input-ipc-server"));
 }
 
 /// `anipv play …` with its own runtime dir and a timeout.

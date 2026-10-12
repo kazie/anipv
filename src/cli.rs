@@ -260,9 +260,9 @@ fn run(cli: Cli) -> Result<()> {
             std::fs::create_dir_all(&dir)?;
             let dir = dir.canonicalize()?;
             let mut ctx = crate::demo::setup(&dir, now())?;
-            // Playing works too: this very binary stands in for mpv, in real
-            // time and answering remote-mode keys.
-            ctx.cfg.mpv = std::env::current_exe()?.display().to_string();
+            // Playing works too: this binary (its own link or copy of it)
+            // stands in for mpv, in real time and answering remote-mode keys.
+            ctx.cfg.mpv = demo_player(&dir)?.display().to_string();
             ctx.cfg.mpv_args = vec!["fake-mpv".into(), "--demo".into()];
             ctx.cfg.save(&ctx.paths.config_file)?;
             writeln!(out, "{ok} demo library in {dir}", ok = green("✓"), dir = dir.display())?;
@@ -272,6 +272,23 @@ fn run(cli: Cli) -> Result<()> {
         #[cfg(feature = "demo")]
         Cmd::FakeMpv { demo, args } => crate::fake_mpv::run(demo, &args),
     }
+}
+
+/// This binary as the demo's player, `bin/anipv` in the demo folder: a link
+/// to it, else a copy. Not the binary itself, which the next build without
+/// the `demo` feature replaces with one that has no `fake-mpv`.
+#[cfg(feature = "demo")]
+fn demo_player(dir: &std::path::Path) -> Result<PathBuf> {
+    use anyhow::Context as _;
+    let exe = std::env::current_exe()?;
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin)?;
+    let player = bin.join("anipv");
+    if std::fs::hard_link(&exe, &player).is_err() {
+        std::fs::copy(&exe, &player)
+            .with_context(|| format!("copying {exe} to {bin}", exe = exe.display(), bin = bin.display()))?;
+    }
+    Ok(player)
 }
 
 fn init(a: InitArgs, out: &mut impl Write) -> Result<()> {

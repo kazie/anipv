@@ -19,7 +19,11 @@ fn app() -> (tempfile::TempDir, App) {
 }
 
 fn render(app: &mut App) -> String {
-    let mut t = Terminal::new(TestBackend::new(110, 28)).unwrap();
+    render_sized(app, 110, 28)
+}
+
+fn render_sized(app: &mut App, width: u16, height: u16) -> String {
+    let mut t = Terminal::new(TestBackend::new(width, height)).unwrap();
     t.draw(|f| ui::draw(f, app)).unwrap();
     let buf = t.backend().buffer().clone();
     let mut out = String::new();
@@ -413,6 +417,20 @@ fn help_scrolls_when_taller_than_the_terminal() {
     assert!(render(&mut app).contains(&format!("Keys {}-{} of", total - 24, total - 1)));
     app.press("x");
     assert!(app.popup.is_none());
+}
+
+/// On a terminal tall enough for all of it, any key closes the help, the
+/// scroll keys too.
+#[test]
+fn help_that_fits_closes_on_any_key() {
+    let (_d, mut app) = app();
+    for key in ["j", " ", "k", "x"] {
+        app.press("?");
+        let s = render_sized(&mut app, 110, 80);
+        assert!(s.contains("Keys · any key closes"), "{s}");
+        app.press(key);
+        assert!(app.popup.is_none(), "{key:?} closes it");
+    }
 }
 
 #[test]

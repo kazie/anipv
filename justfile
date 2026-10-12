@@ -85,8 +85,8 @@ update-fixtures:
     UPDATE_FIXTURES=1 cargo test --test parser_corpus --test docs
     cargo insta test --review
 
-# Try the TUI against a throwaway demo library.
+# Try the TUI against a throwaway demo library in target/ (its player is a link there, not a copy).
 demo:
-    rm -rf /tmp/anipv-demo
-    cargo run --features demo -- demo /tmp/anipv-demo
-    ANIPV_HOME=/tmp/anipv-demo cargo run --features demo
+    rm -rf target/anipv-demo
+    cargo run --features demo -- demo target/anipv-demo
+    ANIPV_HOME=target/anipv-demo cargo run --features demo

@@ -135,6 +135,8 @@ pub enum Popup {
     Help {
         /// First line shown.
         scroll: u16,
+        /// It all fit on the screen when last drawn: then any key closes it.
+        fits: bool,
     },
     /// Choose a status for a series.
     Status {
@@ -1159,18 +1161,18 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
+            match ctrl_letter(key) {
                 // Like `q`, but a second Ctrl-C at the prompt quits anyway. Any
                 // other popup is closed first, like Esc (a draft is not lost
                 // to a quit prompt).
-                KeyCode::Char('c') => {
+                Some('c') => {
                     if matches!(self.popup, None | Some(Popup::ConfirmQuit)) {
                         self.request_quit();
                     } else {
                         self.on_popup_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                     }
                 }
-                KeyCode::Char('r') => self.start_meta(MetaRequest::All),
+                Some('r') => self.start_meta(MetaRequest::All),
                 _ => {}
             }
             return;
@@ -1202,13 +1204,16 @@ impl App {
     /// else is pressed in mpv.
     fn on_remote_key(&mut self, key: KeyEvent) {
         let Some(p) = &mut self.playing else { return };
-        // `C` too: Caps Lock, or Ctrl-Shift-C.
-        if matches!(key.code, KeyCode::Char('c' | 'C')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if ctrl_letter(key) == Some('c') {
             p.remote_on = false;
             return;
         }
         let (Some(remote), Some(name)) = (&p.remote, super::remote::mpv_key(key)) else { return };
-        if let Err(e) = remote.keypress(&name) {
+        // Closed: mpv is quitting (a `q` a moment ago), so the key has nowhere
+        // to go, and the keys stay out of anipv until the session's end comes in.
+        if let Err(e) = remote.keypress(&name)
+            && !crate::mpv::closed(&e)
+        {
             p.remote_on = false;
             self.fail(format!("could not send {name} to mpv: {e}"));
         }
@@ -1224,7 +1229,7 @@ impl App {
             },
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('?') => {
-                self.popup = Some(Popup::Help { scroll: 0 });
+                self.popup = Some(Popup::Help { scroll: 0, fits: false });
             }
             KeyCode::Char(c @ '1'..='5') => {
                 self.view = View::TABS[(c as u8 - b'1') as usize];
@@ -1507,8 +1512,12 @@ impl App {
     fn on_popup_key(&mut self, key: KeyEvent) {
         let Some(popup) = self.popup.take() else { return };
         match popup {
-            // j/k scroll (the help can be taller than the terminal); any other key closes.
-            Popup::Help { scroll } => {
+            // Taller than the terminal, the help scrolls (j/k, the arrows,
+            // Space, PgUp/PgDn) and other keys close it; when it fits, any key does.
+            Popup::Help { scroll, fits } => {
+                if fits {
+                    return;
+                }
                 let scroll = match key.code {
                     KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1),
                     KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
@@ -1516,7 +1525,7 @@ impl App {
                     KeyCode::PageUp => scroll.saturating_sub(PAGE.into()),
                     _ => return,
                 };
-                self.popup = Some(Popup::Help { scroll });
+                self.popup = Some(Popup::Help { scroll, fits });
             }
             Popup::ConfirmQuit => {
                 if matches!(key.code, KeyCode::Char('y' | 'q') | KeyCode::Enter) {
@@ -1753,6 +1762,13 @@ impl App {
 /// How long a status line message is shown.
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(6);
 
+/// The letter typed with Ctrl, in lower case: Caps Lock or Shift make no
+/// other key of it (`C` is `c`).
+fn ctrl_letter(key: KeyEvent) -> Option<char> {
+    let KeyCode::Char(c) = key.code else { return None };
+    key.modifiers.contains(KeyModifiers::CONTROL).then_some(c.to_ascii_lowercase())
+}
+
 /// Rows PgUp/PgDn move in lists and the help.
 const PAGE: u8 = 15;
 
@@ -1956,20 +1972,25 @@ mod tests {
         (dir, App::new(ctx).unwrap())
     }
 
-    fn ctrl_c(app: &mut App) {
-        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    /// Ctrl-C, typed as `c` or (Caps Lock on) as `C`.
+    fn ctrl_c(app: &mut App, letter: char) {
+        app.on_key(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL));
     }
 
-    /// `q` and Ctrl-C ask first, playing or not; at the prompt `q`, `y`,
-    /// Enter or a second Ctrl-C quits, any other key cancels.
+    /// `q` and Ctrl-C (Caps Lock on too) ask first, playing or not; at the
+    /// prompt `q`, `y`, Enter or a second Ctrl-C quits, any other key cancels.
     #[test]
     fn quitting_asks_first() {
         let (_dir, mut app) = demo_app();
         for playing in [true, false] {
             app.playing = playing.then(|| NowPlaying::starting(1));
-            for quit in ["q", "y", "\n", "ctrl-c"] {
-                for first in ["q", "ctrl-c"] {
-                    let press = |app: &mut App, k: &str| if k == "ctrl-c" { ctrl_c(app) } else { app.press(k) };
+            for quit in ["q", "y", "\n", "ctrl-c", "ctrl-C"] {
+                for first in ["q", "ctrl-c", "ctrl-C"] {
+                    let press = |app: &mut App, k: &str| match k {
+                        "ctrl-c" => ctrl_c(app, 'c'),
+                        "ctrl-C" => ctrl_c(app, 'C'),
+                        _ => app.press(k),
+                    };
                     for cancel in ["n", "\x1b", "x"] {
                         press(&mut app, first);
                         assert!(!app.quit, "{first} alone doesn't quit");
@@ -1991,12 +2012,12 @@ mod tests {
     #[test]
     fn ctrl_c_closes_popups_with_something_to_lose() {
         let (_dir, mut app) = demo_app();
-        for keys in ["?", "3s", "3m", "3R", "3/"] {
+        for (keys, letter) in ["?", "3s", "3m", "3R", "3/"].into_iter().flat_map(|k| [(k, 'c'), (k, 'C')]) {
             app.press(keys);
             assert!(app.popup.is_some(), "{keys:?} opens a popup");
-            ctrl_c(&mut app);
-            assert!(app.popup.is_none() && !app.quit, "{keys:?}: Ctrl-C closes it");
-            ctrl_c(&mut app);
+            ctrl_c(&mut app, letter);
+            assert!(app.popup.is_none() && !app.quit, "{keys:?}: Ctrl-{letter} closes it");
+            ctrl_c(&mut app, letter);
             assert_eq!(app.popup, Some(Popup::ConfirmQuit), "then it asks");
             app.press("n");
         }
@@ -2119,7 +2140,7 @@ mod tests {
         let (_dir, mut app) = demo_app();
         app.press("3/fri");
         assert_eq!(app.query, "fri");
-        ctrl_c(&mut app);
+        ctrl_c(&mut app, 'c');
         assert!(app.popup.is_none() && app.query.is_empty());
         assert_eq!(app.series_ix.len(), app.lib.series.iter().filter(|s| app.filter.accepts(s)).count());
     }
@@ -2230,6 +2251,22 @@ mod tests {
             "{:?}",
             app.current_message()
         );
+    }
+
+    /// mpv quitting (on a `q` sent to it) closes the connection a moment
+    /// before the session ends: keys pressed meanwhile go nowhere, quietly
+    /// (no error over what playback just recorded), and none reach anipv.
+    #[test]
+    fn keys_after_mpv_quit_are_dropped_quietly() {
+        let (_dir, mut app) = demo_app();
+        drop(connect_mpv(&mut app));
+        app.say("◐ Sousou no Frieren 29 stopped at 12:00");
+        app.press("qq ");
+        assert_eq!(app.current_message(), Some("◐ Sousou no Frieren 29 stopped at 12:00"));
+        assert!(app.remote_active());
+        assert_eq!(app.popup, None, "no quit prompt");
+        app.on_player(PlayerEvent::Exited { played: true, error: None });
+        assert!(!app.remote_active());
     }
 
     /// With `remote_auto = false` playback starts with the keys in anipv.

@@ -6,7 +6,7 @@
 //! * dotted:         `Chainsmoker.Cat.S01E07.1080p.WEB.x264-GRP.mkv`
 //! * underscores:    `[GroupB]Powerpuff_Girls_Z_-_09_[0000ABCD].avi`
 //! * bare numbers:   `Azumanga Daiou 24.mkv`, `41 - Princess In Peril!.mkv`
-//! * extras/specials: `- 20 Next Ep PV`, `NCOP 1`, `OVA - 02`, `SP1`, `Audio Drama 3`
+//! * extras/specials: `- 20 Next Ep PV`, `NCOP 1`, `OVA - 02`, `- 02 (OVA)`, `SP1`, `Audio Drama 3`
 //!
 //! The parser is purely lexical; folder context (archive series folders,
 //! `Extras/` directories) is applied by the indexer on top of this.
@@ -76,6 +76,13 @@ macro_rules! re {
     };
 }
 
+/// The words that make a special, bare (`SPECIAL_KW`) or as a tag (`KIND_TAG`).
+macro_rules! special_words {
+    () => {
+        "OVA|OAD|SP|Specials?|Recap|Omake"
+    };
+}
+
 re!(LEADING_GROUP, r"^\s*[\[(]([^\[\]()]+)[\])]\s*");
 re!(HASH, r"[\[(]([0-9A-Fa-f]{8})[\])]");
 re!(BRACKETS, r"\[[^\[\]]*\]|\(([^()]*)\)|\{[^{}]*\}|【[^】]*】");
@@ -84,6 +91,10 @@ re!(BATCH_RANGE_DASH, r"(?i)\s[-–]\s\d{1,4}\s?[-~]\s?\d{1,4}\b");
 re!(BATCH_WORDS, r"(?i)\b(?:\d{1,4}\s?[-~]\s?\d{1,4}\s+)?(?:batch|complete(?:\s+series)?)\b");
 re!(SPACES, r"\s{2,}");
 re!(VERSION_TOKEN, r"(?:^|\s)v(\d{1,2})(?:$|\s)");
+// What a whole bracketed tag can say about a file: its release version
+// (`[v2]`), or that it is a special (`(OVA)`, `[SP 2]`).
+re!(VERSION_TAG, r"(?i)^v(\d{1,2})$");
+re!(KIND_TAG, concat!(r"(?i)^(?:", special_words!(), r")(?:\s?\d{1,3})?$"));
 
 // Episode patterns, strongest first.
 re!(SXXEYY, r"(?i)(?:^|[\s_.\-])S(\d{1,2})\s?E(\d{1,4}(?:\.\d)?)(?:v(\d{1,2}))?(?:-?E?(\d{1,4}))?(?:$|[\s_.\-])");
@@ -100,7 +111,7 @@ re!(NUMERIC_TAG, r"\[(\d{1,4})(?:v(\d{1,2}))?\]");
 re!(ANY_NUM, r"(?:^|[\s_])(\d{1,4}(?:\.\d)?)(?:v(\d{1,2}))?(?:$|[\s_])");
 
 // Specials: the following number (if any) is the special's episode number.
-re!(SPECIAL_KW, r"(?i)(?:^|[\s_\-])(OVA|OAD|SP|Specials?|Recap|Omake)\s?(\d{1,3})?(?:$|[\s_\-])");
+re!(SPECIAL_KW, concat!(r"(?i)(?:^|[\s_\-])(", special_words!(), r")\s?(\d{1,3})?(?:$|[\s_\-])"));
 // Extras: matched case-insensitively.
 re!(
     EXTRA_KW,
@@ -133,28 +144,69 @@ fn normalize_separators(stem: &str) -> String {
     s
 }
 
-/// Drop bracketed tags, keeping `(2023)`-style years which are part of titles.
-fn strip_brackets(s: &str) -> String {
+/// The characters that open and close bracketed tags.
+const BRACKET_CHARS: [char; 8] = ['[', ']', '(', ')', '{', '}', '【', '】'];
+
+/// What a name names: a folder's name also loses batch ranges (`- 01-12`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NameOf {
+    File,
+    Dir,
+}
+
+/// What becomes of a tag that is only a special's kind (`(OVA)`, `[SP 2]`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KindTags {
+    /// Dropped, like any other tag.
+    Drop,
+    /// Kept as plain text (`(OVA)` → `OVA`).
+    Keep,
+}
+
+/// A name without its bracketed tags (see [`strip_brackets`]).
+struct Stripped {
+    text: String,
+    /// The first tag that is only a release version (`[v2]` → 2).
+    version: Option<u8>,
+    /// A tag that is only a special's kind (`(OVA)`, `[SP 2]`) was seen.
+    kind_tag: bool,
+}
+
+/// Drop bracketed tags, keeping `(2023)`-style years which are part of titles
+/// (and a special's kind tag, if `kinds` says so).
+fn strip_brackets(s: &str, kinds: KindTags) -> Stripped {
+    let (mut version, mut kind_tag) = (None, false);
     // Innermost tags first, until none are left (`[1080p[BD]`).
     let mut cur = Cow::Borrowed(s);
     loop {
-        let next = BRACKETS.replace_all(&cur, |c: &Captures<'_>| match c.get(1) {
-            Some(inner) if YEAR.is_match(inner.as_str().trim()) => {
-                format!("\u{1}{year}\u{2}", year = inner.as_str().trim())
+        let next = BRACKETS.replace_all(&cur, |c: &Captures<'_>| {
+            if let Some(year) = c.get(1).map(|m| m.as_str().trim()).filter(|y| YEAR.is_match(y)) {
+                return format!("\u{1}{year}\u{2}");
             }
-            _ => " ".to_string(),
+            let inner = c[0].trim_matches(BRACKET_CHARS).trim();
+            if let Some(v) = VERSION_TAG.captures(inner) {
+                version = version.or_else(|| cap(v.get(1)));
+            } else if KIND_TAG.is_match(inner) {
+                kind_tag = true;
+                if kinds == KindTags::Keep {
+                    return format!(" {inner} ");
+                }
+            }
+            " ".to_string()
         });
         let Cow::Owned(next) = next else { break };
         cur = Cow::Owned(next);
     }
-    cur.chars()
+    let text = cur
+        .chars()
         .map(|c| match c {
             '[' | ']' | '{' | '}' => ' ',
             '\u{1}' => '(',
             '\u{2}' => ')',
             c => c,
         })
-        .collect()
+        .collect();
+    Stripped { text, version, kind_tag }
 }
 
 /// Cut a title at the first technical token (resolution, codec, source).
@@ -204,7 +256,7 @@ pub fn extra_label(stem: &str) -> String {
     let normalized = normalize_separators(stem);
     let mut tagged = false;
     let text = BRACKETS.replace_all(strip_group(&normalized), |c: &Captures<'_>| {
-        let inner = c[0].trim_matches(['[', ']', '(', ')', '{', '}', '【', '】']);
+        let inner = c[0].trim_matches(BRACKET_CHARS);
         let words: Vec<&str> = inner.split([' ', '_']).filter(|w| !w.is_empty()).collect();
         let tags = words.iter().filter(|w| is_tag_word(w)).count();
         // Mostly release tags (`[BD 1080p]`), not a name with one in it (`(BD Illustration 01)`).
@@ -237,14 +289,27 @@ fn strip_group(s: &str) -> &str {
     }
 }
 
-/// Drop bracketed tags and batch markers (`1-12 Batch`, and for directory
-/// names also `- 01-12`).
-fn strip_noise(s: &str, dir: bool) -> String {
-    let mut s = strip_brackets(s);
-    if dir {
-        s = BATCH_RANGE_DASH.replace_all(&s, " ").into_owned();
+/// Drop bracketed tags (see [`strip_brackets`]) and batch markers (`1-12
+/// Batch`, and in a folder's name also `- 01-12`).
+fn strip_noise(s: &str, of: NameOf, kinds: KindTags) -> Stripped {
+    let mut out = strip_brackets(s, kinds);
+    if of == NameOf::Dir {
+        out.text = BATCH_RANGE_DASH.replace_all(&out.text, " ").into_owned();
     }
-    BATCH_WORDS.replace_all(&s, " ").into_owned()
+    out.text = BATCH_WORDS.replace_all(&out.text, " ").into_owned();
+    out
+}
+
+/// `s` without its first version token (`… v2 …`) and with tidied spaces,
+/// and that version.
+fn without_version(mut s: String) -> (String, Option<u8>) {
+    let mut version = None;
+    if let Some(c) = VERSION_TOKEN.captures(&s) {
+        version = cap(c.get(1));
+        let token = c.get_match().range();
+        s.replace_range(token, " ");
+    }
+    (SPACES.replace_all(s.trim(), " ").into_owned(), version)
 }
 
 /// `Show Movie 2 - Subtitle` → the second movie of Show. Returns true if matched.
@@ -398,7 +463,7 @@ fn weak_episode(s: &str) -> Option<Hit> {
 /// ```
 pub fn clean_dir_name(name: &str) -> String {
     let normalized = normalize_separators(name);
-    let s = strip_noise(strip_group(&normalized), true);
+    let s = strip_noise(strip_group(&normalized), NameOf::Dir, KindTags::Drop).text;
     let s = SPACES.replace_all(s.trim(), " ");
     let t = clean_title(&s);
     if t.is_empty() { tidy(name) } else { t }
@@ -474,17 +539,35 @@ fn with_episode(s: &str, hit: &Hit, mut out: Parsed) -> Parsed {
 pub fn parse(name: &str) -> Parsed {
     let stem = stem(name);
     let normalized = normalize_separators(stem);
-    let mut s = strip_noise(strip_group(&normalized), !is_video(name));
-    let mut version = None;
-    if let Some(c) = VERSION_TOKEN.captures(&s) {
-        version = cap(c.get(1));
-        let token = c.get_match().range();
-        s.replace_range(token, " ");
+    let text = strip_group(&normalized);
+    let of = if is_video(name) { NameOf::File } else { NameOf::Dir };
+    let stripped = strip_noise(text, of, KindTags::Drop);
+    let (s, version) = without_version(stripped.text);
+    // A version in the name (`05v2`, `v2`) wins over one in brackets (`[v2]`).
+    let parsed = parse_stripped(stem, s, version.or(stripped.version));
+    if stripped.kind_tag && parsed.kind == ItemKind::Episode {
+        let (kept, _) = without_version(strip_noise(text, of, KindTags::Keep).text);
+        return tagged_special(&kept, &parsed).unwrap_or(parsed);
     }
-    s = SPACES.replace_all(s.trim(), " ").into_owned();
+    parsed
+}
 
+/// The episode `parsed` as a special, when a kind tag by its number says it is
+/// one: read as the bare word would be (`- 01 (OVA)` as `- 01 OVA`, `(OVA) - 01`
+/// as `OVA - 01`) in `kept`, the name with its kind tags as plain text. A tag
+/// only ever changes the kind: never the title, season or number (one after an
+/// episode title, `01 Title [Special]`, changes nothing).
+fn tagged_special(kept: &str, parsed: &Parsed) -> Option<Parsed> {
+    let hit = strong_episode(kept)?;
+    let special = with_episode(kept, &hit, Parsed { version: parsed.version, ..Parsed::default() });
+    let place = |p: &Parsed| (p.season, p.ep, p.ep_end);
+    let same = special.title == parsed.title && place(&special) == place(parsed);
+    (special.kind == ItemKind::Special && same).then_some(special)
+}
+
+/// [`parse`] for a name `s` without its bracketed tags and version token.
+fn parse_stripped(stem: &str, s: String, version: Option<u8>) -> Parsed {
     let mut out = Parsed { version, ..Parsed::default() };
-
     if let Some(hit) = strong_episode(&s) {
         return with_episode(&s, &hit, out);
     }
@@ -639,6 +722,15 @@ mod tests {
             Some("1"),
             Episode,
         );
+        // A version in brackets counts too (one in the name wins), and it is
+        // all the tag changes.
+        let version = |name: &str| parse(name).version;
+        assert_eq!(version("[GroupA] Show - 05 [v2].mkv"), Some(2));
+        assert_eq!(version("[GroupA] Show - 05 [v1][Web][ABCD0005].mkv"), Some(1));
+        assert_eq!(version("Show - Episode 5 [GroupB] [ABCD0005] (V2).mkv"), Some(2));
+        assert_eq!(version("[GroupC] Show (2026) (v0) - (WEB 1080p).mkv"), Some(0));
+        assert_eq!(version("[GroupA] Show - 05v3 [v2].mkv"), Some(3));
+        assert_eq!(parse("[GroupA] Show - 05 [v2].mkv").item_key(), parse("[GroupA] Show - 05.mkv").item_key());
     }
 
     #[test]
@@ -911,6 +1003,30 @@ mod tests {
         check("[GroupA] Kino Journey - 05 Special Training [1080p].mkv", "Kino Journey", Some("5"), Episode);
         check("Kino Journey 05 Special Training.mkv", "Kino Journey", Some("5"), Episode);
         check("Kino Journey - 05 Recap of the Year.mkv", "Kino Journey", Some("5"), Episode);
+    }
+
+    /// A special's kind in brackets by the number makes that episode a
+    /// special, as the bare word does: `Show - 01 (OVA)` is not episode 1. The
+    /// tag never changes the title or the number, and one after an episode
+    /// title changes nothing.
+    #[test]
+    fn bracketed_kind_tags_make_specials() {
+        for (name, e, label) in [
+            ("[GroupA] Show - 01 (OVA) [1080p].mkv", "1", "ova"),
+            ("[GroupA] Show (OVA) - 01 [1080p].mkv", "1", "ova"),
+            ("Show - 02 [SP].mkv", "2", "sp"),
+            ("Show - 03 [Special] (1080p).mkv", "3", "special"),
+            ("Show_-_04_(OVA)_[ABCD0004].mkv", "4", "ova"),
+        ] {
+            let p = check(name, "Show", Some(e), Special);
+            assert_eq!(p.label, label, "{name}");
+        }
+        assert_ne!(parse("Show - 01 (OVA).mkv").item_key(), parse("Show - 01.mkv").item_key());
+        check("[GroupA] Show 01 Tooth Worms [Special] [BD 1080p].mkv", "Show", Some("1"), Episode);
+        check("[GroupA] Show (OVA 2) - 01.mkv", "Show", Some("1"), Episode);
+        // Everything bracketed: read from the tags, as before.
+        check("[Show][OVA][01][BD].mkv", "", Some("1"), Episode);
+        assert_eq!(clean_dir_name("Show (OVA)"), "Show", "folder names keep no tags");
     }
 
     #[test]

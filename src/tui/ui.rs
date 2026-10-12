@@ -66,7 +66,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_footer(f, app, footer);
 
     match &mut app.popup {
-        Some(Popup::Help { scroll }) => draw_help(f, scroll),
+        Some(Popup::Help { scroll, fits }) => draw_help(f, scroll, fits),
         Some(Popup::Status { series, idx }) => draw_status_popup(f, &app.lib, series, *idx),
         Some(Popup::Merge(picker)) => draw_merge(f, &app.lib, picker),
         Some(Popup::Search) => draw_search(f, &app.query),
@@ -256,7 +256,7 @@ fn draw_upnext(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(""),
                 Line::from("Nothing followed yet.").bold(),
                 Line::from(""),
-                Line::from("Go to 2 Series, pick a show and press s → f to follow it,"),
+                Line::from("Go to 3 Series, pick a show and press s → f to follow it,"),
                 Line::from("or import your history: anipv import-fish --apply-status"),
             ],
         );
@@ -700,8 +700,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
 ];
 
 /// The key help; taller than the terminal, it scrolls (`scroll` is clamped
-/// to the last full page).
-fn draw_help(f: &mut Frame, scroll: &mut u16) {
+/// to the last full page). Sets `fits` when it all fits.
+fn draw_help(f: &mut Frame, scroll: &mut u16, fits: &mut bool) {
     let mut lines = Vec::new();
     for (section, keys) in HELP {
         lines.push(Line::from(Span::styled(*section, Style::new().fg(ACCENT).bold())));
@@ -715,10 +715,12 @@ fn draw_help(f: &mut Frame, scroll: &mut u16) {
     let area = centered(f.area(), 64, total.saturating_add(2));
     let shown = area.height.saturating_sub(2);
     *scroll = (*scroll).min(total.saturating_sub(shown));
-    let title = if shown < total {
-        format!(" Keys {}-{} of {total} · j/k scroll · other keys close ", *scroll + 1, *scroll + shown)
-    } else {
+    *fits = shown >= total;
+    let title = if *fits {
         " Keys · any key closes ".to_string()
+    } else {
+        let (first, last) = (*scroll + 1, *scroll + shown);
+        format!(" Keys {first}-{last} of {total} · j/k scroll · other keys close ")
     };
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).scroll((*scroll, 0)).block(block(title)), area);

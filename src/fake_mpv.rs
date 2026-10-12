@@ -2,7 +2,8 @@
 //! integration tests and the README recording (the hidden `anipv fake-mpv`).
 //!
 //! Like mpv it takes `--input-ipc-server=PATH` and file arguments (other
-//! options, `-…`, are ignored, except `--start=S` for the next file).
+//! options, `-…`, are ignored, except `--start=S` for the next file and
+//! `--pause`, to start paused).
 //!
 //! * **Instant** (default): plays the first file to the end (eof) and the
 //!   second only halfway, then quits, all without waiting.
@@ -15,7 +16,7 @@
 //! property right away and then only when its value changes.
 
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
@@ -35,41 +36,52 @@ struct File {
     start: f64,
 }
 
-/// Split mpv-style arguments into the socket path and the files.
-fn parse_args(args: &[OsString]) -> Result<(PathBuf, Vec<File>)> {
+/// What the command line asks for.
+struct Args {
+    socket: PathBuf,
+    files: Vec<File>,
+    /// Start paused.
+    pause: bool,
+}
+
+/// Read mpv-style arguments.
+fn parse_args(args: &[OsString]) -> Result<Args> {
     let mut socket = None;
     let mut files = Vec::new();
-    let mut start = 0.0;
+    let (mut start, mut pause) = (0.0, false);
     for a in args {
         let s = a.to_string_lossy();
         if let Some(p) = s.strip_prefix("--input-ipc-server=") {
             socket = Some(PathBuf::from(p));
         } else if let Some(pos) = s.strip_prefix("--start=") {
             start = pos.parse().with_context(|| format!("bad {s}"))?;
+        } else if s == "--pause" {
+            pause = true;
         } else if !s.starts_with('-') {
             files.push(File { path: a.into(), start: std::mem::take(&mut start) });
         }
     }
     let Some(socket) = socket else { bail!("no --input-ipc-server=PATH") };
-    Ok((socket, files))
+    Ok(Args { socket, files, pause })
 }
 
 /// Run the fake player on mpv-style `args` until it is done or quit.
 pub fn run(demo: bool, args: &[OsString]) -> Result<()> {
-    let (socket, files) = parse_args(args)?;
-    let listener = UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
+    let args = parse_args(args)?;
+    let socket = &args.socket;
+    let listener = UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
     let (conn, _) = listener.accept()?;
-    let res = play(&conn, &files, demo);
+    let res = play(&conn, &args, demo);
     // Close the connection for every handle on it (the request reader holds
     // one), as mpv exiting would: anipv sees the end of the stream.
     let _ = conn.shutdown(std::net::Shutdown::Both);
-    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(socket);
     res
 }
 
 /// Send one message to anipv.
 fn send(mut conn: &UnixStream, msg: &Value) -> std::io::Result<()> {
-    crate::mpv::send(&mut conn, msg)
+    conn.write_all(format!("{msg}\n").as_bytes())
 }
 
 /// The next JSON line from `lines` (a request to the fake, or a message to anipv).
@@ -194,8 +206,8 @@ impl<'a> Player<'a> {
     }
 }
 
-/// Play `files` (see the module docs).
-fn play(conn: &UnixStream, files: &[File], demo: bool) -> Result<()> {
+/// Play the files of `args` (see the module docs).
+fn play(conn: &UnixStream, args: &Args, demo: bool) -> Result<()> {
     let (tx, rx) = channel();
     let mut lines = BufReader::new(conn.try_clone()?);
     std::thread::spawn(move || {
@@ -205,12 +217,12 @@ fn play(conn: &UnixStream, files: &[File], demo: bool) -> Result<()> {
             }
         }
     });
-    let mut p = Player::new(conn);
+    let mut p = Player { paused: args.pause, ..Player::new(conn) };
     // Like mpv opening its first file only after anipv observes, so nothing
     // is missed (anipv copes with that too, but the tests want a fixed order).
     let watching = |p: &Player| ["path", "time-pos", "duration"].iter().all(|n| p.observed.iter().any(|(_, o)| o == n));
     p.serve(&rx, None, watching)?;
-    for (i, f) in files.iter().enumerate() {
+    for (i, f) in args.files.iter().enumerate() {
         if p.quit {
             break;
         }
@@ -252,13 +264,14 @@ mod tests {
         let play = |p: &str, start| crate::mpv::PlayFile { path: p.into(), start };
         let args =
             crate::mpv::build_args(&cfg, Some("/s".as_ref()), &[play("/a.mkv", Some(612.0)), play("/b.mkv", None)]);
-        let (socket, files) = parse_args(&args).unwrap();
-        assert_eq!(socket, PathBuf::from("/s"));
+        let Args { socket, files, pause } = parse_args(&args).unwrap();
+        assert_eq!((socket, pause), (PathBuf::from("/s"), false));
         let files: Vec<(PathBuf, f64)> = files.into_iter().map(|f| (f.path, f.start)).collect();
         assert_eq!(files, vec![("/a.mkv".into(), 612.0), ("/b.mkv".into(), 0.0)]);
         assert!(parse_args(&["/a.mkv".into()]).is_err(), "no socket");
-        let (_, files) = parse_args(&["-v", "--input-ipc-server=/s", "/a.mkv"].map(OsString::from)).unwrap();
-        assert_eq!(files.len(), 1, "a single-dash option is no file");
+        let args = parse_args(&["-v", "--pause", "--input-ipc-server=/s", "/a.mkv"].map(OsString::from)).unwrap();
+        assert_eq!(args.files.len(), 1, "an option is no file");
+        assert!(args.pause);
     }
 
     /// Demo-mode replies look like mpv's: properties by name, the observed
@@ -295,13 +308,38 @@ mod tests {
         );
     }
 
-    /// Demo mode, followed like the real mpv: it plays the file, pauses and
-    /// seeks on key presses and quits on `q`, ending the file there.
+    /// The keys remote mode sends, taken as mpv's default bindings take them.
+    #[test]
+    fn demo_keys_pause_seek_and_quit() {
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let mut p = Player { path: Some("/a.mkv".into()), ..Player::new(&ours) };
+        for (key, paused, pos) in [
+            ("SPACE", true, 0.0),
+            ("UP", true, 60.0),
+            ("RIGHT", true, 65.0),
+            ("LEFT", true, 60.0),
+            ("DOWN", true, 0.0),
+            ("LEFT", true, 0.0),
+            ("p", false, 0.0),
+            ("x", false, 0.0),
+        ] {
+            p.keypress(key).unwrap();
+            assert_eq!((p.paused, p.pos), (paused, pos), "after {key}");
+        }
+        assert!(!p.quit);
+        p.keypress("q").unwrap();
+        assert!(p.quit);
+    }
+
+    /// Demo mode, followed like the real mpv: started paused (`--pause`) its
+    /// clock stands still, `UP` seeks a minute on and `q` quits, ending the
+    /// file right there.
     #[test]
     fn demo_mode_answers_remote_keys() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::mpv::socket_test_dir();
         let socket = dir.path().join("sock");
-        let args = vec![OsString::from(format!("--input-ipc-server={}", socket.display())), "/a.mkv".into()];
+        let ipc = format!("--input-ipc-server={socket}", socket = socket.display());
+        let args = vec![OsString::from(ipc), "--pause".into(), "/a.mkv".into()];
         let player = std::thread::spawn(move || run(true, &args));
         let conn = loop {
             if let Ok(c) = UnixStream::connect(&socket) {
@@ -314,20 +352,20 @@ mod tests {
         let keys = remote.clone();
         let follower = std::thread::spawn(move || crate::mpv::follow(conn, &keys, &|e| tx.send(e).unwrap()));
 
-        let next = |want: &dyn Fn(&PlayerEvent) -> bool| {
-            rx.iter().find(|e| want(e)).unwrap_or_else(|| panic!("the player ended first"))
-        };
-        assert_eq!(next(&|e| matches!(e, PlayerEvent::Started { .. })), PlayerEvent::Started { path: "/a.mkv".into() });
-        remote.keypress("SPACE").unwrap();
-        assert_eq!(next(&|e| matches!(e, PlayerEvent::Paused(true))), PlayerEvent::Paused(true));
+        let mut seen = Vec::new();
+        while !matches!(seen.last(), Some(PlayerEvent::Started { .. })) {
+            seen.push(rx.recv().expect("the player ended first"));
+        }
+        // A tick that must not move the clock.
+        std::thread::sleep(TICK + TICK / 2);
         remote.keypress("UP").unwrap();
         remote.keypress("q").unwrap();
-        let PlayerEvent::Ended { path, pos, dur, eof } = next(&|e| matches!(e, PlayerEvent::Ended { .. })) else {
-            unreachable!()
-        };
-        assert_eq!((path, dur, eof), ("/a.mkv".into(), Some(DURATION), false));
-        assert!((60.0..65.0).contains(&pos), "paused, then 60 s on: {pos}");
         player.join().unwrap().unwrap();
         follower.join().unwrap().unwrap();
+        seen.extend(rx.iter().filter(|e| !matches!(e, PlayerEvent::Progress { .. })));
+        assert!(seen.contains(&PlayerEvent::Paused(true)) && !seen.contains(&PlayerEvent::Paused(false)), "{seen:?}");
+        assert!(seen.contains(&PlayerEvent::Started { path: "/a.mkv".into() }), "{seen:?}");
+        let ended = PlayerEvent::Ended { path: "/a.mkv".into(), pos: 60.0, dur: Some(DURATION), eof: false };
+        assert_eq!(seen.last(), Some(&ended), "{seen:?}");
     }
 }

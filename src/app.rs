@@ -485,7 +485,8 @@ impl Ctx {
 
     /// Fresh IPC socket path for a new mpv instance (its directory is created
     /// by [`Paths::ensure`]). When that path is too long for a Unix socket, it
-    /// is in a private `anipv-<uid>` directory in the temporary directory instead.
+    /// is in a private `anipv-<uid>` directory in the temporary directory (or
+    /// `/tmp`) instead.
     pub fn socket_path(&self) -> PathBuf {
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
         let name = format!("anipv-{}-{n}.sock", std::process::id());
@@ -493,7 +494,7 @@ impl Ctx {
         if fits_socket_path(&path) {
             return path;
         }
-        short_socket_dir(&self.paths.runtime_dir).map_or(path, |dir| dir.join(name))
+        short_socket_dir(&self.paths.runtime_dir, &name).map_or(path, |dir| dir.join(name))
     }
 
     /// Record the result of a finished file, merging what is recorded into
@@ -622,13 +623,21 @@ fn fits_socket_path(path: &Path) -> bool {
     path.as_os_str().len() <= MAX_SOCKET_PATH
 }
 
-/// A short private directory for IPC sockets: `anipv-<uid>` in the temporary
-/// directory, created with mode 0700. `None` if it can't be created or isn't
-/// private (a symlink, another user's, not mode 0700).
-fn short_socket_dir(runtime_dir: &Path) -> Option<PathBuf> {
+/// The temporary directory, or `/tmp` when `rel` in it would be too long a
+/// socket path (a deep `TMPDIR`).
+pub(crate) fn socket_temp_dir(rel: &Path) -> PathBuf {
+    let tmp = std::env::temp_dir();
+    if fits_socket_path(&tmp.join(rel)) { tmp } else { PathBuf::from("/tmp") }
+}
+
+/// A short private directory for the IPC socket `name`: `anipv-<uid>` in
+/// [`socket_temp_dir`], created with mode 0700. `None` if it can't be
+/// created or isn't private (a symlink, another user's, not mode 0700).
+fn short_socket_dir(runtime_dir: &Path, name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let uid = std::fs::metadata(runtime_dir).ok()?.uid();
-    let dir = std::env::temp_dir().join(format!("anipv-{uid}"));
+    let sub = PathBuf::from(format!("anipv-{uid}"));
+    let dir = socket_temp_dir(&sub.join(name)).join(sub);
     // Already existing is fine if it passes the checks below.
     let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
     let m = std::fs::symlink_metadata(&dir).ok()?;
@@ -671,6 +680,8 @@ mod tests {
         assert!(fits_socket_path(&p(30)));
         assert!(fits_socket_path(&p(MAX_SOCKET_PATH)));
         assert!(!fits_socket_path(&p(MAX_SOCKET_PATH + 1)));
+        // Too deep for the temporary directory: `/tmp`.
+        assert_eq!(socket_temp_dir(Path::new(&"x".repeat(MAX_SOCKET_PATH))), Path::new("/tmp"));
     }
 
     /// A scan's new index has the metadata written since the old one was

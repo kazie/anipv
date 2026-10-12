@@ -15,7 +15,9 @@ project uses [Semantic Versioning](https://semver.org/).
   `ctrl-c` hands the keys back to anipv and `v` hands them to mpv again. The
   playing bar shows when mpv is paused.
 - The demo library (`just demo`) can play: its player is a fake mpv built
-  into the demo build, so remote mode can be tried without real videos. The
+  into the demo build (linked or copied into the demo folder as
+  `bin/anipv`, so a later build without the `demo` feature doesn't take it
+  away), and remote mode can be tried without real videos. The
   README recording now shows playing an episode, skipping, pausing and
   quitting the player from anipv.
 
@@ -38,6 +40,17 @@ project uses [Semantic Versioning](https://semver.org/).
   reports a value that changed, each file also starts out with the last
   path and duration mpv reported (two files of the same length in a row
   could lose the duration).
+- A special's kind in brackets by the episode number makes the file a
+  special, as the bare word does: `Show - 01 (OVA).mkv` and
+  `Show (OVA) - 01.mkv` are OVA 1, not a copy of episode 1 (playing one
+  marked episode 1 watched, and either file could be played for it). Only the
+  kind changes, never the title or number, and a tag after an episode's
+  title changes nothing (`Show 01 Title [Special]` is still episode 1).
+- A release version in brackets (`[v2]`, `(V2)`) counts, so of two copies of
+  an episode the newer version is played, as with `05v2`.
+- With nothing followed, Up next points to the Series tab as `3`, not `2`
+  (the Inbox).
+- Ctrl-C and Ctrl-R work with Caps Lock on.
 
 ### Changed
 
