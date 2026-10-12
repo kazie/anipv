@@ -924,6 +924,10 @@ mod tests {
     #[test]
     fn sending_to_an_mpv_that_quit_fails_as_closed() {
         let (ours, theirs) = UnixStream::pair().unwrap();
+        // Shut down, not just dropped: a process another test forks at this
+        // moment holds a copy of every fd until it execs, and while it does,
+        // dropping ours wouldn't close the socket and the write would succeed.
+        theirs.shutdown(std::net::Shutdown::Both).unwrap();
         drop(theirs);
         let err = Remote::new(ours).keypress("q").expect_err("nobody is there");
         assert!(closed(&err), "{err:?}");
