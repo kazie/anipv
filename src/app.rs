@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, Paths};
-use crate::events::{CachedLog, EventBody, EventLog, Recorded};
+use crate::events::{CachedLog, EventBody, EventLog, Recorded, SetBy};
 use crate::index::Db;
 use crate::index::FileRow;
 use crate::index::classify::{Classified, FileClass, classify_rows};
@@ -58,6 +58,8 @@ pub struct MetaCache {
     pub db_version: String,
     /// `AniList` prequel ids by `AniList` id.
     pub prequels: HashMap<u64, Vec<u64>>,
+    /// `AniList` sequel ids by `AniList` id, with when they were fetched.
+    pub sequels: HashMap<u64, (Vec<u64>, i64)>,
     /// When `AniList` was last asked about each id, and whether it knew it.
     pub anilist_checks: HashMap<u64, AnilistCheck>,
 }
@@ -81,6 +83,36 @@ impl Index {
     /// Each file under a configured root with its classification.
     pub fn classified(&self) -> impl Iterator<Item = (&FileRow, crate::config::RootKind, &Classified)> {
         self.files.iter().zip(&self.classes).filter_map(|(row, c)| c.as_ref().map(|(kind, c)| (row, *kind, c)))
+    }
+}
+
+/// What [`Ctx::auto_complete`] recorded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Automated {
+    /// Titles of the series completed.
+    pub completed: Vec<String>,
+    /// Series followed as the next entry of their franchise: their title, and
+    /// the completed entry's before them.
+    pub followed: Vec<(String, String)>,
+}
+
+impl Automated {
+    /// Nothing was recorded.
+    pub fn is_empty(&self) -> bool {
+        self.completed.is_empty() && self.followed.is_empty()
+    }
+
+    /// One line saying what was recorded, for a status message.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.completed.is_empty() {
+            parts.push(format!("completed: {completed} (all episodes watched)", completed = self.completed.join(", ")));
+        }
+        if !self.followed.is_empty() {
+            let titles: Vec<&str> = self.followed.iter().map(|(t, _)| t.as_str()).collect();
+            parts.push(format!("following the next entry: {titles}", titles = titles.join(", ")));
+        }
+        format!("✓ {parts}", parts = parts.join(" · "))
     }
 }
 
@@ -206,6 +238,7 @@ impl Ctx {
                 rows: db.all_meta()?,
                 attempts: db.match_attempts()?,
                 prequels: db.prequels()?,
+                sequels: db.sequels()?,
                 anilist_checks: db.anilist_checks()?,
                 db_version: db.get_kv(OFFLINE_DB_VERSION)?.unwrap_or_default(),
             })
@@ -217,13 +250,13 @@ impl Ctx {
     /// is rebuilt from the same events plus the recorded ones. Whatever is
     /// recorded is merged into `log`. Returns the library and the completed
     /// titles; a failure to record them is a [`Library::warnings`] entry.
-    pub fn library_completed(&self, index: &mut Index, log: &mut CachedLog) -> Result<(Library, Vec<String>)> {
+    pub fn library_completed(&self, index: &mut Index, log: &mut CachedLog) -> Result<(Library, Automated)> {
         let mut lib = self.migrated_library(index, log)?;
         let (recorded, done) = match self.auto_complete(&lib) {
             Ok(x) => x,
             Err(e) => {
                 lib.warnings.push(format!("{WRITE_FAILED}: {e:#}"));
-                return Ok((lib, Vec::new()));
+                return Ok((lib, Automated::default()));
             }
         };
         if recorded.events.is_empty() {
@@ -309,7 +342,8 @@ impl Ctx {
     /// Store everything a [`crate::meta::sync`] produced in the cache.
     pub fn store_sync(&self, res: &crate::meta::SyncResult) -> Result<()> {
         let ts = crate::events::now();
-        self.db.store_sync(&res.rows, &res.attempts, res.db_version.as_deref(), &res.prequels, &res.checked, ts)
+        let (rows, attempts, version) = (&res.rows, &res.attempts, res.db_version.as_deref());
+        self.db.store_sync(rows, attempts, version, &res.prequels, &res.sequels, &res.checked, ts)
     }
 
     /// Scan all configured roots (or only `only`), calling `progress(root, count)`.
@@ -362,29 +396,65 @@ impl Ctx {
         self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep }])
     }
 
-    /// Mark followed series that are finished and fully watched as completed
-    /// (none while part of the history is unreadable, see
-    /// [`Library::partial_history`]). Returns the recorded events and the
-    /// series' titles.
+    /// Mark followed series that are finished and fully watched as completed,
+    /// and roll on: follow the entry after the last completed one of each
+    /// franchise (see [`Library::franchises`]) when it is on disk and
+    /// undecided (untracked), and anipv hasn't followed it before. A followed
+    /// entry that is done already is completed in turn, and so on. Nothing
+    /// is recorded while part of the history is unreadable (see
+    /// [`Library::partial_history`]). Returns the recorded events and what
+    /// they did.
     ///
     /// Due after anything that changes watch state, statuses or metadata: the
     /// TUI runs it on every reload ([`Ctx::library_completed`], which also
-    /// returns the library with them completed), the CLI after every command
+    /// returns the library with them recorded), the CLI after every command
     /// that writes.
-    pub fn auto_complete(&self, lib: &Library) -> Result<(Recorded, Vec<String>)> {
-        let done: Vec<&Series> = if lib.partial_history {
-            Vec::new()
-        } else {
-            lib.series.iter().filter(|s| s.should_auto_complete()).collect()
-        };
-        let recorded = self.log.append(done.iter().map(|s| EventBody::SeriesStatus {
-            series: s.key.clone(),
-            status: SeriesStatus::Completed,
-            note: Some(format!("all {} episodes watched", s.whole_watched_count())),
-            auto: true,
-            keep: false,
-        }))?;
-        Ok((recorded, done.iter().map(|s| s.title.clone()).collect()))
+    pub fn auto_complete(&self, lib: &Library) -> Result<(Recorded, Automated)> {
+        let mut done = Automated::default();
+        let mut bodies = Vec::new();
+        if !lib.partial_history {
+            // Statuses as they will be once what is decided here is recorded.
+            let mut status: Vec<SeriesStatus> = lib.series.iter().map(|s| s.status).collect();
+            let mut by: Vec<SetBy> = lib.series.iter().map(|s| s.status_by).collect();
+            loop {
+                let mut changed = false;
+                for (i, s) in lib.series.iter().enumerate() {
+                    // Followed (with the statuses decided so far) and done.
+                    if status[i] == SeriesStatus::Following && s.may_auto_complete() {
+                        (status[i], by[i]) = (SeriesStatus::Completed, SetBy::Anipv);
+                        done.completed.push(s.title.clone());
+                        let note = format!("all {n} episodes watched", n = s.whole_watched_count());
+                        bodies.push(status_event(s, SeriesStatus::Completed, note, true));
+                        changed = true;
+                    }
+                }
+                for f in &lib.franchises {
+                    // A stop is behind you once its series is completed, or
+                    // (a part of one you follow) every item in it is watched.
+                    let behind = |stop: &crate::franchise::Stop| match status[stop.series] {
+                        SeriesStatus::Completed => true,
+                        SeriesStatus::Following => !stop.items.is_empty() && stop.watched,
+                        _ => false,
+                    };
+                    let Some(last) = f.stops.iter().rposition(behind) else { continue };
+                    let Some(next) = f.stops.get(last + 1).map(|stop| stop.series) else { continue };
+                    let s = &lib.series[next];
+                    // Undecided: not left untracked by the user, nor followed by anipv before.
+                    let undecided = status[next] == SeriesStatus::Untracked && by[next] != SetBy::User;
+                    if undecided && !s.auto_followed && s.present() {
+                        (status[next], by[next]) = (SeriesStatus::Following, SetBy::Anipv);
+                        let after = lib.stop_label(&f.stops[last]).to_string();
+                        bodies.push(status_event(s, SeriesStatus::Following, format!("next after {after}"), true));
+                        done.followed.push((s.title.clone(), after));
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+        }
+        Ok((self.log.append(bodies)?, done))
     }
 
     /// Mark items of `s` watched (or unwatched), recording their file names.
@@ -394,14 +464,27 @@ impl Ctx {
     /// and skips items anipv has never heard of. An item named twice is
     /// recorded once. Returns the recorded events, one per item that changed.
     pub fn mark(&self, s: &Series, items: &[ItemKey], watched: bool) -> Result<Recorded> {
-        let changes = |k: &ItemKey| match (s.item(k), watched) {
-            (None, watched) => watched,
-            (Some(i), true) => !i.state.is_watched(),
-            (Some(i), false) => !matches!(i.state, WatchState::Unwatched),
-        };
-        let mut seen = HashSet::new();
-        let items: Vec<&ItemKey> = items.iter().filter(|&k| seen.insert(k) && changes(k)).collect();
-        self.record(items.iter().map(|&item| {
+        self.record(mark_events(s, items, watched))
+    }
+
+    /// Record a [`CatchUp`] (see [`catch_up`]).
+    pub fn catch_up(&self, plan: CatchUp) -> Result<Recorded> {
+        self.record(plan.events)
+    }
+}
+
+/// The events [`Ctx::mark`] records.
+pub fn mark_events(s: &Series, items: &[ItemKey], watched: bool) -> Vec<EventBody> {
+    let changes = |k: &ItemKey| match (s.item(k), watched) {
+        (None, watched) => watched,
+        (Some(i), true) => !i.state.is_watched(),
+        (Some(i), false) => !matches!(i.state, WatchState::Unwatched),
+    };
+    let mut seen = HashSet::new();
+    let items: Vec<&ItemKey> = items.iter().filter(|&k| seen.insert(k) && changes(k)).collect();
+    items
+        .iter()
+        .map(|&item| {
             let (series, item, file) =
                 (s.key.clone(), item.clone(), s.item(item).and_then(crate::library::Item::file_name));
             if watched {
@@ -409,8 +492,91 @@ impl Ctx {
             } else {
                 EventBody::Unwatched { series, item, file }
             }
-        }))
+        })
+        .collect()
+}
+
+/// What catching up to a series records (see [`catch_up`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatchUp {
+    /// What is caught up, in watch order: the franchise's stops up to the
+    /// one named (see [`crate::franchise::Stop`]), or the series alone.
+    pub entries: Vec<String>,
+    /// Episodes it marks watched.
+    pub episodes: usize,
+    /// The events to record.
+    pub events: Vec<EventBody>,
+}
+
+/// Catch up to the series `key`: all of it and everything before it in its
+/// franchise (see [`Library::franchises`]); see [`catch_up_to`].
+pub fn catch_up(lib: &Library, key: &str) -> Result<CatchUp> {
+    let i = lib.index_of(key).with_context(|| format!("no series {key:?}"))?;
+    let s = &lib.series[i];
+    let Some((f, _)) = lib.franchise_pos(i) else {
+        // A series of its own: a franchise of one stop.
+        let stop = crate::franchise::Stop { series: i, folder: None, items: Vec::new(), watched: false };
+        let alone = crate::franchise::Franchise { name: s.title.clone(), stops: vec![stop] };
+        return Ok(catch_up_to(lib, &alone, 0));
+    };
+    let last = f
+        .stops_of(i)
+        .last()
+        .with_context(|| format!("{title} has no place in {name}", title = s.title, name = f.name))?;
+    Ok(catch_up_to(lib, f, last))
+}
+
+/// Catch up to stop `pos` of franchise `f`: the stops up to it marked
+/// watched (a whole series: the episodes that count toward its total, up to
+/// the total when known), a series all of whose stops are among them
+/// completed, and one only partly among them followed, so anipv goes on with
+/// the stop after it (see [`Ctx::auto_complete`]). Nothing is recorded yet:
+/// [`Ctx::catch_up`] does.
+pub fn catch_up_to(lib: &Library, f: &crate::franchise::Franchise, pos: usize) -> CatchUp {
+    let upto = &f.stops[..=pos.min(f.stops.len().saturating_sub(1))];
+    let mut events = Vec::new();
+    let mut episodes = 0;
+    for i in f.series().into_iter().filter(|i| upto.iter().any(|s| s.series == *i)) {
+        let s = &lib.series[i];
+        let mine: Vec<&crate::franchise::Stop> = upto.iter().filter(|stop| stop.series == i).collect();
+        let items: Vec<ItemKey> = if mine.iter().any(|stop| stop.items.is_empty()) {
+            whole_series_items(s)
+        } else {
+            mine.iter().flat_map(|stop| stop.items.iter().cloned()).collect()
+        };
+        let marks = mark_events(s, &items, true);
+        episodes += marks.len();
+        events.extend(marks);
+        let all = f.stops_of(i).all(|n| n <= pos);
+        let status = match (all, s.status) {
+            (true, SeriesStatus::Completed) | (false, SeriesStatus::Following | SeriesStatus::Completed) => None,
+            (true, _) => Some(SeriesStatus::Completed),
+            (false, _) => Some(SeriesStatus::Following),
+        };
+        if let Some(status) = status {
+            events.push(status_event(s, status, "caught up".into(), false));
+        }
     }
+    let entries = upto.iter().map(|stop| lib.stop_label(stop).to_string()).collect();
+    CatchUp { entries, episodes, events }
+}
+
+/// A status change of `s`, made by anipv (`auto`) or for the user.
+fn status_event(s: &Series, status: SeriesStatus, note: String, auto: bool) -> EventBody {
+    EventBody::SeriesStatus { series: s.key.clone(), status, note: Some(note), auto, keep: false }
+}
+
+/// Everything that counts toward a series' total: its items that do, and
+/// episodes up to the total when it is known.
+fn whole_series_items(s: &Series) -> Vec<ItemKey> {
+    let mut items: Vec<ItemKey> = s.items.iter().filter(|i| i.counts_toward_total()).map(|i| i.key.clone()).collect();
+    // Numbered from 1 up to the total: the episodes not on disk too. A season
+    // numbered on from the last (13–24 of a 12-episode season) has no 1–12.
+    let total = s.total().unwrap_or(0);
+    if s.episodes().filter_map(|i| i.key.ep).all(|ep| ep.whole() <= total) {
+        items.extend((1..=total).map(|n| ItemKey::episode(crate::model::EpNo::new(n))));
+    }
+    items
 }
 
 /// Scan configured roots into `db` (usable from a background thread with its own connection).
@@ -447,7 +613,7 @@ pub fn scan_all(
         out.push(RootScan { root: root.name.clone(), stats, offline, errors });
     }
     if let (Some(o), true) = (only, out.is_empty()) {
-        bail!("no root named {o:?} (roots: {})", names.join(", "));
+        bail!("no root named {o:?} (roots: {names})", names = names.join(", "));
     }
     Ok(out)
 }
@@ -489,7 +655,7 @@ impl Ctx {
     /// `/tmp`) instead.
     pub fn socket_path(&self) -> PathBuf {
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-        let name = format!("anipv-{}-{n}.sock", std::process::id());
+        let name = format!("anipv-{id}-{n}.sock", id = std::process::id());
         let path = self.paths.runtime_dir.join(&name);
         if fits_socket_path(&path) {
             return path;
@@ -555,7 +721,7 @@ pub fn find_series<'a>(lib: &'a Library, query: &str) -> Result<&'a Series> {
     } else {
         // Name the candidates that actually tied, not just the top of the ranking.
         let names: Vec<_> = best.iter().take(5).map(|s| s.title.as_str()).collect();
-        bail!("{query:?} is ambiguous: {}", names.join(", "))
+        bail!("{query:?} is ambiguous: {names}", names = names.join(", "))
     }
 }
 
@@ -665,7 +831,7 @@ mod tests {
     #[test]
     fn opening_creates_all_directories() {
         let dir = tempfile::tempdir().unwrap();
-        let mut paths = crate::config::Paths::under(dir.path());
+        let mut paths = Paths::under(dir.path());
         paths.runtime_dir = dir.path().join("not/yet/there");
         let ctx = Ctx::open(Config::default(), paths).unwrap();
         assert!(ctx.socket_path().parent().unwrap().is_dir());
@@ -676,7 +842,7 @@ mod tests {
     /// `XDG_RUNTIME_DIR` or cache directory) moves to a short directory.
     #[test]
     fn long_socket_paths_are_not_used() {
-        let p = |n: usize| PathBuf::from(format!("/{}", "x".repeat(n - 1)));
+        let p = |n: usize| PathBuf::from(format!("/{name}", name = "x".repeat(n - 1)));
         assert!(fits_socket_path(&p(30)));
         assert!(fits_socket_path(&p(MAX_SOCKET_PATH)));
         assert!(!fits_socket_path(&p(MAX_SOCKET_PATH + 1)));
@@ -749,7 +915,7 @@ mod tests {
 
         let lib = ctx.library().unwrap();
         ctx.mark(lib.get("yuru camp").unwrap(), &parse_episode_list("12").unwrap(), true).unwrap();
-        assert_eq!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1, vec!["Yuru Camp"]);
+        assert_eq!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1.completed, vec!["Yuru Camp"]);
         let lib = ctx.library().unwrap();
         let yc = lib.get("yuru camp").unwrap();
         assert_eq!(yc.status, SeriesStatus::Completed);
@@ -783,7 +949,7 @@ mod tests {
         ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Following, None).unwrap();
         let lib = ctx.library().unwrap();
         ctx.mark(lib.get("yuru camp").unwrap(), &parse_episode_list("12").unwrap(), true).unwrap();
-        assert_eq!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1, vec!["Yuru Camp"]);
+        assert_eq!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1.completed, vec!["Yuru Camp"]);
         // Completing is not "keeping".
         ctx.set_status(&ctx.library().unwrap(), "yuru camp", SeriesStatus::Completed, None).unwrap();
         assert_eq!(ctx.log.load_all().unwrap().events.iter().filter(|e| kept(e)).count(), 3);
@@ -806,8 +972,8 @@ mod tests {
             return; // Running as root: nothing is unreadable.
         }
         let lib = ctx.library().unwrap();
-        assert!(lib.partial_history, "{:?}", lib.warnings);
-        assert!(lib.warnings.iter().any(|w| w.contains("laptop.jsonl")), "{:?}", lib.warnings);
+        assert!(lib.partial_history, "{warnings:?}", warnings = lib.warnings);
+        assert!(lib.warnings.iter().any(|w| w.contains("laptop.jsonl")), "{warnings:?}", warnings = lib.warnings);
         assert!(ctx.auto_complete(&lib).unwrap().1.is_empty());
         let (lib, done) =
             ctx.library_completed(&mut ctx.index().unwrap(), &mut ctx.log.load_cached().unwrap()).unwrap();
@@ -815,14 +981,14 @@ mod tests {
 
         std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
         let lib = ctx.library().unwrap();
-        assert!(!lib.partial_history && lib.warnings.is_empty(), "{:?}", lib.warnings);
-        assert_eq!(ctx.auto_complete(&lib).unwrap().1, vec!["Yuru Camp"]);
+        assert!(!lib.partial_history && lib.warnings.is_empty(), "{warnings:?}", warnings = lib.warnings);
+        assert_eq!(ctx.auto_complete(&lib).unwrap().1.completed, vec!["Yuru Camp"]);
     }
 
     #[test]
     fn marking_an_item_twice_records_it_once() {
         let (_dir, ctx) = crate::demo::ctx();
-        let ep = ItemKey::episode(crate::model::EpNo::new(11));
+        let ep = ItemKey::episode(EpNo::new(11));
         ctx.mark(ctx.library().unwrap().get("yuru camp").unwrap(), std::slice::from_ref(&ep), false).unwrap();
         let before = ctx.log.load_all().unwrap().events.len();
         let lib = ctx.library().unwrap();
@@ -841,7 +1007,7 @@ mod tests {
         let mut index = ctx.index().unwrap();
         let mut log = ctx.log.load_cached().unwrap();
         let (lib, done) = ctx.library_completed(&mut index, &mut log).unwrap();
-        assert_eq!(done, vec!["Yuru Camp"]);
+        assert_eq!(done.completed, vec!["Yuru Camp"]);
         assert_eq!(lib.get("yuru camp").unwrap().status, SeriesStatus::Completed);
         let fresh = ctx.migrated_library(&mut index, &mut ctx.log.load_cached().unwrap()).unwrap();
         let summary =
@@ -863,9 +1029,66 @@ mod tests {
         ctx.mark(lib.get("yuru camp").unwrap(), &eps, true).unwrap();
         let lib = ctx.library().unwrap();
         assert_eq!(lib.get("yuru camp").unwrap().watched_count(), 13);
-        assert_eq!(ctx.auto_complete(&lib).unwrap().1, vec!["Yuru Camp"]);
+        assert_eq!(ctx.auto_complete(&lib).unwrap().1.completed, vec!["Yuru Camp"]);
         let note = ctx.library().unwrap().get("yuru camp").unwrap().note.clone();
         assert_eq!(note.as_deref(), Some("all 12 episodes watched"));
+    }
+
+    /// Finishing an entry of a franchise follows the next one; a next entry
+    /// that is done already completes in turn, and the walk goes on.
+    #[test]
+    fn completing_an_entry_rolls_on_to_the_next() {
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        // Settled demo: Bakemonogatari completed, Nisemonogatari followed.
+        assert!(ctx.auto_complete(&lib).unwrap().1.is_empty());
+        let nise = lib.get("nisemonogatari").unwrap();
+        ctx.mark(nise, &parse_episode_list("1-11").unwrap(), true).unwrap();
+        let (_, done) = ctx.auto_complete(&ctx.library().unwrap()).unwrap();
+        assert_eq!(done.completed, vec!["Nisemonogatari"]);
+        assert_eq!(done.followed, vec![("Nekomonogatari".to_string(), "Nisemonogatari".to_string())]);
+        let lib = ctx.library().unwrap();
+        let neko = lib.get("nekomonogatari").unwrap();
+        assert_eq!((neko.status, neko.note.as_deref()), (SeriesStatus::Following, Some("next after Nisemonogatari")));
+        assert!(ctx.auto_complete(&lib).unwrap().1.is_empty(), "settled");
+
+        // Unfollowed by the user: not followed again.
+        ctx.set_status(&lib, "nekomonogatari", SeriesStatus::Untracked, None).unwrap();
+        assert!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1.is_empty());
+    }
+
+    /// An entry the user left untracked themselves is their decision: roll-on
+    /// doesn't follow it.
+    #[test]
+    fn roll_on_leaves_an_entry_the_user_untracked() {
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        ctx.set_status(&lib, "nekomonogatari", SeriesStatus::Following, None).unwrap();
+        ctx.set_status(&ctx.library().unwrap(), "nekomonogatari", SeriesStatus::Untracked, None).unwrap();
+        let lib = ctx.library().unwrap();
+        ctx.mark(lib.get("nisemonogatari").unwrap(), &parse_episode_list("1-11").unwrap(), true).unwrap();
+        let (_, done) = ctx.auto_complete(&ctx.library().unwrap()).unwrap();
+        assert_eq!((done.completed, done.followed), (vec!["Nisemonogatari".to_string()], vec![]));
+    }
+
+    /// A fully watched next entry is followed and completed in one go, and
+    /// the one after it followed.
+    #[test]
+    fn roll_on_cascades_through_watched_entries() {
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        // Nekomonogatari, never decided on, is watched already.
+        ctx.mark(lib.get("nekomonogatari").unwrap(), &parse_episode_list("1-4").unwrap(), true).unwrap();
+        ctx.mark(lib.get("nisemonogatari").unwrap(), &parse_episode_list("1-11").unwrap(), true).unwrap();
+        let (_, done) = ctx.auto_complete(&ctx.library().unwrap()).unwrap();
+        assert_eq!(done.completed, vec!["Nisemonogatari", "Nekomonogatari"]);
+        let followed: Vec<&str> = done.followed.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(followed, ["Nekomonogatari"]);
+        // Dropping an entry stops the walk at it.
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        ctx.set_status(&lib, "nisemonogatari", SeriesStatus::Dropped, None).unwrap();
+        assert!(ctx.auto_complete(&ctx.library().unwrap()).unwrap().1.is_empty());
     }
 
     #[test]
@@ -886,11 +1109,7 @@ mod tests {
         let (_dir, ctx) = crate::demo::ctx();
         let lib = ctx.library().unwrap();
         let file = PathBuf::from("/m/Show - 001&002.mkv");
-        let entry = |n| QueueEntry {
-            series: "show".into(),
-            item: ItemKey::episode(crate::model::EpNo::new(n)),
-            file: file.clone(),
-        };
+        let entry = |n| QueueEntry { series: "show".into(), item: ItemKey::episode(EpNo::new(n)), file: file.clone() };
         assert_eq!(ctx.play_files(&lib, &[entry(1), entry(2)]).len(), 1);
     }
 
@@ -962,7 +1181,7 @@ mod tests {
         assert_eq!(legacy_aliases(&ctx), vec![EventBody::Alias { from: "ハカ".into(), to: "バカ".into() }]);
         // Cache rows moved: the row already under the new key wins, the old one is gone.
         assert!(meta_rows(&ctx).contains(&("バカ".into(), Some(2))));
-        assert!(no_legacy_row(&ctx), "{:?}", meta_rows(&ctx));
+        assert!(no_legacy_row(&ctx), "{meta_rows:?}", meta_rows = meta_rows(&ctx));
         assert!(ctx.db.match_attempts().unwrap().iter().all(|a| a.series != "ハカ"), "dropped, not moved");
         assert!(lib.get("バカ").unwrap().last_match.is_none(), "so the new key gets matched");
 
@@ -980,7 +1199,11 @@ mod tests {
         ctx.db.delete_meta("バカ").unwrap();
         ctx.db.put_metas(&[meta("ハカ", 3)]).unwrap();
         ctx.library().unwrap();
-        assert!(meta_rows(&ctx).contains(&("バカ".into(), Some(3))) && no_legacy_row(&ctx), "{:?}", meta_rows(&ctx));
+        assert!(
+            meta_rows(&ctx).contains(&("バカ".into(), Some(3))) && no_legacy_row(&ctx),
+            "{meta_rows:?}",
+            meta_rows = meta_rows(&ctx)
+        );
     }
 
     /// The rows moved in the database are moved in the index in memory too,
@@ -1082,7 +1305,7 @@ mod tests {
         other.execute_batch("BEGIN IMMEDIATE").unwrap();
         let start = std::time::Instant::now();
         let lib = ctx.library().unwrap();
-        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
+        assert!(lib.warnings.is_empty(), "{warnings:?}", warnings = lib.warnings);
         assert!(start.elapsed() < std::time::Duration::from_secs(2), "waited for the write lock");
         other.execute_batch("ROLLBACK").unwrap();
         assert_eq!(ctx.db.rekey_legacy([("ハカ", "バカ")]).unwrap(), 0, "nothing left to move");
@@ -1101,14 +1324,14 @@ mod tests {
             )
             .unwrap();
         let lib = ctx.library().unwrap();
-        assert_eq!(lib.warnings.len(), 1, "{:?}", lib.warnings);
-        assert!(lib.warnings[0].contains("read-only"), "{:?}", lib.warnings);
+        assert_eq!(lib.warnings.len(), 1, "{warnings:?}", warnings = lib.warnings);
+        assert!(lib.warnings[0].contains("read-only"), "{warnings:?}", warnings = lib.warnings);
         assert_eq!(lib.get("バカ").unwrap().anilist_id(), Some(7));
         assert!(!no_legacy_row(&ctx), "left for the next build");
 
         other.execute_batch("DROP TRIGGER no_rekey").unwrap();
         let lib = ctx.library().unwrap();
-        assert!(lib.warnings.is_empty(), "{:?}", lib.warnings);
+        assert!(lib.warnings.is_empty(), "{warnings:?}", warnings = lib.warnings);
         assert!(no_legacy_row(&ctx));
     }
 

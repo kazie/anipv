@@ -74,7 +74,7 @@ fn is_mount_point(dir: &Path, meta: &Metadata) -> Option<bool> {
 pub fn scan_root(cfg: &Config, root: &Root, progress: &(dyn Fn(usize) + Sync)) -> Result<ScanResult> {
     let base = root.resolved();
     let Some(base_meta) = std::fs::metadata(&base).ok().filter(Metadata::is_dir) else {
-        bail!("{} is not a directory (not mounted?)", base.display());
+        bail!("{base} is not a directory (not mounted?)", base = base.display());
     };
     // Folders listed in earlier rounds.
     let mut done: HashSet<FileId> = HashSet::from([file_id(&base_meta)]);
@@ -335,7 +335,7 @@ impl Walker<'_> {
 
 /// A failure at `path`, as recorded in [`ScanResult::errors`].
 fn failed(path: &Path, e: &dyn std::fmt::Display) -> String {
-    format!("{}: {e}", path.display())
+    format!("{path}: {e}", path = path.display())
 }
 
 /// The `chain` to walk the directory symlink `link` with, or `None` if it
@@ -424,7 +424,7 @@ mod tests {
         let root = Root::test("r", lib.path().to_path_buf(), RootKind::Archive);
         let res = scan_root(&Config::default(), &root, &|_| {}).unwrap();
         assert_eq!(rels(&res), vec!["Linked Show/Linked Show - 01.mkv", "Show/Show - 02.mkv"]);
-        assert!(res.complete(), "loops and dangling links are not errors: {:?}", res.errors);
+        assert!(res.complete(), "loops and dangling links are not errors: {errors:?}", errors = res.errors);
     }
 
     fn rels(res: &ScanResult) -> Vec<String> {
@@ -444,7 +444,7 @@ mod tests {
         symlink(lib.path().join("A"), lib.path().join("B/toA")).unwrap();
         let root = Root::test("r", lib.path().to_path_buf(), RootKind::Archive);
         let res = scan_root(&Config::default(), &root, &|_| {}).unwrap();
-        assert!(res.complete(), "{:?}", res.errors);
+        assert!(res.complete(), "{errors:?}", errors = res.errors);
         assert_eq!(rels(&res), vec!["A/A - 01.mkv", "B/B - 01.mkv"]);
     }
 
@@ -483,7 +483,7 @@ mod tests {
         symlink(lib.path().join("Real"), other.path().join("Deep/back")).unwrap();
         let root = Root::test("r", lib.path().to_path_buf(), RootKind::Archive);
         let res = scan_root(&Config::default(), &root, &|_| {}).unwrap();
-        assert!(res.complete(), "{:?}", res.errors);
+        assert!(res.complete(), "{errors:?}", errors = res.errors);
         assert_eq!(rels(&res), vec!["Real/Real - 01.mkv", "m/Deep/Deep - 01.mkv", "m/Show/Show - 01.mkv"]);
     }
 

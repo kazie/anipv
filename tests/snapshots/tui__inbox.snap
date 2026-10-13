@@ -1,9 +1,8 @@
 ---
 source: tests/tui.rs
-assertion_line: 306
 expression: s
 ---
- anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
+ anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
 ╭ Inbox · new in your download folders · 5 ──────────────────────────────────────────────────────────────────╮
 │ Series                       Score On disk   Added Airing                                                  │
 │▌Sousou no Frieren S2         –     01        now                    sequel to Sousou no Frieren · following│

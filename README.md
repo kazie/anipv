@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/rust-1.89%2B-orange.svg" alt="MSRV 1.89">
 </p>
 
-<p align="center"><img src="assets/img/demo.gif" alt="anipv demo: queueing episodes from Up next, reordering the queue, searching the series list, playing an episode and controlling the player from anipv, browsing extras, setting a status" width="900"></p>
+<p align="center"><img src="assets/img/demo.gif" alt="anipv demo: queueing episodes from Up next, reordering the queue, searching the series list, playing an episode and controlling the player from anipv, browsing extras, setting a status, browsing folders and queueing a whole folder" width="900"></p>
 
 You keep anime in a downloads folder and an archive. You play episodes with
 `mpv A.mkv B.mkv …`, and your memory of where you were lives in your shell
@@ -23,6 +23,7 @@ history. anipv replaces that:
 - **Remote control**: while mpv plays, keys typed in anipv go to mpv, so your `input.conf` bindings (pause, seek, quit, …) work from the terminal even when the video is fullscreen on another screen. `ctrl-c` takes the keys back, `v` hands them over again.
 - **Your library, understood**: bracketed (`[Group] Show - 07 (1080p)`), dotted (`Show.S01E07.1080p…`), underscored and numbered file names, `v2` versions, `S02E01` / `1x05` markers, season folders (inside an archive series folder, `Season 1` and `Season 2` stay separate seasons of the same title), OVAs, openings/endings, previews, multi-episode files. Parsed and grouped, with a test corpus covering each naming convention.
 - **Statuses**: following, paused ("dropped too early, might resume"), dropped (with a note), completed, skipped. A status you set on a series you've already finished stays, so you can follow it again for a rewatch.
+- **Franchises**: seasons, sequels and the numbered entries of a franchise folder (`Monogatari Series/01 - Bakemonogatari`, `02 - …`) are grouped and ordered for watching, from folder numbers, season markers and AniList's prequel and sequel links. In a franchise folder the order is the folders', even when one anime spans several of them with another in between. Finish an entry and anipv follows the next one, if it is on disk and you haven't decided on it yet; `anipv catch-up <series>` (`C` in the TUI) marks it and everything before it watched when your history doesn't know you've seen them.
 - **Local first, multi-device**: history is an append-only log per device. Sync the folder however you like; merging is conflict-free.
 - **Optional metadata**: episode totals, airing dates and audience scores from the offline [anime-offline-database] (the community-maintained continuation of manami-project's archived dataset) and anonymous [AniList] queries. No account needed, and nothing about your watching leaves your machine.
 - **Bootstrap from fish**: imports the `mpv …` commands already in your fish history.
@@ -101,6 +102,10 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 
 **Inbox**: everything new in your download folder that you haven't decided on yet. A new season of something you watch is flagged and sorted first (by title, and by AniList's prequel links); specials of other shows go last. The Score column (AniList's average, 0–100; the anime database's until AniList has been asked) gives a first idea of how well liked a show is, and `o` opens its AniList page.
 
+<p align="center"><img src="assets/img/files-tree.svg" alt="files as folders: a franchise folder with what is watched in each entry" width="900"></p>
+
+**Files**: the newest files in your download folders, or (`t`) every folder, file-manager style: `⏎` goes in, `h` goes up, `/` finds a folder by its path. Each folder shows how much of it you've watched; `space` queues its unwatched episodes in order, `w` marks it all watched.
+
 Common keys: `1`–`5` switch views, `space` queues, `p` plays, `s` sets the
 status, `/` searches, `M` refreshes metadata for the series under the cursor,
 `ctrl-r` refreshes all of it, `o` opens the series on AniList, `q` or `ctrl-c` quits (after asking), `?` shows everything. Full list: [docs/keybindings.md](docs/keybindings.md).
@@ -118,6 +123,8 @@ anipv play frieren --print            # just print the mpv command
 anipv mark "grand blue" 1-12          # mark watched
 anipv status "k-on" dropped --note "not for me"
 anipv merge "even the student council" "seitokai ni mo ana"
+anipv catch-up owarimonogatari        # seen it and all before it: follow the next entry
+anipv split "carole & tuesday" "Mini Series"   # another anime kept in a show's folder
 anipv show frieren
 anipv export | jq '.[] | select(.status=="following") | .title'
 ```

@@ -179,6 +179,101 @@ fn merge_and_rename() {
     anipv(d.path()).args(["show", "frieren"]).assert().success().stdout(predicate::str::starts_with("Frieren"));
 }
 
+/// Catching up to a franchise entry completes it and the ones before it, and
+/// follows the next.
+#[test]
+fn catch_up_rolls_on() {
+    let d = demo();
+    anipv(d.path()).args(["show", "nisemonogatari"]).assert().success().stdout(predicate::str::contains(
+        "Monogatari Series 2/3: Bakemonogatari ✓ → Nisemonogatari → Nekomonogatari (Black)",
+    ));
+    // An entry folder's name works as well as the series'.
+    anipv(d.path()).args(["catch-up", "Nisemonogatari", "--dry-run"]).assert().success().stdout(
+        predicate::str::contains("would mark 8 episode(s) of 2 entries watched: Bakemonogatari, Nisemonogatari"),
+    );
+    anipv(d.path())
+        .args(["catch-up", "nisemonogatari"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("caught up: 8 episode(s) of 2 entries"))
+        .stdout(predicate::str::contains("Nekomonogatari is now following: the next entry after Nisemonogatari"));
+    anipv(d.path()).arg("next").assert().success().stdout(predicate::str::contains("Nekomonogatari"));
+}
+
+/// One anime spread over entry folders with another between them: the watch
+/// order follows the folders, so after its first part comes the other anime.
+#[test]
+fn franchise_order_follows_the_folders() {
+    let d = demo();
+    let mono = d.path().join("media/Anime/Monogatari Series");
+    for (dir, files) in [
+        ("04 - Nekomonogatari (White)", ["[G] Second Season - 01.mkv", "[G] Second Season - 02.mkv"]),
+        ("05 - Hanamonogatari", ["[G] Hanamonogatari - 01.mkv", "[G] Hanamonogatari - 02.mkv"]),
+        ("06 - Otorimonogatari", ["[G] Second Season - 03.mkv", "[G] Second Season - 04.mkv"]),
+    ] {
+        std::fs::create_dir_all(mono.join(dir)).unwrap();
+        for f in files {
+            std::fs::write(mono.join(dir).join(f), b"").unwrap();
+        }
+    }
+    anipv(d.path()).arg("scan").assert().success();
+    anipv(d.path()).args(["show", "second season"]).assert().success().stdout(predicate::str::contains(
+        "Nekomonogatari (Black) → Nekomonogatari (White) → Hanamonogatari → Otorimonogatari",
+    ));
+    // Seen up to folder 04: Second Season is followed from episode 3 on, and
+    // Hanamonogatari (folder 05) is next.
+    anipv(d.path()).args(["catch-up", "nekomonogatari (white)"]).assert().success().stdout(predicate::str::contains(
+        "Hanamonogatari is now following: the next entry after Nekomonogatari (White)",
+    ));
+    anipv(d.path())
+        .args(["show", "second season"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("following"))
+        .stdout(predicate::str::contains("Monogatari Series 6/6"));
+}
+
+/// Another anime kept in a series' folder is flagged, split off, and put back.
+#[test]
+fn split_and_unsplit() {
+    let d = demo();
+    let mini = d.path().join("media/Anime/Cowboy Bebop/Cowboy Bebop Mini Series");
+    std::fs::create_dir_all(&mini).unwrap();
+    for e in 1..=2 {
+        std::fs::write(mini.join(format!("[G] Cowboy Bebop Mini Series - {e:02}.mkv")), b"").unwrap();
+    }
+    anipv(d.path()).arg("scan").assert().success();
+    anipv(d.path()).args(["mark", "bebop", "1"]).assert().success();
+    anipv(d.path()).args(["show", "bebop"]).assert().success().stdout(predicate::str::contains(
+        "2 episode(s) in Cowboy Bebop/Cowboy Bebop Mini Series are also in another folder",
+    ));
+    anipv(d.path())
+        .args(["split", "bebop", "nothing like it"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("(Cowboy Bebop/Cowboy Bebop Mini Series)"));
+    anipv(d.path())
+        .args(["split", "bebop", "mini series"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cowboy Bebop/Cowboy Bebop Mini Series is a series of its own"));
+    anipv(d.path())
+        .args(["show", "Cowboy Bebop Mini Series"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("Cowboy Bebop Mini Series"))
+        .stdout(predicate::str::contains("✓").not());
+    // The watch recorded with the show's own file stays with the show.
+    anipv(d.path())
+        .args(["show", "cowboy bebop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("also in").not())
+        .stdout(predicate::str::contains("✓       01"));
+    anipv(d.path()).args(["split", "cowboy bebop", "mini", "--undo"]).assert().success();
+    anipv(d.path()).args(["ls"]).assert().success().stdout(predicate::str::contains("Mini Series").not());
+}
+
 #[test]
 fn import_fish_history() {
     let d = demo();
@@ -228,8 +323,8 @@ fn import_fish_resolves_by_path_and_skips_ambiguous_names() {
     std::fs::write(
         &hist,
         format!(
-            "- cmd: mpv {}/Show\\ B/01.mkv\n  when: 1700000000\n- cmd: mpv 01.mkv\n  when: 1700000100\n",
-            anime.display()
+            "- cmd: mpv {anime}/Show\\ B/01.mkv\n  when: 1700000000\n- cmd: mpv 01.mkv\n  when: 1700000100\n",
+            anime = anime.display()
         ),
     )
     .unwrap();
@@ -261,9 +356,7 @@ fn import_fish_follows_symlinked_mounts() {
     std::fs::write(
         &hist,
         format!(
-            "- cmd: mpv {}/Show\\ B/01.mkv\n  when: 1700000000\n- cmd: mpv Other\\ Show/07.mkv\n  when: 1700000100\n",
-            link.display()
-        ),
+            "- cmd: mpv {link}/Show\\ B/01.mkv\n  when: 1700000000\n- cmd: mpv Other\\ Show/07.mkv\n  when: 1700000100\n", link = link.display()),
     )
     .unwrap();
     anipv(d.path())
@@ -336,11 +429,11 @@ fn possible_values(cmd: &clap::Command, at: &str, out: &mut Vec<(String, String,
     for arg in cmd.get_arguments() {
         for v in arg.get_possible_values() {
             let help = v.get_help().map(ToString::to_string).unwrap_or_default();
-            out.push((format!("{at} --{}", arg.get_id()), v.get_name().to_string(), help));
+            out.push((format!("{at} --{arg}", arg = arg.get_id()), v.get_name().to_string(), help));
         }
     }
     for sub in cmd.get_subcommands() {
-        possible_values(sub, &format!("{at} {}", sub.get_name()), out);
+        possible_values(sub, &format!("{at} {sub}", sub = sub.get_name()), out);
     }
 }
 
@@ -367,7 +460,7 @@ fn completions_are_valid_shell_code() {
                 let rest = &script[i + 5..];
                 let end = rest.find('"').unwrap_or_else(|| panic!("unclosed -a at {i}"));
                 let after = rest[end + 1..].chars().next();
-                assert!(after.is_none_or(char::is_whitespace), "-a argument closes early: {}", &rest[..=end]);
+                assert!(after.is_none_or(char::is_whitespace), "-a argument closes early: {arg}", arg = &rest[..=end]);
             }
         }
         let file = d.path().join(format!("anipv.{shell}"));
@@ -375,8 +468,8 @@ fn completions_are_valid_shell_code() {
         match std::process::Command::new(shell).arg("-n").arg(&file).output() {
             Ok(check) => assert!(
                 check.status.success(),
-                "{shell} -n rejects the completions: {}",
-                String::from_utf8_lossy(&check.stderr)
+                "{shell} -n rejects the completions: {stderr}",
+                stderr = String::from_utf8_lossy(&check.stderr)
             ),
             Err(_) => eprintln!("{shell} not installed: skipping its syntax check"),
         }
@@ -567,5 +660,5 @@ fn export_into_a_closed_pipe_succeeds() {
         .unwrap();
     drop(child.stdout.take());
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{stderr}", stderr = String::from_utf8_lossy(&out.stderr));
 }

@@ -53,6 +53,8 @@ Press `?` in the TUI to see these at any time.
 | `U` | undo merges into this series |
 | `R` | rename |
 | `L` | link AniList id |
+| `F` | fold / unfold franchises (one row per franchise: the entry you're at) |
+| `C` | catch up: mark this and the franchise's earlier entries watched |
 | `⏎` | open series |
 
 ## Episodes
@@ -63,10 +65,22 @@ Press `?` in the TUI to see these at any time.
 | `⏎` | play this episode |
 | `w` | toggle watched |
 | `W` | mark everything up to here watched |
+| `C` | catch up: mark this series and the franchise's earlier entries watched |
 | `a` | queue all new |
 | `x` | show / hide extras |
 | `d` | show / hide episodes not on disk |
 | `esc` | back |
+
+## Files
+
+| Key | Action |
+| --- | --- |
+| `t` | newest files ⇄ folders |
+| `space` | queue the file; on a folder: its unwatched episodes, in order (again: unqueue) |
+| `w` | toggle watched (a folder: everything in it) |
+| `⏎ / l` | folders: open the folder (a file: its series) |
+| `h / ⌫` | folders: up |
+| `/` | folders: fuzzy search by path |
 
 ## Queue
 

@@ -99,7 +99,7 @@ fn spawn(cfg: &Config, socket: &Path, files: &[PlayFile]) -> Result<Child> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .with_context(|| format!("starting {}", cfg.mpv))
+        .with_context(|| format!("starting {mpv}", mpv = cfg.mpv))
 }
 
 /// Spawn mpv and follow it from a background thread, passing every
@@ -781,7 +781,7 @@ mod tests {
         let dir = socket_test_dir();
         // The first outlasts the late connect below; the second plays twice
         // (no path or duration change for mpv to report).
-        let makers: Vec<(PathBuf, std::process::Child)> = [("a", 1.2), ("b", 0.5)]
+        let makers: Vec<(PathBuf, Child)> = [("a", 1.2), ("b", 0.5)]
             .iter()
             .map(|(name, secs)| {
                 let path = dir.path().join(format!("{name}.mkv"));
@@ -793,7 +793,7 @@ mod tests {
             .collect();
         let mut clips = Vec::new();
         for (path, mut child) in makers {
-            assert!(child.wait().unwrap().success(), "ffmpeg could not make {}", path.display());
+            assert!(child.wait().unwrap().success(), "ffmpeg could not make {path}", path = path.display());
             clips.push(path);
         }
         clips.push(clips[1].clone());
@@ -817,11 +817,11 @@ mod tests {
                 })
                 .collect();
             let want: Vec<(PathBuf, Outcome)> = clips.iter().map(|c| (c.clone(), Outcome::Watched)).collect();
-            assert_eq!(ended, want, "connecting {late:?} late: {:?}", evs.borrow());
+            assert_eq!(ended, want, "connecting {late:?} late: {events:?}", events = evs.borrow());
             assert!(
                 matches!(evs.borrow().last(), Some(PlayerEvent::Exited { played: true, error: None })),
-                "{:?}",
-                evs.borrow()
+                "{events:?}",
+                events = evs.borrow()
             );
         }
     }
@@ -912,7 +912,7 @@ mod tests {
         remote.keypress("SPACE").unwrap();
         drop(remote);
         let lines = reader.join().unwrap();
-        let [cut, next] = &lines[..] else { panic!("{} lines", lines.len()) };
+        let [cut, next] = &lines[..] else { panic!("{lines} lines", lines = lines.len()) };
         assert!(cut.len() < huge.len() && serde_json::from_slice::<Value>(cut).is_err());
         assert_eq!(
             serde_json::from_slice::<Value>(next).unwrap(),

@@ -4,7 +4,7 @@ mod meta;
 
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::builder::styling::{AnsiColor, Effects, Styles};
@@ -116,6 +116,27 @@ enum Cmd {
     Unmerge {
         /// The merged-away name (key or title, as shown under "also:").
         key: String,
+    },
+    /// You've seen a series and everything before it in its franchise: mark
+    /// them watched and completed, and follow the next entry.
+    CatchUp {
+        /// The last series you've seen (title, key or fuzzy query), or the
+        /// name of a franchise's entry folder (`Kabukimonogatari`).
+        series: String,
+        /// Only print what would be marked.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Make a folder inside a series' folder a series of its own: another
+    /// anime kept with it (a mini series, a sequel), named by its files.
+    Split {
+        /// The series the folder's files are in now (title, key or fuzzy query).
+        series: String,
+        /// The folder: its name, or part of it.
+        folder: String,
+        /// Undo a split: the folder's files rejoin the series around them.
+        #[arg(long)]
+        undo: bool,
     },
     /// Set a series' display title.
     Rename {
@@ -236,6 +257,14 @@ fn run(cli: Cli) -> Result<()> {
             let ctx = Ctx::load()?;
             writing(&ctx, &mut out, |s, out| unmerge(&ctx, s, &key, out))
         }
+        Cmd::CatchUp { series, dry_run } => {
+            let ctx = Ctx::load()?;
+            writing_unless(dry_run, &ctx, &mut out, |s, out| catch_up(&ctx, s, &series, dry_run, out))
+        }
+        Cmd::Split { series, folder, undo } => {
+            let ctx = Ctx::load()?;
+            writing(&ctx, &mut out, |s, out| split(&ctx, s, &series, &folder, undo, out))
+        }
         Cmd::Rename { series, title } => {
             let ctx = Ctx::load()?;
             writing(&ctx, &mut out, |s, out| rename(&ctx, s, &series, &title, out))
@@ -266,7 +295,7 @@ fn run(cli: Cli) -> Result<()> {
             ctx.cfg.mpv_args = vec!["fake-mpv".into(), "--demo".into()];
             ctx.cfg.save(&ctx.paths.config_file)?;
             writeln!(out, "{ok} demo library in {dir}", ok = green("✓"), dir = dir.display())?;
-            writeln!(out, "  try: {}", cyan(&format!("ANIPV_HOME={} anipv", dir.display())))?;
+            writeln!(out, "  try: {cmd}", cmd = cyan(&format!("ANIPV_HOME={dir} anipv", dir = dir.display())))?;
             Ok(())
         }
         #[cfg(feature = "demo")]
@@ -278,7 +307,7 @@ fn run(cli: Cli) -> Result<()> {
 /// to it, else a copy. Not the binary itself, which the next build without
 /// the `demo` feature replaces with one that has no `fake-mpv`.
 #[cfg(feature = "demo")]
-fn demo_player(dir: &std::path::Path) -> Result<PathBuf> {
+fn demo_player(dir: &Path) -> Result<PathBuf> {
     use anyhow::Context as _;
     let exe = std::env::current_exe()?;
     let bin = dir.join("bin");
@@ -294,7 +323,7 @@ fn demo_player(dir: &std::path::Path) -> Result<PathBuf> {
 fn init(a: InitArgs, out: &mut impl Write) -> Result<()> {
     let paths = Paths::resolve(None)?;
     if paths.config_file.exists() && !a.force {
-        bail!("{} already exists (use --force to overwrite)", paths.config_file.display());
+        bail!("{config_file} already exists (use --force to overwrite)", config_file = paths.config_file.display());
     }
     if a.ongoing.is_empty() && a.archive.is_empty() {
         bail!("give at least one --ongoing or --archive folder");
@@ -314,10 +343,10 @@ fn init(a: InitArgs, out: &mut impl Write) -> Result<()> {
     writeln!(out, "{ok} wrote {file}", ok = green("✓"), file = paths.config_file.display())?;
     writeln!(
         out,
-        "  next: {} then {} (optional) and {}",
-        cyan("anipv scan"),
-        cyan("anipv import-fish --dry-run"),
-        cyan("anipv")
+        "  next: {scan} then {import} (optional) and {tui}",
+        scan = cyan("anipv scan"),
+        import = cyan("anipv import-fish --dry-run"),
+        tui = cyan("anipv")
     )?;
     Ok(())
 }
@@ -345,8 +374,15 @@ fn writing<W: Write>(ctx: &Ctx, out: &mut W, command: impl FnOnce(&mut Session, 
     if let (Err(_), Err(e)) = (&res, &done) {
         eprintln!("warning: {e:#}");
     }
-    let reported = done.iter().flatten().try_for_each(|title| {
-        writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(title))
+    let reported = done.iter().try_for_each(|done| -> std::io::Result<()> {
+        for title in &done.completed {
+            writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(title))?;
+        }
+        for (title, after) in &done.followed {
+            let (ok, title) = (green("→"), bold(title));
+            writeln!(out, "{ok} {title} is now following: the next entry after {after}")?;
+        }
+        Ok(())
     });
     res?;
     done?;
@@ -356,7 +392,7 @@ fn writing<W: Write>(ctx: &Ctx, out: &mut W, command: impl FnOnce(&mut Session, 
 /// [`writing`]'s second half: rebuild the library from what the command
 /// recorded (showing the warnings that are new) and complete what is done.
 #[expect(clippy::print_stderr, reason = "CLI warnings go to the terminal, not to command output")]
-fn complete(ctx: &Ctx, s: &mut Session) -> Result<Vec<String>> {
+fn complete(ctx: &Ctx, s: &mut Session) -> Result<crate::app::Automated> {
     let shown = std::mem::take(&mut s.lib.warnings);
     s.rebuild(ctx)?;
     for w in s.lib.warnings.iter().filter(|w| !shown.contains(w)) {
@@ -399,7 +435,7 @@ fn mark(ctx: &Ctx, s: &mut Session, query: &str, episodes: &str, unwatched: bool
     if notes.is_empty() {
         writeln!(out)?;
     } else {
-        writeln!(out, " ({})", notes.join(", "))?;
+        writeln!(out, " ({notes})", notes = notes.join(", "))?;
     }
     s.add(ctx, recorded);
     Ok(())
@@ -448,9 +484,63 @@ fn unmerge(ctx: &Ctx, s: &mut Session, key: &str, out: &mut impl Write) -> Resul
         bail!("{key:?} is not a merged-away name (see the \"also:\" line of `anipv show`)");
     };
     let recorded = ctx.unmerge(lib, [from])?;
-    writeln!(out, "{} {} is a separate series again", green("✓"), lib.current_key(from))?;
+    writeln!(out, "{ok} {key} is a separate series again", ok = green("✓"), key = lib.current_key(from))?;
     s.add(ctx, recorded);
     Ok(())
+}
+
+fn catch_up(ctx: &Ctx, s: &mut Session, query: &str, dry_run: bool, out: &mut impl Write) -> Result<()> {
+    // An entry folder's name names that stop (`kabukimonogatari`, part of a
+    // longer series); otherwise all of the series named.
+    let plan = match s.lib.stop_named(query) {
+        Some((f, pos)) => crate::app::catch_up_to(&s.lib, f, pos),
+        None => crate::app::catch_up(&s.lib, &find_series(&s.lib, query)?.key)?,
+    };
+    let (n, eps, list) = (plan.entries.len(), plan.episodes, plan.entries.join(", "));
+    if dry_run {
+        writeln!(out, "would mark {eps} episode(s) of {n} entries watched: {list}")?;
+        return Ok(());
+    }
+    let recorded = ctx.catch_up(plan)?;
+    writeln!(out, "{ok} caught up: {eps} episode(s) of {n} entries marked watched ({list})", ok = green("✓"))?;
+    s.add(ctx, recorded);
+    Ok(())
+}
+
+fn split(ctx: &Ctx, s: &mut Session, query: &str, folder: &str, undo: bool, out: &mut impl Write) -> Result<()> {
+    let series = find_series(&s.lib, query)?;
+    let candidates = if undo { s.lib.splits_of(series) } else { s.lib.splittable(&ctx.cfg, series) };
+    let picked = pick_folder(&candidates, folder);
+    let (root, dir) = match &picked[..] {
+        [one] => one.clone(),
+        [] => {
+            let what = if undo { "split folders" } else { "folders that could be split off" };
+            let names: Vec<&str> = candidates.iter().map(|(_, d)| d.as_str()).collect();
+            let names = if names.is_empty() { "none".to_string() } else { names.join(", ") };
+            bail!("{folder:?} names none of {title}'s {what} ({names})", title = series.title)
+        }
+        many => {
+            let names: Vec<&str> = many.iter().map(|(_, d)| d.as_str()).collect();
+            bail!("{folder:?} names several folders; give more of the path: {names}", names = names.join(", "))
+        }
+    };
+    let body =
+        if undo { EventBody::Unsplit { root, dir: dir.clone() } } else { EventBody::Split { root, dir: dir.clone() } };
+    let recorded = ctx.record([body])?;
+    let what = if undo { "rejoins its series" } else { "is a series of its own" };
+    writeln!(out, "{ok} {dir} {what}", ok = green("✓"), dir = bold(&dir))?;
+    s.add(ctx, recorded);
+    Ok(())
+}
+
+/// The folders among `candidates` (`(root, dir)`) whose last part (or whole
+/// path) is `query`, else those whose last part contains it (ignoring case).
+fn pick_folder(candidates: &[(String, String)], query: &str) -> Vec<(String, String)> {
+    let q = query.to_lowercase();
+    let last = |d: &str| crate::library::file_name_lossy(Path::new(d)).to_lowercase();
+    let exact: Vec<_> = candidates.iter().filter(|(_, d)| last(d) == q || d.to_lowercase() == q).collect();
+    let pool = if exact.is_empty() { candidates.iter().filter(|(_, d)| last(d).contains(&q)).collect() } else { exact };
+    pool.into_iter().cloned().collect()
 }
 
 fn rename(ctx: &Ctx, s: &mut Session, query: &str, title: &str, out: &mut impl Write) -> Result<()> {
@@ -487,7 +577,7 @@ fn scan(ctx: &mut Ctx, only: Option<&str>, out: &mut impl Write) -> Result<()> {
                 unreadable = if r.errors.is_empty() {
                     String::new()
                 } else {
-                    red(&format!("  ({} unreadable dirs)", r.errors.len()))
+                    red(&format!("  ({errors} unreadable dirs)", errors = r.errors.len()))
                 }
             )?,
             Err(e) => {
@@ -530,8 +620,14 @@ fn inbox(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
     }
     writeln!(
         out,
-        "{}",
-        bold(&format!("{s:<44} {d:>9} {a:>6}  {air:<18}", s = "SERIES", d = "ON DISK", a = "ADDED", air = "AIRING"))
+        "{header}",
+        header = bold(&format!(
+            "{s:<44} {d:>9} {a:>6}  {air:<18}",
+            s = "SERIES",
+            d = "ON DISK",
+            a = "ADDED",
+            air = "AIRING"
+        ))
     )?;
     for e in &entries {
         let s = &lib.series[e.index];
@@ -543,10 +639,10 @@ fn inbox(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
         };
         writeln!(
             out,
-            "{title} {:>9} {:>6}  {}  {hint}",
-            s.disk_range(),
-            ago_opt(s.last_added(), now),
-            dim(&pad(&s.airing_text(now), 18)),
+            "{title} {disk:>9} {added:>6}  {airing}  {hint}",
+            disk = s.disk_range(),
+            added = ago_opt(s.last_added(), now),
+            airing = dim(&pad(&s.airing_text(now), 18))
         )?;
     }
     let (follow, skip) = (cyan("anipv status <series> following"), cyan("anipv status <series> skipped"));
@@ -561,16 +657,16 @@ fn next(ctx: &Ctx, paused: bool, out: &mut impl Write) -> Result<()> {
     if list.is_empty() {
         writeln!(
             out,
-            "Nothing followed yet. Try {} or {}.",
-            cyan("anipv status <series> following"),
-            cyan("anipv import-fish")
+            "Nothing followed yet. Try {follow} or {import}.",
+            follow = cyan("anipv status <series> following"),
+            import = cyan("anipv import-fish")
         )?;
         return Ok(());
     }
     writeln!(
         out,
-        "{}",
-        bold(&format!(
+        "{header}",
+        header = bold(&format!(
             "{s:<40} {n:>6} {new:>4} {w:>9} {a:>8}  {air}",
             s = "SERIES",
             n = "NEXT",
@@ -592,6 +688,9 @@ fn next(ctx: &Ctx, paused: bool, out: &mut impl Write) -> Result<()> {
             progress = s.progress(),
             airing = dim(&s.airing_text(now))
         )?;
+        if let Some(place) = lib.franchise_place(&s.key) {
+            writeln!(out, "  {place}", place = dim(&format!("↳ {place}")))?;
+        }
     }
     Ok(())
 }
@@ -601,8 +700,8 @@ fn ls(ctx: &Ctx, wanted: &[SeriesStatus], all: bool, out: &mut impl Write) -> Re
     let now = now();
     writeln!(
         out,
-        "{}",
-        bold(&format!(
+        "{header}",
+        header = bold(&format!(
             "{s:<44} {st:<10} {w:>9} {d:>6} {a:>8}",
             s = "SERIES",
             st = "STATUS",
@@ -652,19 +751,44 @@ fn show(ctx: &Ctx, query: &str, all: bool, out: &mut impl Write) -> Result<()> {
         key = dim(&s.key)
     )?;
     if let Some(n) = &s.note {
-        writeln!(out, "  {}", dim(n))?;
+        writeln!(out, "  {note}", note = dim(n))?;
     }
     if !s.aliases.is_empty() {
         writeln!(out, "  {label} {names}", label = dim("also:"), names = s.aliases.join(", "))?;
+    }
+    if let Some((f, pos)) = lib.franchise_of(&s.key) {
+        // This series' stops in bold, the ones watched with a ✓.
+        let stops: Vec<String> = f
+            .stops
+            .iter()
+            .map(|stop| {
+                let label = lib.stop_label(stop);
+                let label = if stop.watched { format!("{label} ✓") } else { label.to_string() };
+                if lib.series[stop.series].key == s.key { bold(&label) } else { label }
+            })
+            .collect();
+        let label = dim(&format!("{name} {at}/{stops}:", name = f.name, at = pos + 1, stops = f.stops.len()));
+        writeln!(out, "  {label} {stops}", stops = stops.join(" → "))?;
     }
     if s.meta.as_ref().is_some_and(|m| m.anilist.is_some()) {
         let (label, progress, airing) = (dim("meta:"), s.progress(), dim(&s.airing_text(now)));
         writeln!(out, "  {label} watched {progress} · {airing}")?;
     }
+    for (dir, n) in s.shared_dirs(&ctx.cfg) {
+        let hint =
+            format!("anipv split {key:?} {folder:?}", key = s.key, folder = dir.rsplit('/').next().unwrap_or(dir));
+        writeln!(
+            out,
+            "  {warn} {n} episode(s) in {dir} are also in another folder: a second release, or another anime ({hint})?",
+            warn = yellow("!"),
+            dir = bold(dir),
+            hint = cyan(&hint)
+        )?;
+    }
     writeln!(out)?;
     let missing = s.missing_count(true);
     if missing > 0 && !all {
-        writeln!(out, "  {}", dim(&format!("… {missing} more not on disk (--all lists them)")))?;
+        writeln!(out, "  {more}", more = dim(&format!("… {missing} more not on disk (--all lists them)")))?;
     }
     for it in s.ordered_items(true, all) {
         let kind = match it.key.kind {
@@ -676,7 +800,7 @@ fn show(ctx: &Ctx, query: &str, all: bool, out: &mut impl Write) -> Result<()> {
         let file = it.best_file().map_or_else(|| red("(not on disk)"), crate::library::FileRef::name);
         let extra = match it.state {
             WatchState::Started { .. } => it.state.percent().map(|p| yellow(&format!(" {p}"))).unwrap_or_default(),
-            WatchState::Watched { at } => dim(&format!(" {}", ago(at, now))),
+            WatchState::Watched { at } => dim(&format!(" {when}", when = ago(at, now))),
             WatchState::Unwatched => String::new(),
         };
         let (glyph, item, file) = (state_glyph(&it.state), it.key.describe(), dim(&file));
@@ -731,21 +855,23 @@ fn play_blocking(ctx: &Ctx, s: &mut Session, files: &[crate::mpv::PlayFile], out
                 }
                 Ok((what, o)) => match o {
                     Outcome::Watched => {
-                        writeln!(out, "  {} watched {what}", state_glyph(&WatchState::Watched { at: 0 }))
+                        writeln!(out, "  {mark} watched {what}", mark = state_glyph(&WatchState::Watched { at: 0 }))
                     }
                     Outcome::Partial { pos, .. } => {
                         let (mark, at) =
                             (state_glyph(&WatchState::Started { pos, dur: None, at: 0 }), crate::fmt::clock(pos));
                         writeln!(out, "  {mark} stopped at {at} {what}")
                     }
-                    Outcome::Nothing => writeln!(out, "  {} skipped {what}", state_glyph(&WatchState::Unwatched)),
+                    Outcome::Nothing => {
+                        writeln!(out, "  {mark} skipped {what}", mark = state_glyph(&WatchState::Unwatched))
+                    }
                 },
             },
-            PlayerEvent::Error(e) => writeln!(out, "{} {e}", red("✗")),
+            PlayerEvent::Error(e) => writeln!(out, "{fail} {e}", fail = red("✗")),
             PlayerEvent::Exited { played, error } => {
                 let res = match (played, error) {
-                    (_, Some(e)) => writeln!(out, "{} {e}", red("✗")),
-                    (false, None) => writeln!(out, "{} mpv exited before playing anything", red("✗")),
+                    (_, Some(e)) => writeln!(out, "{fail} {e}", fail = red("✗")),
+                    (false, None) => writeln!(out, "{fail} mpv exited before playing anything", fail = red("✗")),
                     (true, None) => Ok(()),
                 };
                 written = written.and(res);
@@ -767,35 +893,35 @@ fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) 
     let matched = p.watches.iter().filter(|w| w.matched).count();
     writeln!(
         out,
-        "{} mpv commands → {} watched items ({} matched to files on disk, {} from file names only)",
-        p.commands,
-        bold(&p.watches.len().to_string()),
-        green(&matched.to_string()),
-        yellow(&(p.watches.len() - matched).to_string())
+        "{commands} mpv commands → {watches} watched items ({matched} matched to files on disk, {unmatched} from file names only)",
+        commands = p.commands,
+        watches = bold(&p.watches.len().to_string()),
+        matched = green(&matched.to_string()),
+        unmatched = yellow(&(p.watches.len() - matched).to_string())
     )?;
     let touched: HashSet<&str> = p.watches.iter().map(|w| w.series.as_str()).collect();
-    writeln!(out, "{} series touched", touched.len())?;
+    writeln!(out, "{touched} series touched", touched = touched.len())?;
     let skipped = [
         (&p.ambiguous, "ambiguous file name(s) skipped (several indexed files share the name)"),
         (&p.unidentified, "file name(s) skipped (nothing in the name or its folder says which show)"),
     ];
     for (names, why) in skipped.into_iter().filter(|(names, _)| !names.is_empty()) {
-        writeln!(out, "{} {n} {why}", yellow("!"), n = names.len())?;
+        writeln!(out, "{warn} {n} {why}", n = names.len(), warn = yellow("!"))?;
         if a.dry_run {
             for name in names {
-                writeln!(out, "    {}", dim(name))?;
+                writeln!(out, "    {name}", name = dim(name))?;
             }
         }
     }
     if !p.proposals.is_empty() {
-        writeln!(out, "\n{}", bold("Suggested statuses (for untracked series):"))?;
+        writeln!(out, "\n{heading}", heading = bold("Suggested statuses (for untracked series):"))?;
         for pr in &p.proposals {
             let (status, title, last) = (status_cell(pr.status, 10), pad(&pr.title, 50), dim(&ago(pr.last, now)));
             writeln!(out, "  {status} {title}  {last}")?;
         }
     }
     if a.dry_run {
-        writeln!(out, "\n{}", dim("dry run: nothing written"))?;
+        writeln!(out, "\n{note}", note = dim("dry run: nothing written"))?;
         return Ok(());
     }
     let events = p.events(ctx.log.device());
@@ -812,7 +938,7 @@ fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) 
     let also = if a.apply_status { " and applied statuses" } else { "" };
     writeln!(out, "\n{ok} imported{also}", ok = green("✓"))?;
     if !a.apply_status && !p.proposals.is_empty() {
-        writeln!(out, "  re-run with {} to apply the suggestions", cyan("--apply-status"))?;
+        writeln!(out, "  re-run with {cmd} to apply the suggestions", cmd = cyan("--apply-status"))?;
     }
     Ok(())
 }
@@ -824,8 +950,8 @@ fn doctor(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
     if ctx.cfg.device.is_none() {
         writeln!(
             out,
-            "{}",
-            yellow(&format!(
+            "{warning}",
+            warning = yellow(&format!(
                 "  device name {device:?} comes from the hostname; set `device` in the config so a hostname \
                  change does not start a new event log"
             ))
@@ -841,39 +967,39 @@ fn doctor(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
         let ok = r.resolved().is_dir();
         let last = match ctx.db.last_scan(&r.name)? {
             Some(s) => format!(
-                "scanned {} · {} files · {}",
-                match ago(s.finished_at, now()).as_str() {
+                "scanned {when} · {seen} files · {completeness}",
+                when = match ago(s.finished_at, now()).as_str() {
                     "now" => "just now".to_string(),
                     t => format!("{t} ago"),
                 },
-                s.stats.seen,
-                if s.complete { "complete" } else { "incomplete (some folders unreadable)" }
+                seen = s.stats.seen,
+                completeness = if s.complete { "complete" } else { "incomplete (some folders unreadable)" }
             ),
             None => "never scanned".into(),
         };
         writeln!(
             out,
-            "  {} {:<12} {:?} {}  {}",
-            if ok { green("✓") } else { red("✗") },
-            r.name,
-            r.kind,
-            r.resolved().display(),
-            dim(&last)
+            "  {mark} {name:<12} {kind:?} {resolved}  {last}",
+            mark = if ok { green("✓") } else { red("✗") },
+            name = r.name,
+            kind = r.kind,
+            resolved = r.resolved().display(),
+            last = dim(&last)
         )?;
     }
     // Warnings are part of this report, not printed on their own.
     let Session { log, lib, .. } = ctx.session()?;
     writeln!(out, "{label} {n} events", label = bold("log:   "), n = log.events().len())?;
     for w in &lib.warnings {
-        writeln!(out, "  {} {w}", red("✗"))?;
+        writeln!(out, "  {fail} {w}", fail = red("✗"))?;
     }
     // Unreadable files are among the warnings; these are the malformed lines.
     let lines: Vec<&String> = log.errors().iter().filter(|e| !log.unreadable().contains(e)).collect();
     for e in lines.iter().take(10) {
-        writeln!(out, "  {} {e}", red("✗"))?;
+        writeln!(out, "  {fail} {e}", fail = red("✗"))?;
     }
     if lines.len() > 10 {
-        writeln!(out, "  {}", dim(&format!("… and {} more malformed lines", lines.len() - 10)))?;
+        writeln!(out, "  {more}", more = dim(&format!("… and {n} more malformed lines", n = lines.len() - 10)))?;
     }
     let mut odd: Vec<&crate::library::IndexedFile> = lib
         .files
@@ -890,9 +1016,9 @@ fn doctor(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
     odd.extend(movies_in_ongoing);
     writeln!(
         out,
-        "\n{} {} files without an episode number (movies/one-offs or parser misses):",
-        bold("parse:"),
-        odd.len()
+        "\n{label} {odd} files without an episode number (movies/one-offs or parser misses):",
+        label = bold("parse:"),
+        odd = odd.len()
     )?;
     for f in odd.iter().take(50) {
         let (series, file) = (pad(&f.series, 40), dim(&f.file.rel.to_string_lossy()));

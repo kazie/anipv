@@ -35,7 +35,7 @@ pub(crate) fn ctx() -> (tempfile::TempDir, Ctx) {
 pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
     // Never over an existing home: the demo writes a config and event logs.
     if std::fs::read_dir(home).is_ok_and(|mut d| d.next().is_some()) {
-        anyhow::bail!("{} is not empty; the demo needs a new or empty folder", home.display());
+        anyhow::bail!("{home} is not empty; the demo needs a new or empty folder", home = home.display());
     }
     let media = home.join("media");
     let dl = media.join("Downloads");
@@ -81,6 +81,16 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
     for e in 1..=12 {
         files.push(anime.join(format!("Yuru Camp/[GroupF] Yuru Camp - {e:02} [BD 1080p].mkv")));
     }
+    // A franchise folder: numbered entries, each a series of its own.
+    for (dir, title, eps) in [
+        ("01 - Bakemonogatari", "Bakemonogatari", 15),
+        ("02 - Nisemonogatari", "Nisemonogatari", 11),
+        ("03 - Nekomonogatari (Black)", "Nekomonogatari (Black)", 4),
+    ] {
+        for e in 1..=eps {
+            files.push(anime.join(format!("Monogatari Series/{dir}/[GroupG] {title} - {e:02} [BD 1080p].mkv")));
+        }
+    }
     for f in &files {
         touch(f)?;
     }
@@ -118,7 +128,15 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         ),
         ev(ts - 400 * DAY, "desktop", status("k on", SeriesStatus::Dropped, Some("not for me"))),
         ev(ts - 20 * DAY, "desktop", status("meitantei precure", SeriesStatus::Following, None)),
+        ev(ts - 90 * DAY, "desktop", status("bakemonogatari", SeriesStatus::Completed, None)),
+        ev(ts - 25 * DAY, "desktop", status("nisemonogatari", SeriesStatus::Following, None)),
     ];
+    for n in 1..=15 {
+        events.push(ev(ts - (110 - i64::from(n)) * DAY, "desktop", watched("bakemonogatari", n)));
+    }
+    for n in 1..=3 {
+        events.push(ev(ts - (25 - i64::from(n)) * DAY, "desktop", watched("nisemonogatari", n)));
+    }
     for n in 1..=28 {
         events.push(ev(ts - (40 - i64::from(n)) * DAY, "desktop", watched("sousou no frieren", n)));
     }
@@ -194,6 +212,9 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         meta("aria the animation", 477, Some(13), "FINISHED", None),
         meta("k on", 5680, Some(13), "FINISHED", None),
         meta("yuru camp", 98444, Some(12), "FINISHED", None),
+        meta("bakemonogatari", 5081, Some(15), "FINISHED", None),
+        meta("nisemonogatari", 11597, Some(11), "FINISHED", None),
+        meta("nekomonogatari", 15689, Some(4), "FINISHED", None),
         // In the Inbox: score and popularity help decide whether to follow it.
         meta("dungeon meshi", 153_518, Some(24), "FINISHED", None),
         meta("meitantei precure", 195_000, Some(48), "RELEASING", Some((4, ts + 4 * DAY))),
@@ -232,5 +253,7 @@ mod tests {
         assert_eq!(lib.get("dandadan s2").unwrap().new_episodes().len(), 3);
         assert_eq!(lib.get("aria the animation").unwrap().status, SeriesStatus::Paused);
         assert!(std::fs::read_dir(ctx.log.dir()).unwrap().count() >= 2);
+        let (mono, pos) = lib.franchise_of("nisemonogatari").unwrap();
+        assert_eq!((mono.name.as_str(), pos, mono.stops.len()), ("Monogatari Series", 1, 3));
     }
 }

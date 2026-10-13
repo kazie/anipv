@@ -15,6 +15,8 @@ pub mod events;
 #[doc(hidden)]
 pub mod fake_mpv;
 pub mod fmt;
+pub mod folders;
+pub mod franchise;
 pub mod identity;
 pub mod import_fish;
 pub mod index;

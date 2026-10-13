@@ -138,7 +138,7 @@ impl Paths {
         let dirs =
             [Some(self.events_dir.as_path()), self.db_file.parent(), Some(&self.cache_dir), Some(&self.runtime_dir)];
         for d in dirs.into_iter().flatten() {
-            std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+            std::fs::create_dir_all(d).with_context(|| format!("creating {dir}", dir = d.display()))?;
         }
         Ok(())
     }
@@ -193,11 +193,11 @@ impl Config {
     /// Load the config file, falling back to defaults when it does not exist.
     pub fn load(path: &Path) -> Result<Self> {
         let cfg: Self = match std::fs::read_to_string(path) {
-            Ok(s) => toml::from_str(&s).with_context(|| format!("parsing {}", path.display()))?,
+            Ok(s) => toml::from_str(&s).with_context(|| format!("parsing {path}", path = path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+            Err(e) => return Err(e).with_context(|| format!("reading {path}", path = path.display())),
         };
-        cfg.validate().with_context(|| format!("in {}", path.display()))?;
+        cfg.validate().with_context(|| format!("in {path}", path = path.display()))?;
         Ok(cfg)
     }
 
@@ -206,7 +206,10 @@ impl Config {
     /// with its root and grouping depending on which scan saw it last.
     pub fn validate(&self) -> Result<()> {
         if !(self.watched_threshold > 0.0 && self.watched_threshold <= 1.0) {
-            anyhow::bail!("`watched_threshold` must be above 0 and at most 1 (got {})", self.watched_threshold);
+            anyhow::bail!(
+                "`watched_threshold` must be above 0 and at most 1 (got {watched_threshold})",
+                watched_threshold = self.watched_threshold
+            );
         }
         if let Some(d) = &self.device
             && !is_valid_device(d)
@@ -225,9 +228,9 @@ impl Config {
             && !is_absolute_or_tilde(d)
         {
             anyhow::bail!(
-                "`events_dir` \"{}\" must be absolute or start with `~` (a relative path would depend on the \
+                "`events_dir` \"{dir}\" must be absolute or start with `~` (a relative path would depend on the \
                  directory anipv is started from)",
-                d.display()
+                dir = d.display()
             );
         }
         let mut seen = HashSet::new();
@@ -236,17 +239,17 @@ impl Config {
                 anyhow::bail!("a root has an empty `name`; give each `[[roots]]` a short name");
             }
             if r.path.as_os_str().is_empty() {
-                anyhow::bail!("root {:?} has an empty `path`", r.name);
+                anyhow::bail!("root {name:?} has an empty `path`", name = r.name);
             }
             if !is_absolute_or_tilde(&r.path) {
                 anyhow::bail!(
-                    "root {:?} has a relative `path` \"{}\"; use an absolute path or one starting with `~`",
-                    r.name,
-                    r.path.display()
+                    "root {name:?} has a relative `path` \"{path}\"; use an absolute path or one starting with `~`",
+                    name = r.name,
+                    path = r.path.display()
                 );
             }
             if !seen.insert(r.name.as_str()) {
-                anyhow::bail!("two roots are named {:?}; give each `[[roots]]` a unique `name`", r.name);
+                anyhow::bail!("two roots are named {name:?}; give each `[[roots]]` a unique `name`", name = r.name);
             }
         }
         let dirs: Vec<PathBuf> = self.roots.iter().map(|r| normalized(&r.resolved())).collect();
@@ -332,7 +335,7 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".part.{}.{nanos}.{seq}", std::process::id()));
+    tmp.push(format!(".part.{id}.{nanos}.{seq}", id = std::process::id()));
     let res = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp);

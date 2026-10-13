@@ -507,7 +507,7 @@ fn with_episode(s: &str, hit: &Hit, mut out: Parsed) -> Parsed {
         let kw = kw(&c);
         let ep = out.ep.take().map(|e| e.to_string()).unwrap_or_default();
         out.kind = ItemKind::Extra;
-        out.label = label_of(&format!("{} {ep}", &title[kw.start()..]));
+        out.label = label_of(&format!("{title} {ep}", title = &title[kw.start()..]));
         title.truncate(kw.start());
     } else if is_extra_tail(rest_trim) {
         // `Show - 20 Next Ep PV` → extra attached to episode 20.

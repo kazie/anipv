@@ -352,8 +352,11 @@ pub struct SyncResult {
     /// the offline database, it is old, or a title search stopped at a failed
     /// request.
     pub notes: Vec<String>,
-    /// `AniList` prequel ids fetched for inbox series (ids `AniList` knows).
+    /// `AniList` prequel ids fetched for inbox and engaged series (ids
+    /// `AniList` knows).
     pub prequels: Vec<(u64, Vec<u64>)>,
+    /// `AniList` sequel ids fetched with them.
+    pub sequels: Vec<(u64, Vec<u64>)>,
     /// Every id `AniList` was asked about, and whether it returned it.
     pub checked: Vec<(u64, bool)>,
     /// Non-fatal problems (offline DB unreadable, `AniList` unreachable…).
@@ -381,6 +384,19 @@ pub fn inbox_lookups(lib: &Library, cfg: &crate::config::Config, checks: &Checks
             };
             due.then(|| (s.key.clone(), id))
         })
+        .collect()
+}
+
+/// Series you have a relationship with (see [`Series::engaged`]) whose
+/// `AniList` relations (prequels and sequels, to group them with their other
+/// seasons and entries) were never fetched, or not for [`INBOX_RECHECK`].
+/// Only ids of series you engage with are sent, as for airing refreshes.
+pub fn relation_lookups(lib: &Library, ts: i64) -> Vec<(String, u64)> {
+    lib.series
+        .iter()
+        .filter(|s| s.engaged())
+        .filter(|s| s.relations_at.is_none_or(|at| ts - at >= INBOX_RECHECK))
+        .filter_map(|s| Some((s.key.clone(), s.anilist_id()?)))
         .collect()
 }
 
@@ -430,6 +446,8 @@ impl Default for Refresh {
 pub struct SyncOptions {
     /// Inbox series to fetch airing info and prequels for (see [`inbox_lookups`]).
     pub inbox: Vec<(String, u64)>,
+    /// Engaged series to fetch relations for (see [`relation_lookups`]).
+    pub relations: Vec<(String, u64)>,
     /// What to refresh from `AniList`.
     pub refresh: Refresh,
     /// Match against the offline database (it always is after a download).
@@ -464,6 +482,7 @@ impl Default for SyncOptions {
     fn default() -> Self {
         Self {
             inbox: Vec::new(),
+            relations: Vec::new(),
             refresh: Refresh::default(),
             rematch: false,
             only: None,
@@ -488,7 +507,10 @@ impl SyncOptions {
     /// True if the sync would ask `AniList` anything (given a connection):
     /// inbox lookups, a refresh, or title searches.
     pub fn asks_anilist(&self) -> bool {
-        !self.inbox.is_empty() || !matches!(&self.refresh, Refresh::Stale { ids, .. } if ids.is_empty()) || self.search
+        !self.inbox.is_empty()
+            || !self.relations.is_empty()
+            || !matches!(&self.refresh, Refresh::Stale { ids, .. } if ids.is_empty())
+            || self.search
     }
 }
 
@@ -508,6 +530,7 @@ pub fn plan(
     let search = network && cfg.anilist_search;
     let offline_urls = offline::source_urls(cfg.offline_db_url.as_deref());
     let inbox = if network { inbox_lookups(lib, cfg, checks, ts) } else { Vec::new() };
+    let relations = if network { relation_lookups(lib, ts) } else { Vec::new() };
     let only = match request {
         Request::Auto { max_age } => {
             let ids = if network { stale_ids(lib, checks, ts, *max_age) } else { Vec::new() };
@@ -515,12 +538,13 @@ pub fn plan(
             // Searches run after a rematch (which may find series to search),
             // or on their own when some are due.
             let search = search && (rematch || searches_due(lib, ts));
-            if ids.is_empty() && inbox.is_empty() && !rematch && !search {
+            if ids.is_empty() && inbox.is_empty() && relations.is_empty() && !rematch && !search {
                 return None;
             }
             let refresh = Refresh::Stale { ids, max_age: *max_age, checks: checks.clone() };
             return Some(SyncOptions {
                 inbox,
+                relations,
                 refresh,
                 rematch,
                 offline_urls,
@@ -533,7 +557,15 @@ pub fn plan(
         Request::Series(key) => Some(key.clone()),
     };
     // A requested update also refreshes an old offline database.
-    Some(SyncOptions { inbox, update_offline: network, network, search, offline_urls, ..SyncOptions::requested(only) })
+    Some(SyncOptions {
+        inbox,
+        relations,
+        update_offline: network,
+        network,
+        search,
+        offline_urls,
+        ..SyncOptions::requested(only)
+    })
 }
 
 /// What a [`sync_with_progress`] is doing.
@@ -668,11 +700,26 @@ pub fn sync_with_progress(
                 fresh.insert(r.series.clone(), r);
             }
         }
-        if !inbox.is_empty() {
-            let ids: Vec<u64> = inbox.iter().map(|p| p.1).collect();
-            let res = anilist::fetch_prequels(http, &ids);
-            record(&ids, &res.answered, res.items.iter().map(|(id, _)| *id).collect(), &res.errors);
-            out.prequels = res.items;
+        // Relations for the inbox (recorded as asked about, with their airing
+        // info) and for engaged series (not: their airing info is refreshed
+        // on its own schedule).
+        let inbox_ids: Vec<u64> = inbox.iter().map(|p| p.1).collect();
+        let mut ids = inbox_ids.clone();
+        ids.extend(opts.relations.iter().filter(|(k, _)| only.is_none_or(|o| o == k)).map(|p| p.1));
+        let mut seen_ids = HashSet::new();
+        ids.retain(|id| seen_ids.insert(*id));
+        if !ids.is_empty() {
+            let res = anilist::fetch_relations(http, &ids);
+            let asked: HashSet<u64> = inbox_ids.iter().copied().collect();
+            let answered: Vec<u64> = res.answered.iter().copied().filter(|id| asked.contains(id)).collect();
+            let got = res.items.iter().map(|r| r.id).filter(|id| asked.contains(id)).collect();
+            record(&inbox_ids, &answered, got, &res.errors);
+            out.prequels = res.items.iter().map(|r| (r.id, r.prequels.clone())).collect();
+            // An id AniList didn't return gets an empty sequel list too: it
+            // is asked again after `INBOX_RECHECK`, not on every start.
+            let returned: HashSet<u64> = res.items.iter().map(|r| r.id).collect();
+            let unknown = res.answered.iter().filter(|id| !returned.contains(id)).map(|&id| (id, Vec::new()));
+            out.sequels = res.items.into_iter().map(|r| (r.id, r.sequels)).chain(unknown).collect();
         }
         out.checked = checked.into_iter().filter(|(id, _)| !failed.contains(id)).collect();
     }
@@ -919,11 +966,15 @@ mod tests {
         let cfg = Config { anilist: true, ..cfg() };
         let index = |rows: Vec<SeriesMeta>| {
             let files = vec![FileRow::test("dl", "[A] One Piece - 1181.mkv")];
-            Index::new(&cfg, files, MetaCache { rows, ..MetaCache::default() })
+            // Relations fetched already (see `relation_lookups`).
+            let sequels = HashMap::from([(21, (vec![], 100))]);
+            Index::new(&cfg, files, MetaCache { rows, sequels, ..MetaCache::default() })
         };
         let l = Library::build(&cfg, std::slice::from_ref(&follow), &index(vec![fresh]));
         let auto = Request::Auto { max_age: 3600 };
         assert!(plan(&l, &cfg, &Checks::new(), &auto, 100).is_none());
+        let due = plan(&l, &cfg, &Checks::new(), &auto, 100 + INBOX_RECHECK).unwrap();
+        assert_eq!(due.relations, vec![("one piece".into(), 21)]);
         let all = plan(&l, &cfg, &Checks::new(), &Request::All, 100).unwrap();
         assert!(all.asks_anilist() && all.update_offline && all.rematch);
         let stale = plan(&l, &cfg, &Checks::new(), &auto, 99 + 3600).unwrap();
@@ -967,7 +1018,7 @@ mod tests {
         let l = lib(&[], &[linked(true)]);
         assert!(l.get("zzz").unwrap().search_linked());
         let rep = match_library(&l, &db, 9, None);
-        assert!(rep.attempts.iter().all(|a| a.series != "zzz"), "{:?}", rep.attempts);
+        assert!(rep.attempts.iter().all(|a| a.series != "zzz"), "{attempts:?}", attempts = rep.attempts);
         assert!(rep.unlinked.iter().all(|u| u.series != "zzz") && rep.rows.iter().all(|r| r.series != "zzz"));
 
         // The same row without that mark is undone, as before.
@@ -988,7 +1039,7 @@ mod tests {
             ..SeriesMeta::default()
         };
         let rep = match_library(&lib(&[], &[linked]), &db, 9, None);
-        assert!(rep.attempts.iter().all(|a| a.series != "shared"), "{:?}", rep.attempts);
+        assert!(rep.attempts.iter().all(|a| a.series != "shared"), "{attempts:?}", attempts = rep.attempts);
         assert!(rep.unlinked.iter().all(|u| u.series != "shared"));
     }
 
@@ -1168,7 +1219,7 @@ mod tests {
         assert_eq!(inbox_lookups(&l, &cfg(), &none, 100), vec![("zzz".to_string(), 5)]);
         let opts = SyncOptions { inbox: vec![("zzz".into(), 5)], ..auto(&l, Checks::new(), 100, 0) };
         let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&Echo::unknown()), &opts, 100);
-        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
         assert!(res.prequels.is_empty(), "nothing is padded in");
         assert_eq!(res.checked, vec![(5, false)]);
 
@@ -1195,6 +1246,37 @@ mod tests {
         // Found by an airing refresh alone: the prequels are still to be asked for.
         let (l, checked) = inbox_lib(checks(&res, 100), &[]);
         assert_eq!(inbox_lookups(&l, &cfg(), &checked, 101).len(), 1);
+    }
+
+    /// Relations (prequels and sequels) of the series you engage with are
+    /// fetched once, then monthly, without counting as an airing check.
+    #[test]
+    fn engaged_series_relations_are_fetched_monthly() {
+        let follow = Event::new(1, "d", EventBody::status("zzz", SeriesStatus::Following, None));
+        let l = lib(std::slice::from_ref(&follow), &[row("zzz", 5, Some(1))]);
+        assert_eq!(relation_lookups(&l, 100), vec![("zzz".to_string(), 5)]);
+        // Untracked series without a watched episode aren't sent.
+        assert!(relation_lookups(&lib(&[], &[row("zzz", 5, Some(1))]), 100).is_empty());
+
+        let opts = SyncOptions { relations: relation_lookups(&l, 100), ..auto(&l, Checks::new(), 100, i64::MAX) };
+        let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&Echo::default()), &opts, 100);
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
+        assert_eq!((res.prequels, res.sequels), (vec![(5, vec![])], vec![(5, vec![])]));
+        assert!(res.checked.is_empty(), "airing info wasn't asked for");
+
+        // An id AniList doesn't know is recorded too, so it isn't asked on every start.
+        let unknown = sync(&l, tempfile::tempdir().unwrap().path(), Some(&Echo::unknown()), &opts, 100);
+        assert_eq!((unknown.prequels, unknown.sequels), (vec![], vec![(5, vec![])]));
+
+        let meta = MetaCache {
+            rows: vec![row("zzz", 5, Some(1))],
+            sequels: HashMap::from([(5, (vec![], 100))]),
+            ..MetaCache::default()
+        };
+        let index = Index::new(&cfg(), vec![FileRow::test("dl", "[A] Zzz - 01.mkv")], meta);
+        let l = Library::build(&cfg(), &[follow], &index);
+        assert!(relation_lookups(&l, 100 + INBOX_RECHECK - 1).is_empty());
+        assert_eq!(relation_lookups(&l, 100 + INBOX_RECHECK).len(), 1);
     }
 
     /// A followed series whose id `AniList` doesn't know isn't asked about on
@@ -1234,8 +1316,8 @@ mod tests {
         let rows: Vec<SeriesMeta> = (0..60).map(|i| row(&format!("s{i}"), 1000 + i, None)).collect();
         let l = lib(&follows, &rows);
         let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&Echo::failing(2)), &requested(None), 100);
-        assert_eq!(res.errors.len(), 1, "{:?}", res.errors);
-        assert!(res.errors[0].contains("connection reset"), "{:?}", res.errors);
+        assert_eq!(res.errors.len(), 1, "{errors:?}", errors = res.errors);
+        assert!(res.errors[0].contains("connection reset"), "{errors:?}", errors = res.errors);
         assert_eq!(res.rows.len(), 50, "the first batch's rows are kept");
         let mut refreshed: Vec<u64> = res.rows.iter().filter_map(|r| r.anilist).collect();
         let mut checked: Vec<u64> = res
@@ -1261,7 +1343,7 @@ mod tests {
         let mut steps = Vec::new();
         let res = sync_with_progress(&l, dir.path(), None, &opts, 5, &mut |s| steps.push(s));
         assert!(steps.is_empty(), "no download");
-        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
         assert_eq!(res.db_version.as_deref(), Some("2026-07-04"));
         assert!(res.rows.iter().any(|r| r.series == "one piece" && r.anilist == Some(21)));
     }

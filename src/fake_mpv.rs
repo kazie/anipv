@@ -69,7 +69,8 @@ fn parse_args(args: &[OsString]) -> Result<Args> {
 pub fn run(demo: bool, args: &[OsString]) -> Result<()> {
     let args = parse_args(args)?;
     let socket = &args.socket;
-    let listener = UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
+    let listener =
+        UnixListener::bind(socket).with_context(|| format!("binding {socket}", socket = socket.display()))?;
     let (conn, _) = listener.accept()?;
     let res = play(&conn, &args, demo);
     // Close the connection for every handle on it (the request reader holds

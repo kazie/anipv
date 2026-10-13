@@ -178,8 +178,8 @@ impl ItemKey {
             (ItemKind::Episode, Some(e)) => e,
             (ItemKind::Episode, None) => "?".into(),
             (_, Some(e)) if self.label.is_empty() => e,
-            (ItemKind::Special, Some(e)) => format!("{} {e}", self.label),
-            (_, Some(e)) => format!("{e} · {}", self.label),
+            (ItemKind::Special, Some(e)) => format!("{label} {e}", label = self.label),
+            (_, Some(e)) => format!("{e} · {label}", label = self.label),
             (ItemKind::Movie, None) if self.label.is_empty() => "movie".into(),
             (_, None) => self.label.clone(),
         }
@@ -347,7 +347,7 @@ mod tests {
         for k in [ItemKind::Episode, ItemKind::Special, ItemKind::Extra, ItemKind::Movie] {
             assert!(k.is_known());
             let j = serde_json::to_string(&k).unwrap();
-            assert_eq!(j, format!("\"{}\"", k.as_str()));
+            assert_eq!(j, format!("\"{key}\"", key = k.as_str()));
             assert_eq!(serde_json::from_str::<ItemKind>(&j).unwrap(), k);
         }
         // A kind from a newer version reads as unknown instead of failing…

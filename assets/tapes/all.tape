@@ -54,6 +54,15 @@ Down Sleep 600ms Enter Sleep 500ms
 Type "catching up later" Sleep 600ms Enter Sleep 1.5s
 # Back to the series list, the help, and Up next (paused shows are hidden).
 Escape Sleep 800ms
+# Files as folders: up to the roots, into Anime, then the Monogatari Series
+# franchise folder; space queues an entry's unwatched episodes, in order.
+Type "4" Sleep 1s
+Type "t" Sleep 1.2s
+Type "h" Sleep 1s
+Down Sleep 400ms Enter Sleep 1.2s
+Down Sleep 300ms Down Sleep 300ms Down Sleep 500ms Enter Sleep 1.5s
+Down Sleep 400ms Down Sleep 600ms Space Sleep 1.8s
+Type "5" Sleep 1.8s
 # The help scrolls; the remote-mode keys are at its end.
 Type "?" Sleep 1.2s PageDown Sleep 700ms PageDown Sleep 700ms PageDown Sleep 2s Escape Sleep 500ms
 Type "1" Sleep 1.5s

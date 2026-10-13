@@ -264,7 +264,7 @@ impl OfflineDb {
         match std::fs::read(&p) {
             Ok(json) => Ok(Some(Self::from_slice(&json)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("reading {}", p.display())),
+            Err(e) => Err(e).with_context(|| format!("reading {path}", path = p.display())),
         }
     }
 
@@ -307,7 +307,7 @@ impl OfflineDb {
         if errors.is_empty() {
             anyhow::bail!("no download source for anime-offline-database");
         }
-        anyhow::bail!("downloading anime-offline-database failed ({})", errors.join("; "))
+        anyhow::bail!("downloading anime-offline-database failed ({errors})", errors = errors.join("; "))
     }
 
     /// Atomically replace the cached database with `json`.

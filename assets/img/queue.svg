@@ -4,7 +4,7 @@
 <text x="486" y="22" fill="#6c7086" text-anchor="middle" font-size="12">anipv — queue</text>
 <rect x="16.0" y="33.0" width="58.8" height="19" fill="#cba6f7"/>
 <text x="16.0" y="47.0" fill="#45475a" font-weight="bold" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs"> anipv </text>
-<text x="83.2" y="47.0" fill="#bac2de" xml:space="preserve" textLength="100.8" lengthAdjust="spacingAndGlyphs">1 Up next(5)</text>
+<text x="83.2" y="47.0" fill="#bac2de" xml:space="preserve" textLength="100.8" lengthAdjust="spacingAndGlyphs">1 Up next(6)</text>
 <text x="200.8" y="47.0" fill="#bac2de" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">2 Inbox(5)</text>
 <text x="301.6" y="47.0" fill="#bac2de" xml:space="preserve" textLength="67.2" lengthAdjust="spacingAndGlyphs">3 Series</text>
 <text x="385.6" y="47.0" fill="#bac2de" xml:space="preserve" textLength="58.8" lengthAdjust="spacingAndGlyphs">4 Files</text>
@@ -28,9 +28,9 @@
 <text x="948.4" y="104.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="123.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="32.8" y="123.0" fill="#6c7086" xml:space="preserve" textLength="25.2" lengthAdjust="spacingAndGlyphs">2  </text>
-<text x="58.0" y="123.0" fill="#cdd6f4" xml:space="preserve" textLength="294.0" lengthAdjust="spacingAndGlyphs"> One Piece                         </text>
-<text x="352.0" y="123.0" fill="#cdd6f4" font-weight="bold" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">1181      </text>
-<text x="545.2" y="123.0" fill="#6c7086" xml:space="preserve" textLength="411.6" lengthAdjust="spacingAndGlyphs">[GroupA] One Piece - 1181 (1080p).mkv           │</text>
+<text x="58.0" y="123.0" fill="#cdd6f4" xml:space="preserve" textLength="294.0" lengthAdjust="spacingAndGlyphs"> Nisemonogatari                    </text>
+<text x="352.0" y="123.0" fill="#cdd6f4" font-weight="bold" xml:space="preserve" textLength="84.0" lengthAdjust="spacingAndGlyphs">04        </text>
+<text x="545.2" y="123.0" fill="#6c7086" xml:space="preserve" textLength="411.6" lengthAdjust="spacingAndGlyphs">[GroupG] Nisemonogatari - 04 [BD 1080p].mkv     │</text>
 <text x="16.0" y="142.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="948.4" y="142.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="161.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
@@ -38,5 +38,5 @@
 <text x="16.0" y="180.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="948.4" y="180.0" fill="#6c7086" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="16.0" y="199.0" fill="#6c7086" xml:space="preserve" textLength="940.8" lengthAdjust="spacingAndGlyphs">╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯</text>
-<text x="16.0" y="218.0" fill="#f9e2af" xml:space="preserve" textLength="310.8" lengthAdjust="spacingAndGlyphs"> queued 1 from One Piece (2 in queue)</text>
+<text x="16.0" y="218.0" fill="#f9e2af" xml:space="preserve" textLength="352.8" lengthAdjust="spacingAndGlyphs"> queued 1 from Nisemonogatari (2 in queue)</text>
 </svg>

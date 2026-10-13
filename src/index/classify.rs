@@ -25,6 +25,13 @@ pub struct Classified {
     pub title: String,
     /// Parse of the file name with folder context applied.
     pub parsed: Parsed,
+    /// The numbered entry folder of a franchise folder this file sits in.
+    pub entry: Option<Entry>,
+    /// The key an archive file deeper than its series folder had before
+    /// entry folders (and folders split off a series) became series of their
+    /// own: the series folder's. History recorded under it follows the file
+    /// (see `library::moved`).
+    pub earlier: Option<String>,
 }
 
 impl Classified {
@@ -89,20 +96,46 @@ pub fn expand_items(p: &Parsed) -> Vec<ItemKey> {
 
 /// Classify a file at `rel` (relative to its root).
 pub fn classify(cfg: &Config, kind: RootKind, rel: &Path) -> Classified {
+    classify_split(cfg, kind, rel, None)
+}
+
+/// [`classify`] for a file in a folder split off its series (see
+/// [`crate::events::EventBody::Split`]): its first `split` folders hold it,
+/// and it is named as a franchise entry is, by its own title, else that
+/// folder's name.
+pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<usize>) -> Classified {
     // Parse a lossy copy: a name that isn't valid UTF-8 still has a title and number.
     let owned: Vec<std::borrow::Cow<'_, str>> = rel.iter().map(|c| c.to_string_lossy()).collect();
-    let comps: Vec<&str> = owned.iter().map(std::convert::AsRef::as_ref).collect();
+    let comps: Vec<&str> = owned.iter().map(AsRef::as_ref).collect();
     let (dirs, file) = match comps.split_last() {
         Some((f, d)) => (d, *f),
         None => (&[][..], ""),
     };
     let mut parsed = parse(file);
     let stem = crate::parse::stem(file);
+    let earlier = match (kind, dirs) {
+        (RootKind::Archive, [top, inner @ ..]) if !inner.is_empty() => {
+            let season = parsed.season.or_else(|| season_from_dirs(inner));
+            Some(series_name(&clean_dir_name(top), season).0).filter(|k| !k.is_empty())
+        }
+        _ => None,
+    };
 
     // The innermost `Season N` folder, if any.
     let dir_season = season_from_dirs(dirs);
+    let mut entry = None;
     // The name the series is called by, and its season.
-    let (name, season) = if let (RootKind::Archive, Some(top)) = (kind, dirs.first()) {
+    let (name, season) = if let Some(n) = split
+        && let Some(dir) = n.checked_sub(1).and_then(|i| dirs.get(i))
+    {
+        entry_name(&parsed, dir, &dirs[n..])
+    } else if let (RootKind::Archive, Some(top), Some((no, name))) =
+        (kind, dirs.first(), dirs.get(1).and_then(|d| entry_dir(d)))
+    {
+        // `Franchise/03 - Entry/…`: each numbered entry is a series of its own.
+        entry = Some(Entry { franchise: clean_dir_name(top), no, name: name.to_string() });
+        entry_name(&parsed, name, &dirs[2..])
+    } else if let (RootKind::Archive, Some(top)) = (kind, dirs.first()) {
         // The folder names the show; a later season inside it (`S02E01` in the
         // file name, or a `Season 2` folder) must not collapse into season 1.
         (clean_dir_name(top), parsed.season.or_else(|| season_from_dirs(&dirs[1..])))
@@ -155,7 +188,43 @@ pub fn classify(cfg: &Config, kind: RootKind, rel: &Path) -> Classified {
     if parsed.kind == ItemKind::Movie && parsed.label.is_empty() && parsed.title.is_empty() {
         parsed.title = stem.to_string();
     }
-    Classified { series, legacy_series, title, parsed }
+    // Only a key that differs from today's is worth remembering.
+    let earlier = earlier.filter(|k| *k != series);
+    Classified { series, legacy_series, title, parsed, entry, earlier }
+}
+
+/// A numbered entry folder (`Monogatari Series/03 - Nisemonogatari`, see
+/// [`entry_dir`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    /// The franchise folder's cleaned name (`Monogatari Series`).
+    pub franchise: String,
+    /// The entry's number (`3`).
+    pub no: u32,
+    /// The entry folder's name without its number (`Nisemonogatari`).
+    pub name: String,
+}
+
+/// The number and name of a franchise entry folder (`03 - Nisemonogatari`).
+///
+/// An archive series folder whose subfolders are numbered this way holds
+/// several anime (a franchise in watch order), not one. The spaces around the
+/// dash, and a name that starts with something other than a digit and has a
+/// letter, keep batch folders (`01-12`, `01 - 12 [BD 1080p]`) out.
+pub fn entry_dir(name: &str) -> Option<(u32, &str)> {
+    static ENTRY_DIR: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(\d{1,3})\s+-\s+(\D.*\p{L}.*)$").expect("valid regex"));
+    let c = ENTRY_DIR.captures(name.trim())?;
+    Some((c[1].parse().ok()?, c.get(2)?.as_str()))
+}
+
+/// Name and season of a file in its own folder `dir` (a franchise entry, or a
+/// folder split off its series), with `inner` the folders below it: the
+/// file's own title, as in an ongoing root (an entry may hold part of a longer
+/// anime, `Second Season - 06`), else the folder's name.
+pub fn entry_name(parsed: &Parsed, dir: &str, inner: &[&str]) -> (String, Option<u32>) {
+    let season = parsed.season.or_else(|| season_from_dirs(inner));
+    if parsed.title.is_empty() { (clean_dir_name(dir), season) } else { (parsed.title.clone(), season) }
 }
 
 /// The season given by the innermost `Season N` folder, if any.
@@ -261,13 +330,57 @@ mod tests {
         assert_eq!(x.title, "Digimon Tamers");
         let x = c(
             RootKind::Archive,
-            "[Ayako, Paca, Paradise] Jewelpet Sunshine 1-52 Batch/[Paca]Jewelpet Sunshine 17-28/[Paca]Jewelpet Sunshine 24.mkv",
+            "[GroupA, GroupB, GroupC] Jewelpet Sunshine 1-52 Batch/[GroupB]Jewelpet Sunshine 17-28/[GroupB]Jewelpet Sunshine 24.mkv",
         );
         assert_eq!(x.series, "jewelpet sunshine");
         let x = c(RootKind::Archive, "Astro Boy (Tetsuwan Atom) 2003/Astro Boy 01.mkv");
         assert_eq!(x.series, "astro boy 2003");
         assert_eq!(c(RootKind::Archive, "Blue Seed 2/Blue Seed 2 - 01.mkv").series, "blue seed 2");
         assert_eq!(c(RootKind::Archive, "Pocket Monsters (2023)/x 01.mkv").series, "pocket monsters 2023");
+    }
+
+    /// Numbered entry folders inside a series folder are anime of their own,
+    /// named by their files (several folders can hold one anime).
+    #[test]
+    fn franchise_entries_are_series_of_their_own() {
+        let top = "Monogatari Series (BD 1080p)";
+        let x = |rel: &str| c(RootKind::Archive, &format!("{top}/{rel}"));
+        let bake = x("01 - Bakemonogatari/[GroupA] Bakemonogatari - 01v2 [ABCD0001].mkv");
+        assert_eq!(bake.series, "bakemonogatari");
+        let entry = Entry { franchise: "Monogatari Series".into(), no: 1, name: "Bakemonogatari".into() };
+        assert_eq!(bake.entry, Some(entry));
+        assert_eq!(bake.items(), vec![ItemKey::episode(EpNo::new(1))]);
+        for (dir, ep) in [("05 - Nekomonogatari (White)", 1), ("06 - Kabukimonogatari", 6), ("10 - Koimonogatari", 23)]
+        {
+            let f = x(&format!("{dir}/[GroupA] Monogatari Series Second Season - {ep:02} [ABCD0005].mkv"));
+            assert_eq!(f.series, "monogatari series second season", "{dir}");
+            assert_eq!(f.items(), vec![ItemKey::episode(EpNo::new(ep))]);
+        }
+        assert_eq!(
+            x("13 - Owarimonogatari S1/[GroupA] Owarimonogatari S1 - 13 [ABCD0013].mkv").series,
+            "owarimonogatari"
+        );
+        let s2 = x("14 - Owarimonogatari S2/[GroupA] Owarimonogatari S2 - 01 [ABCD0014].mkv");
+        assert_eq!((s2.series.as_str(), s2.entry.map(|e| e.no)), ("owarimonogatari s2", Some(14)));
+        // An untitled file takes the entry folder's name.
+        assert_eq!(x("02 - Kizumonogatari/01.mkv").series, "kizumonogatari");
+        // Folders that aren't numbered entries keep the top folder's name.
+        let jewel = "[GroupA, GroupB, GroupC] Jewelpet Sunshine 1-52 Batch/[GroupB]Jewelpet Sunshine 17-28/[GroupB]Jewelpet Sunshine 24.mkv";
+        assert_eq!(c(RootKind::Archive, jewel).series, "jewelpet sunshine");
+        let batch = c(RootKind::Archive, "Show/01-12/Other Name - 03.mkv");
+        assert_eq!((batch.series.as_str(), batch.entry), ("show", None));
+        // Directly in the franchise folder, and in an ongoing root: as before.
+        assert_eq!(c(RootKind::Archive, "Show/Show - 01.mkv").entry, None);
+        assert_eq!(c(RootKind::Ongoing, "Show/01 - Other/Other - 01.mkv").entry, None);
+    }
+
+    #[test]
+    fn entry_dirs() {
+        assert_eq!(entry_dir("03 - Nisemonogatari"), Some((3, "Nisemonogatari")));
+        assert_eq!(entry_dir("16 - Monogatari Series Off & Monster Season S1").map(|e| e.0), Some(16));
+        for not in ["01-12", "01 - 12", "01 - 12 [BD 1080p]", "Season 1", "Show 01", "1-3 Batch", "Show - 01"] {
+            assert_eq!(entry_dir(not), None, "{not}");
+        }
     }
 
     #[test]

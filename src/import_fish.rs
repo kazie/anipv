@@ -498,7 +498,7 @@ pub fn plan(cfg: &Config, lib: &Library, plays: &[Played], already: &HashSet<(i6
 
 /// Read history from `path`.
 pub fn read_history(path: &Path) -> Result<Vec<Played>> {
-    let text = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let text = std::fs::read(path).with_context(|| format!("reading {path}", path = path.display()))?;
     Ok(parse_history(&String::from_utf8_lossy(&text)))
 }
 
@@ -673,7 +673,7 @@ mod tests {
         let first = plan(&cfg, &lib, &plays, &HashSet::new(), 300);
         assert_eq!(first.watches.iter().map(|w| w.when).collect::<Vec<_>>(), [200]);
         let again = plan(&cfg, &lib, &plays, &already_imported(&first.events("desk")), 300);
-        assert!(again.watches.is_empty(), "{:?}", again.watches);
+        assert!(again.watches.is_empty(), "{watches:?}", watches = again.watches);
     }
 
     /// A deleted file under a name that was merged into another series counts
@@ -696,7 +696,7 @@ mod tests {
         let plays = vec![Played { when: 100, files: vec!["[X] Student Council - 03.mkv".into()] }];
         let p = plan(&cfg, &lib, &plays, &HashSet::new(), 200);
         assert_eq!(p.watches[0].series, "seitokai ni mo ana wa aru");
-        assert!(p.proposals.is_empty(), "{:?}", p.proposals);
+        assert!(p.proposals.is_empty(), "{proposals:?}", proposals = p.proposals);
     }
 
     fn two_series() -> (Config, Library) {
@@ -766,7 +766,7 @@ mod tests {
             play(300, "~/media/ShowB/02.mkv"),
         ];
         let p = plan_of(&two_series(), &plays);
-        assert!(p.ambiguous.is_empty(), "{:?}", p.ambiguous);
+        assert!(p.ambiguous.is_empty(), "{ambiguous:?}", ambiguous = p.ambiguous);
         assert_eq!(got(&p), [("showa", Some(10), true), ("showb", Some(10), true), ("showb", Some(20), true)]);
     }
 
@@ -798,7 +798,7 @@ mod tests {
         // The show's folder in the shared part still matches.
         let p = plan_of(&lib, &[play(100, "/old/disk/ShowA/Season 1/01.mkv")]);
         assert_eq!(got(&p).len(), 1);
-        assert!(p.watches[0].matched, "{:?}", p.watches);
+        assert!(p.watches[0].matched, "{watches:?}", watches = p.watches);
     }
 
     /// An unindexed file with no title and no folder naming a show is skipped
@@ -808,7 +808,7 @@ mod tests {
         let p = plan_of(&one_series(&["ShowA/01.mkv"]), &[play(100, "05.mkv"), play(200, "[X] Real Show - 03.mkv")]);
         assert_eq!(got(&p), [("real show", Some(30), false)]);
         assert_eq!(p.unidentified.iter().collect::<Vec<_>>(), ["05.mkv"]);
-        assert!(p.proposals.iter().all(|pr| pr.series == "real show"), "{:?}", p.proposals);
+        assert!(p.proposals.iter().all(|pr| pr.series == "real show"), "{proposals:?}", proposals = p.proposals);
     }
 
     /// A base name only one indexed file has still matches.

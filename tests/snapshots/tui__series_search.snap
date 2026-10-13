@@ -1,9 +1,8 @@
 ---
 source: tests/tui.rs
-assertion_line: 101
 expression: s
 ---
- anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
+ anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
 ╭ Series · all 1 /aria ──────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                    Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Aria The Animation                        paused     78    7/13       13    13     30w   finished          │
