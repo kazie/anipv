@@ -2,7 +2,7 @@
 name = "anipv"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.99"
 description = "A TUI that keeps track of the anime you watch with mpv: what's new, what's next, what you dropped."
 authors = ["Petter Salminen"]
 publish = false

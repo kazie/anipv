@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/kazie/anipv/actions/workflows/ci.yml"><img src="https://github.com/kazie/anipv/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
-  <img src="https://img.shields.io/badge/rust-1.89%2B-orange.svg" alt="MSRV 1.89">
+  <img src="https://img.shields.io/badge/rust-1.99%2B-orange.svg" alt="MSRV 1.99">
 </p>
 
 <p align="center"><img src="assets/img/demo.gif" alt="anipv demo: queueing episodes from Up next, reordering the queue, searching the series list, playing an episode and controlling the player from anipv, browsing extras, setting a status, browsing folders and queueing a whole folder" width="900"></p>
@@ -30,7 +30,7 @@ history. anipv replaces that:
 
 ## Install
 
-There are no prebuilt binaries; build it yourself (Rust 1.89+). anipv is
+There are no prebuilt binaries; build it yourself (Rust 1.99+). anipv is
 Unix-only (mpv is controlled over a Unix socket, so Windows isn't supported)
 and is developed and tested on Linux.
 
@@ -104,7 +104,7 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 
 <p align="center"><img src="assets/img/files-tree.svg" alt="files as folders: a franchise folder with what is watched in each entry" width="900"></p>
 
-**Files**: the newest files in your download folders, or (`t`) every folder, file-manager style: `⏎` goes in, `h` goes up, `/` finds a folder by its path. Each folder shows how much of it you've watched; `space` queues its unwatched episodes in order, `w` marks it all watched.
+**Files**: the newest files in your download folders, or (`t`, or `4` again) every folder, file-manager style: `⏎` goes in, `h` goes up, `/` finds a folder by its path. Each folder shows how much of it you've watched; `space` queues its unwatched episodes in order, `w` marks it all watched.
 
 Common keys: `1`–`5` switch views, `space` queues, `p` plays, `s` sets the
 status, `/` searches, `M` refreshes metadata for the series under the cursor,
@@ -183,7 +183,7 @@ command you can copy from the `justfile`.
 
 ```sh
 just check            # fmt, clippy, tests, docs and cargo-deny (needs cargo-deny)
-just ci               # check, then the MSRV build (Rust 1.89): the local version of CI
+just ci               # check, then the MSRV build (Rust 1.99): the local version of CI
 just demo             # try the TUI against a throwaway demo library
 just screenshots      # regenerate the SVGs in this README
 just record           # re-record the demo GIF and assets/tapes/all.txt (needs vhs and ttyd)

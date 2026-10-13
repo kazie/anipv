@@ -809,7 +809,7 @@
  queued 1 from One Piece (2 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Series · all 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────────╮
+╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Meitantei Precure!                                      following  –     1/48       3     3      3d    ep 4 in 3d 23h    │
 │                                                                                                                          │
@@ -838,7 +838,7 @@
  / meitantei▏
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Series · all 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────────╮
+╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Meitantei Precure!                                      following  –     1/48       3     3      3d    ep 4 in 3d 23h    │
 │                                                                                                                          │
@@ -867,7 +867,7 @@
  / meitantei▏
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Series · all 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────────╮
+╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Meitantei Precure!                                      following  –     1/48       3     3      3d    ep 4 in 3d 23h    │
 │                                                                                                                          │
@@ -896,7 +896,7 @@
  p play queue  ⏎ open  / search  f filter  s status  o AniList  m merge  M metadata  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Series · all 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────────╮
+╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Meitantei Precure!                                      following  –     1/48       3     3      3d    ep 4 in 3d 23h    │
 │                                                                                                                          │
@@ -1327,7 +1327,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-███████████▋      ▶ Meitantei Precure! 02  2:15 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
+███████████▌      ▶ Meitantei Precure! 02  2:14 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
  keys go to mpv  ctrl-c back to anipv
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1356,7 +1356,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-███████████▋      ▶ Meitantei Precure! 02  2:15 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
+███████████▌      ▶ Meitantei Precure! 02  2:14 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
  keys go to mpv  ctrl-c back to anipv
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1385,7 +1385,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-████████████▌                           ▶ Meitantei Precure! 02  2:25 / 24:00  [1/1]
+████████████▍                           ▶ Meitantei Precure! 02  2:24 / 24:00  [1/1]
  v control mpv  p play queue  space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  o AniList  M m
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1414,7 +1414,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-████████████▌                           ▶ Meitantei Precure! 02  2:25 / 24:00  [1/1]
+████████████▍                           ▶ Meitantei Precure! 02  2:24 / 24:00  [1/1]
  v control mpv  p play queue  space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  o AniList  M m
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1443,7 +1443,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-████████████▉                           ▶ Meitantei Precure! 02  2:30 / 24:00  [1/1]
+████████████▉                           ▶ Meitantei Precure! 02  2:29 / 24:00  [1/1]
  v control mpv  p play queue  space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  o AniList  M m
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1472,7 +1472,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-████████████▉                           ▶ Meitantei Precure! 02  2:30 / 24:00  [1/1]
+████████████▉                           ▶ Meitantei Precure! 02  2:29 / 24:00  [1/1]
  v control mpv  p play queue  space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  o AniList  M m
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1501,7 +1501,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-█████████████▊                          ▶ Meitantei Precure! 02  2:40 / 24:00  [1/1]
+█████████████▊                          ▶ Meitantei Precure! 02  2:39 / 24:00  [1/1]
  v control mpv  p play queue  space queue  ⏎ play  w toggle seen  W seen up to here  x extras  d not on disk  o AniList  M m
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1530,7 +1530,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-█████████████▊    ▶ Meitantei Precure! 02  2:40 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
+█████████████▊    ▶ Meitantei Precure! 02  2:39 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
  keys go to mpv  ctrl-c back to anipv
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1559,7 +1559,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-██████████████▋   ▶ Meitantei Precure! 02  2:50 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
+██████████████▌   ▶ Meitantei Precure! 02  2:49 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
  keys go to mpv  ctrl-c back to anipv
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1588,7 +1588,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-██████████████▋   ▶ Meitantei Precure! 02  2:50 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
+██████████████▌   ▶ Meitantei Precure! 02  2:49 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
  keys go to mpv  ctrl-c back to anipv
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1969,7 +1969,7 @@
  Meitantei Precure! → paused
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Series · all 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────────╮
+╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Meitantei Precure!                                      paused     –     1/48       3     3      now   ep 4 in 3d 23h    │
 │                                                                                                                          │
@@ -1998,7 +1998,7 @@
  Meitantei Precure! → paused
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Series · all 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────────╮
+╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Meitantei Precure!                                      paused     –     1/48       3     3      now   ep 4 in 3d 23h    │
 │                                                                                                                          │
@@ -2081,64 +2081,6 @@
 │ ◐ now  Meitantei Precure!                   02         [GroupB] Meitantei Precure! - 02 (1080p).mkv                      │
 │ · now  Meitantei Precure!                   02 · fanar [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv        │
 │ · now  Meitantei Precure!                   03         [GroupB] Meitantei Precure! - 03 (1080p).mkv                      │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
-────────────────────────────────────────────────────────────────────────────────
- anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Files · Downloads · 25 ──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   Name                                                               Watched   Add   Series                              │
-│ ✓ [GroupA] Dandadan S2 - 05 (1080p) [DDDD0005].mkv                   05        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 06 (1080p) [DDDD0006].mkv                   06        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 06v2 (1080p) [DDDE0006].mkv                 06        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 07 (1080p) [DDDD0007].mkv                   07        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 08 (1080p) [DDDD0008].mkv                   08        now   Dandadan S2                         │
-│ · [GroupA] One Piece Fan Letter (1080p) [ABD00001].mkv               one piece now   One Piece Fan Letter                │
-│ ✓ [GroupA] Sousou no Frieren - 27 (1080p) [ABCD0027].mkv             27        now   Sousou no Frieren                   │
-│ ✓ [GroupA] Sousou no Frieren - 28 (1080p) [ABCD0028].mkv             28        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren - 29 (1080p) [ABCD0029].mkv             29        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren - 30 (1080p) [ABCD0030].mkv             30        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren - 31 (1080p) [ABCD0031].mkv             31        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren S2 - 01 (1080p) [ABCE0001].mkv          01        now   Sousou no Frieren S2                │
-│ · [GroupB] Dungeon Meshi - 01 (1080p) [ABCF0001].mkv                 01        now   Dungeon Meshi                       │
-│ · [GroupB] Dungeon Meshi - 02 (1080p) [ABCF0002].mkv                 02        now   Dungeon Meshi                       │
-│ · [GroupB] Dungeon Meshi - 03 (1080p) [ABCF0003].mkv                 03        now   Dungeon Meshi                       │
-│ ✓ [GroupB] Meitantei Precure! - 01 (1080p).mkv                       01        now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv         01 · fana now   Meitantei Precure!                  │
-│ ◐ [GroupB] Meitantei Precure! - 02 (1080p).mkv                       02        now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv         02 · fana now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 03 (1080p).mkv                       03        now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv         03 · fana now   Meitantei Precure!                  │
-│ · [GroupC] Kusuriya no Hitorigoto S3 - 01 [1080p][Multiple Subtitle] 01        now   Kusuriya no Hitorigoto S3           │
-│▌· Laid-Back Camp The Movie (2022) (BD Remux 1080p AVC TrueHD) [ABCD2 laid back now   Laid-Back Camp The Movie (2022)     │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
-────────────────────────────────────────────────────────────────────────────────
- anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Files · Downloads · 25 ──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│   Name                                                               Watched   Add   Series                              │
-│ ✓ [GroupA] Dandadan S2 - 05 (1080p) [DDDD0005].mkv                   05        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 06 (1080p) [DDDD0006].mkv                   06        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 06v2 (1080p) [DDDE0006].mkv                 06        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 07 (1080p) [DDDD0007].mkv                   07        now   Dandadan S2                         │
-│ · [GroupA] Dandadan S2 - 08 (1080p) [DDDD0008].mkv                   08        now   Dandadan S2                         │
-│ · [GroupA] One Piece Fan Letter (1080p) [ABD00001].mkv               one piece now   One Piece Fan Letter                │
-│ ✓ [GroupA] Sousou no Frieren - 27 (1080p) [ABCD0027].mkv             27        now   Sousou no Frieren                   │
-│ ✓ [GroupA] Sousou no Frieren - 28 (1080p) [ABCD0028].mkv             28        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren - 29 (1080p) [ABCD0029].mkv             29        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren - 30 (1080p) [ABCD0030].mkv             30        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren - 31 (1080p) [ABCD0031].mkv             31        now   Sousou no Frieren                   │
-│ · [GroupA] Sousou no Frieren S2 - 01 (1080p) [ABCE0001].mkv          01        now   Sousou no Frieren S2                │
-│ · [GroupB] Dungeon Meshi - 01 (1080p) [ABCF0001].mkv                 01        now   Dungeon Meshi                       │
-│ · [GroupB] Dungeon Meshi - 02 (1080p) [ABCF0002].mkv                 02        now   Dungeon Meshi                       │
-│ · [GroupB] Dungeon Meshi - 03 (1080p) [ABCF0003].mkv                 03        now   Dungeon Meshi                       │
-│ ✓ [GroupB] Meitantei Precure! - 01 (1080p).mkv                       01        now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv         01 · fana now   Meitantei Precure!                  │
-│ ◐ [GroupB] Meitantei Precure! - 02 (1080p).mkv                       02        now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv         02 · fana now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 03 (1080p).mkv                       03        now   Meitantei Precure!                  │
-│ · [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv         03 · fana now   Meitantei Precure!                  │
-│ · [GroupC] Kusuriya no Hitorigoto S3 - 01 [1080p][Multiple Subtitle] 01        now   Kusuriya no Hitorigoto S3           │
-│▌· Laid-Back Camp The Movie (2022) (BD Remux 1080p AVC TrueHD) [ABCD2 laid back now   Laid-Back Camp The Movie (2022)     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  Meitantei Precure! → paused
 ────────────────────────────────────────────────────────────────────────────────
@@ -2285,7 +2227,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- p play queue  ⏎ open  h up  space queue  w watched  / search  t newest files  ? help
+ Meitantei Precure! → paused
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · Anime · 6 ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -2783,19 +2725,19 @@
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Queue · plays in this order ╭ Keys 1-24 of 69 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
 │ #   Series                  │Everywhere                                                    │                             │
-│ 1   One Piece               │  1-5 / Tab   switch view                                     │080p).mkv                    │
+│ 1   One Piece               │  1-5 / Tab   switch view; again: other mode / next filter    │080p).mkv                    │
 │▌2   Nisemonogatari          │  j/k ↑/↓     move                                            │ [BD 1080p].mkv              │
 │ 3   Nekomonogatari          │  g/G         top / bottom                                    │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  p           play queue (or the next episode under the cursor│ck) - 02 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  p           play queue (or the next episode here)           │ck) - 02 [BD 1080p].mkv      │
 │ 5   Nekomonogatari          │  y           copy mpv command for the queue                  │ck) - 03 [BD 1080p].mkv      │
 │ 6   Nekomonogatari          │  v           while mpv plays: remote mode, keys go to mpv    │ck) - 04 [BD 1080p].mkv      │
 │                             │  s           set series status (in the Inbox: skip)          │                             │
 │                             │  r           rescan media folders                            │                             │
 │                             │  M           refresh metadata for the series under the cursor│                             │
 │                             │  o           open the series under the cursor on AniList     │                             │
-│                             │  ctrl-r      refresh all metadata now (updates the anime data│                             │
+│                             │  ctrl-r      refresh all metadata (and an old anime DB)      │                             │
 │                             │  ?           this help                                       │                             │
-│                             │  q / ctrl-c  quit (asks first: q, y or ⏎ confirms); ctrl-c cl│                             │
+│                             │  q / ctrl-c  quit (asks first); ctrl-c closes a popup first  │                             │
 │                             │                                                              │                             │
 │                             │Up next                                                       │                             │
 │                             │  space       queue next new episode and move down            │                             │
@@ -2812,19 +2754,19 @@
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Queue · plays in this order ╭ Keys 1-24 of 69 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
 │ #   Series                  │Everywhere                                                    │                             │
-│ 1   One Piece               │  1-5 / Tab   switch view                                     │080p).mkv                    │
+│ 1   One Piece               │  1-5 / Tab   switch view; again: other mode / next filter    │080p).mkv                    │
 │▌2   Nisemonogatari          │  j/k ↑/↓     move                                            │ [BD 1080p].mkv              │
 │ 3   Nekomonogatari          │  g/G         top / bottom                                    │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  p           play queue (or the next episode under the cursor│ck) - 02 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  p           play queue (or the next episode here)           │ck) - 02 [BD 1080p].mkv      │
 │ 5   Nekomonogatari          │  y           copy mpv command for the queue                  │ck) - 03 [BD 1080p].mkv      │
 │ 6   Nekomonogatari          │  v           while mpv plays: remote mode, keys go to mpv    │ck) - 04 [BD 1080p].mkv      │
 │                             │  s           set series status (in the Inbox: skip)          │                             │
 │                             │  r           rescan media folders                            │                             │
 │                             │  M           refresh metadata for the series under the cursor│                             │
 │                             │  o           open the series under the cursor on AniList     │                             │
-│                             │  ctrl-r      refresh all metadata now (updates the anime data│                             │
+│                             │  ctrl-r      refresh all metadata (and an old anime DB)      │                             │
 │                             │  ?           this help                                       │                             │
-│                             │  q / ctrl-c  quit (asks first: q, y or ⏎ confirms); ctrl-c cl│                             │
+│                             │  q / ctrl-c  quit (asks first); ctrl-c closes a popup first  │                             │
 │                             │                                                              │                             │
 │                             │Up next                                                       │                             │
 │                             │  space       queue next new episode and move down            │                             │
@@ -2856,14 +2798,14 @@
 │                             │  m           merge with another series (duplicate names)     │                             │
 │                             │                                                              │                             │
 │                             │Series                                                        │                             │
-│                             │  /           fuzzy search                                    │                             │
-│                             │  f           cycle filter (on disk, following, paused, …); en│                             │
+│                             │  /           fuzzy search (⏎ keeps it, Esc clears)           │                             │
+│                             │  f / 3       next status filter (works with a search)        │                             │
 │                             │  m           merge into another series                       │                             │
 │                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
-│                             │  F           fold / unfold franchises (one row per franchise:│                             │
-│                             │  C           catch up: mark this and the franchise's earlier │                             │
+│                             │  F           fold franchises to the entry you're at          │                             │
+│                             │  C           catch up: this and earlier entries watched      │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
@@ -2885,28 +2827,28 @@
 │                             │  m           merge with another series (duplicate names)     │                             │
 │                             │                                                              │                             │
 │                             │Series                                                        │                             │
-│                             │  /           fuzzy search                                    │                             │
-│                             │  f           cycle filter (on disk, following, paused, …); en│                             │
+│                             │  /           fuzzy search (⏎ keeps it, Esc clears)           │                             │
+│                             │  f / 3       next status filter (works with a search)        │                             │
 │                             │  m           merge into another series                       │                             │
 │                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
-│                             │  F           fold / unfold franchises (one row per franchise:│                             │
-│                             │  C           catch up: mark this and the franchise's earlier │                             │
+│                             │  F           fold franchises to the entry you're at          │                             │
+│                             │  C           catch up: this and earlier entries watched      │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Queue · plays in this order ╭ Keys 31-54 of 69 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │Series                                                        │                             │
-│ 1   One Piece               │  /           fuzzy search                                    │080p).mkv                    │
-│▌2   Nisemonogatari          │  f           cycle filter (on disk, following, paused, …); en│ [BD 1080p].mkv              │
+│ 1   One Piece               │  /           fuzzy search (⏎ keeps it, Esc clears)           │080p).mkv                    │
+│▌2   Nisemonogatari          │  f / 3       next status filter (works with a search)        │ [BD 1080p].mkv              │
 │ 3   Nekomonogatari          │  m           merge into another series                       │ck) - 01 [BD 1080p].mkv      │
 │ 4   Nekomonogatari          │  U           undo merges into this series                    │ck) - 02 [BD 1080p].mkv      │
 │ 5   Nekomonogatari          │  R           rename                                          │ck) - 03 [BD 1080p].mkv      │
 │ 6   Nekomonogatari          │  L           link AniList id                                 │ck) - 04 [BD 1080p].mkv      │
-│                             │  F           fold / unfold franchises (one row per franchise:│                             │
-│                             │  C           catch up: mark this and the franchise's earlier │                             │
+│                             │  F           fold franchises to the entry you're at          │                             │
+│                             │  C           catch up: this and earlier entries watched      │                             │
 │                             │  ⏎           open series                                     │                             │
 │                             │                                                              │                             │
 │                             │Episodes                                                      │                             │
@@ -2914,28 +2856,28 @@
 │                             │  ⏎           play this episode                               │                             │
 │                             │  w           toggle watched                                  │                             │
 │                             │  W           mark everything up to here watched              │                             │
-│                             │  C           catch up: mark this series and the franchise's e│                             │
+│                             │  C           catch up: this and earlier entries watched      │                             │
 │                             │  a           queue all new                                   │                             │
 │                             │  x           show / hide extras                              │                             │
 │                             │  d           show / hide episodes not on disk                │                             │
 │                             │  esc         back                                            │                             │
 │                             │                                                              │                             │
 │                             │Files                                                         │                             │
-│                             │  t           newest files ⇄ folders                          │                             │
+│                             │  t / 4       newest files ⇄ folders                          │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Queue · plays in this order ╭ Keys 31-54 of 69 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │Series                                                        │                             │
-│ 1   One Piece               │  /           fuzzy search                                    │080p).mkv                    │
-│▌2   Nisemonogatari          │  f           cycle filter (on disk, following, paused, …); en│ [BD 1080p].mkv              │
+│ 1   One Piece               │  /           fuzzy search (⏎ keeps it, Esc clears)           │080p).mkv                    │
+│▌2   Nisemonogatari          │  f / 3       next status filter (works with a search)        │ [BD 1080p].mkv              │
 │ 3   Nekomonogatari          │  m           merge into another series                       │ck) - 01 [BD 1080p].mkv      │
 │ 4   Nekomonogatari          │  U           undo merges into this series                    │ck) - 02 [BD 1080p].mkv      │
 │ 5   Nekomonogatari          │  R           rename                                          │ck) - 03 [BD 1080p].mkv      │
 │ 6   Nekomonogatari          │  L           link AniList id                                 │ck) - 04 [BD 1080p].mkv      │
-│                             │  F           fold / unfold franchises (one row per franchise:│                             │
-│                             │  C           catch up: mark this and the franchise's earlier │                             │
+│                             │  F           fold franchises to the entry you're at          │                             │
+│                             │  C           catch up: this and earlier entries watched      │                             │
 │                             │  ⏎           open series                                     │                             │
 │                             │                                                              │                             │
 │                             │Episodes                                                      │                             │
@@ -2943,33 +2885,33 @@
 │                             │  ⏎           play this episode                               │                             │
 │                             │  w           toggle watched                                  │                             │
 │                             │  W           mark everything up to here watched              │                             │
-│                             │  C           catch up: mark this series and the franchise's e│                             │
+│                             │  C           catch up: this and earlier entries watched      │                             │
 │                             │  a           queue all new                                   │                             │
 │                             │  x           show / hide extras                              │                             │
 │                             │  d           show / hide episodes not on disk                │                             │
 │                             │  esc         back                                            │                             │
 │                             │                                                              │                             │
 │                             │Files                                                         │                             │
-│                             │  t           newest files ⇄ folders                          │                             │
+│                             │  t / 4       newest files ⇄ folders                          │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Queue · plays in this order ╭ Keys 46-69 of 69 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │  W           mark everything up to here watched              │                             │
-│ 1   One Piece               │  C           catch up: mark this series and the franchise's e│080p).mkv                    │
+│ 1   One Piece               │  C           catch up: this and earlier entries watched      │080p).mkv                    │
 │▌2   Nisemonogatari          │  a           queue all new                                   │ [BD 1080p].mkv              │
 │ 3   Nekomonogatari          │  x           show / hide extras                              │ck) - 01 [BD 1080p].mkv      │
 │ 4   Nekomonogatari          │  d           show / hide episodes not on disk                │ck) - 02 [BD 1080p].mkv      │
 │ 5   Nekomonogatari          │  esc         back                                            │ck) - 03 [BD 1080p].mkv      │
 │ 6   Nekomonogatari          │                                                              │ck) - 04 [BD 1080p].mkv      │
 │                             │Files                                                         │                             │
-│                             │  t           newest files ⇄ folders                          │                             │
-│                             │  space       queue the file; on a folder: its unwatched episo│                             │
-│                             │  w           toggle watched (a folder: everything in it)     │                             │
-│                             │  ⏎ / l       folders: open the folder (a file: its series)   │                             │
-│                             │  h / ⌫       folders: up                                     │                             │
-│                             │  /           folders: fuzzy search by path                   │                             │
+│                             │  t / 4       newest files ⇄ folders                          │                             │
+│                             │  space       queue a file, or a folder's unwatched           │                             │
+│                             │  w           toggle watched (a folder: all of it)            │                             │
+│                             │  ⏎ / → / l   open folder (a file: its series)                │                             │
+│                             │  ← / h / ⌫   up a folder                                     │                             │
+│                             │  /           search below here (⏎ keeps it, Esc clears)      │                             │
 │                             │                                                              │                             │
 │                             │Queue                                                         │                             │
 │                             │  J/K         move entry down / up                            │                             │
@@ -2986,19 +2928,19 @@
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Queue · plays in this order ╭ Keys 46-69 of 69 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │  W           mark everything up to here watched              │                             │
-│ 1   One Piece               │  C           catch up: mark this series and the franchise's e│080p).mkv                    │
+│ 1   One Piece               │  C           catch up: this and earlier entries watched      │080p).mkv                    │
 │▌2   Nisemonogatari          │  a           queue all new                                   │ [BD 1080p].mkv              │
 │ 3   Nekomonogatari          │  x           show / hide extras                              │ck) - 01 [BD 1080p].mkv      │
 │ 4   Nekomonogatari          │  d           show / hide episodes not on disk                │ck) - 02 [BD 1080p].mkv      │
 │ 5   Nekomonogatari          │  esc         back                                            │ck) - 03 [BD 1080p].mkv      │
 │ 6   Nekomonogatari          │                                                              │ck) - 04 [BD 1080p].mkv      │
 │                             │Files                                                         │                             │
-│                             │  t           newest files ⇄ folders                          │                             │
-│                             │  space       queue the file; on a folder: its unwatched episo│                             │
-│                             │  w           toggle watched (a folder: everything in it)     │                             │
-│                             │  ⏎ / l       folders: open the folder (a file: its series)   │                             │
-│                             │  h / ⌫       folders: up                                     │                             │
-│                             │  /           folders: fuzzy search by path                   │                             │
+│                             │  t / 4       newest files ⇄ folders                          │                             │
+│                             │  space       queue a file, or a folder's unwatched           │                             │
+│                             │  w           toggle watched (a folder: all of it)            │                             │
+│                             │  ⏎ / → / l   open folder (a file: its series)                │                             │
+│                             │  ← / h / ⌫   up a folder                                     │                             │
+│                             │  /           search below here (⏎ keeps it, Esc clears)      │                             │
 │                             │                                                              │                             │
 │                             │Queue                                                         │                             │
 │                             │  J/K         move entry down / up                            │                             │

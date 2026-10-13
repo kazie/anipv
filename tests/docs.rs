@@ -31,6 +31,20 @@ fn keybindings_doc_is_current() {
     assert_eq!(have, want, "docs/keybindings.md is stale; run UPDATE_FIXTURES=1 cargo test --test docs");
 }
 
+/// The `?` popup is 64 columns wide: 2 for its border and 2 for the
+/// indent, 12 for the key, so a description has 48 before it is cut off.
+#[test]
+fn help_lines_fit_the_popup() {
+    use unicode_width::UnicodeWidthStr;
+    for (section, keys) in HELP {
+        for (key, desc) in *keys {
+            let (k, d) = (key.width(), desc.width());
+            assert!(k <= 12, "{section}: key {key:?} is {k} columns wide (12 fit)");
+            assert!(d <= 48, "{section}: {key:?} is {d} columns wide (48 fit): {desc}");
+        }
+    }
+}
+
 #[test]
 fn config_doc_mentions_every_key() {
     let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/config.md")).unwrap();

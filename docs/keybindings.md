@@ -8,19 +8,19 @@ Press `?` in the TUI to see these at any time.
 
 | Key | Action |
 | --- | --- |
-| `1-5 / Tab` | switch view |
+| `1-5 / Tab` | switch view; again: other mode / next filter |
 | `j/k ↑/↓` | move |
 | `g/G` | top / bottom |
-| `p` | play queue (or the next episode under the cursor) |
+| `p` | play queue (or the next episode here) |
 | `y` | copy mpv command for the queue |
 | `v` | while mpv plays: remote mode, keys go to mpv |
 | `s` | set series status (in the Inbox: skip) |
 | `r` | rescan media folders |
 | `M` | refresh metadata for the series under the cursor |
 | `o` | open the series under the cursor on AniList |
-| `ctrl-r` | refresh all metadata now (updates the anime database if old) |
+| `ctrl-r` | refresh all metadata (and an old anime DB) |
 | `?` | this help |
-| `q / ctrl-c` | quit (asks first: q, y or ⏎ confirms); ctrl-c closes an open popup first |
+| `q / ctrl-c` | quit (asks first); ctrl-c closes a popup first |
 
 ## Up next
 
@@ -47,14 +47,14 @@ Press `?` in the TUI to see these at any time.
 
 | Key | Action |
 | --- | --- |
-| `/` | fuzzy search |
-| `f` | cycle filter (on disk, following, paused, …); ends a search |
+| `/` | fuzzy search (⏎ keeps it, Esc clears) |
+| `f / 3` | next status filter (works with a search) |
 | `m` | merge into another series |
 | `U` | undo merges into this series |
 | `R` | rename |
 | `L` | link AniList id |
-| `F` | fold / unfold franchises (one row per franchise: the entry you're at) |
-| `C` | catch up: mark this and the franchise's earlier entries watched |
+| `F` | fold franchises to the entry you're at |
+| `C` | catch up: this and earlier entries watched |
 | `⏎` | open series |
 
 ## Episodes
@@ -65,7 +65,7 @@ Press `?` in the TUI to see these at any time.
 | `⏎` | play this episode |
 | `w` | toggle watched |
 | `W` | mark everything up to here watched |
-| `C` | catch up: mark this series and the franchise's earlier entries watched |
+| `C` | catch up: this and earlier entries watched |
 | `a` | queue all new |
 | `x` | show / hide extras |
 | `d` | show / hide episodes not on disk |
@@ -75,12 +75,12 @@ Press `?` in the TUI to see these at any time.
 
 | Key | Action |
 | --- | --- |
-| `t` | newest files ⇄ folders |
-| `space` | queue the file; on a folder: its unwatched episodes, in order (again: unqueue) |
-| `w` | toggle watched (a folder: everything in it) |
-| `⏎ / l` | folders: open the folder (a file: its series) |
-| `h / ⌫` | folders: up |
-| `/` | folders: fuzzy search by path |
+| `t / 4` | newest files ⇄ folders |
+| `space` | queue a file, or a folder's unwatched |
+| `w` | toggle watched (a folder: all of it) |
+| `⏎ / → / l` | open folder (a file: its series) |
+| `← / h / ⌫` | up a folder |
+| `/` | search below here (⏎ keeps it, Esc clears) |
 
 ## Queue
 

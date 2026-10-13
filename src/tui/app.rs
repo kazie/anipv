@@ -757,25 +757,32 @@ impl App {
         self.refresh_tree_rows();
     }
 
-    /// Recompute the tree rows: the folder shown, or the folders found. A
-    /// folder gone from disk (its files moved or deleted) gives way to the
-    /// nearest one above it that still has files.
+    /// Recompute the tree rows: the listing of the folder shown, or, during
+    /// a search, the folders and files below it that match (see
+    /// [`Folders::search`]). A folder gone from disk (its files moved or
+    /// deleted) gives way to the nearest one above it that still has files.
     fn refresh_tree_rows(&mut self) {
-        if self.tree_query.is_empty() {
-            while !self.tree_at.is_top() && self.folders.stats(&self.tree_at).is_none() {
-                self.tree_at = self.tree_at.parent().unwrap_or_default();
-            }
-            self.tree_rows = self.folders.list(&self.tree_at);
-        } else {
-            self.tree_rows = self.folders.search(&self.tree_query);
+        while !self.tree_at.is_top() && self.folders.stats(&self.tree_at).is_none() {
+            self.tree_at = self.tree_at.parent().unwrap_or_default();
         }
+        self.tree_rows = if self.tree_query.is_empty() {
+            self.folders.list(&self.tree_at)
+        } else {
+            self.folders.search(&self.tree_at, &self.tree_query)
+        };
         clamp_cursor(&mut self.tree_state, self.tree_rows.len());
     }
 
-    /// Show `dir` in the tree (ending a search), with the cursor on `cursor`
-    /// if it is listed, else on the first row.
-    fn open_dir(&mut self, dir: Dir, cursor: Option<RowId>) {
+    /// End the folder search: the folder's own listing again.
+    fn end_tree_search(&mut self) {
         self.tree_query.clear();
+        self.tree_state.select(Some(0));
+        self.refresh_tree_rows();
+    }
+
+    /// Show `dir` in the tree (a search then covers what is below it), with
+    /// the cursor on `cursor` if it is listed, else on the first row.
+    fn open_dir(&mut self, dir: Dir, cursor: Option<RowId>) {
         self.tree_at = dir;
         self.tree_state.select(Some(0));
         self.refresh_tree_rows();
@@ -788,8 +795,9 @@ impl App {
     /// so typing in the search box stays cheap on a big library.
     fn refresh_series_rows(&mut self) {
         let lib = &self.lib;
+        // The status filter and the search work together.
         let candidates: Vec<(usize, &Series)> =
-            lib.series.iter().enumerate().filter(|(_, s)| !self.query.is_empty() || self.filter.accepts(s)).collect();
+            lib.series.iter().enumerate().filter(|(_, s)| self.filter.accepts(s)).collect();
         self.series_ix = if self.query.is_empty() {
             franchise_order(lib, candidates.iter().map(|c| c.0), self.fold_franchises)
         } else {
@@ -801,7 +809,7 @@ impl App {
             let q = self.query.to_lowercase();
             for f in lib.franchises.iter().filter(|f| f.name.to_lowercase().contains(&q)) {
                 for i in f.series() {
-                    if !hits.contains(&i) {
+                    if !hits.contains(&i) && self.filter.accepts(&lib.series[i]) {
                         hits.push(i);
                     }
                 }
@@ -1431,7 +1439,13 @@ impl App {
                 self.popup = Some(Popup::Help { scroll: 0, fits: false });
             }
             KeyCode::Char(c @ '1'..='5') => {
-                self.view = View::TABS[(c as u8 - b'1') as usize];
+                let to = View::TABS[(c as u8 - b'1') as usize];
+                // The tab you're on, again: its other mode (Files) or next filter (Series).
+                match (self.view == to, to) {
+                    (true, View::Files) => self.toggle_files_mode(),
+                    (true, View::Series) => self.cycle_series_filter(),
+                    _ => self.view = to,
+                }
             }
             KeyCode::Tab => self.view = self.tab().cycle(true),
             KeyCode::BackTab => self.view = self.tab().cycle(false),
@@ -1454,24 +1468,7 @@ impl App {
                     self.popup = Some(Popup::Status { series: s.key.clone(), idx });
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.move_cursor(1);
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.move_cursor(-1);
-            }
-            KeyCode::PageDown => {
-                self.move_cursor(PAGE.into());
-            }
-            KeyCode::PageUp => {
-                self.move_cursor(-isize::from(PAGE));
-            }
-            KeyCode::Home | KeyCode::Char('g') => {
-                self.move_cursor(isize::MIN / 2);
-            }
-            KeyCode::End | KeyCode::Char('G') => {
-                self.move_cursor(isize::MAX / 2);
-            }
+            code if let Some(delta) = cursor_delta(vi_alias(code)) => self.move_cursor(delta),
             _ => return false,
         }
         true
@@ -1574,15 +1571,7 @@ impl App {
                 return;
             }
             KeyCode::Char('f') => {
-                // A search lists every series: the first `f` ends it, showing
-                // the filter again.
-                if self.query.is_empty() {
-                    self.filter = self.filter.next();
-                } else {
-                    self.query.clear();
-                }
-                self.series_state.select(Some(0));
-                self.refresh_series_rows();
+                self.cycle_series_filter();
                 return;
             }
             _ => {}
@@ -1664,20 +1653,23 @@ impl App {
         }
     }
 
-    /// Recent ⇄ tree. The tree opens on the folder of the file under the
-    /// cursor, with the cursor on it.
+    /// The Series view's next status filter (`f`, or `3` on the Series
+    /// view); a search stays, the two work together.
+    fn cycle_series_filter(&mut self) {
+        self.filter = self.filter.next();
+        self.series_state.select(Some(0));
+        self.refresh_series_rows();
+    }
+
+    /// Recent ⇄ tree (`t`, or `4` on the Files view). The tree opens on the
+    /// roots the first time, then where you left it.
     fn toggle_files_mode(&mut self) {
         match self.files_mode {
             FilesMode::Tree => self.files_mode = FilesMode::Recent,
             FilesMode::Recent => {
-                let file = self
-                    .selected_file()
-                    .map(|f| (Dir::of_file(&f.file.root, &f.file.rel), RowId::File(f.file.path.clone())));
                 self.files_mode = FilesMode::Tree;
+                self.tree_query.clear();
                 self.rebuild_folders();
-                if let Some((dir, id)) = file {
-                    self.open_dir(dir, Some(id));
-                }
             }
         }
     }
@@ -1689,11 +1681,9 @@ impl App {
         let folder = self.selected_entry().and_then(Entry::dir).cloned();
         match (key.code, folder) {
             (KeyCode::Char('/'), _) => self.popup = Some(Popup::Search),
-            (KeyCode::Esc, _) if !self.tree_query.is_empty() => self.open_dir(self.tree_at.clone(), None),
+            (KeyCode::Esc, _) if !self.tree_query.is_empty() => self.end_tree_search(),
             (KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace, _) => {
-                if !self.tree_query.is_empty() {
-                    self.open_dir(self.tree_at.clone(), None);
-                } else if let Some(up) = self.tree_at.parent() {
+                if let Some(up) = self.tree_at.parent() {
                     let came_from = RowId::Dir(self.tree_at.clone());
                     self.open_dir(up, Some(came_from));
                 }
@@ -1911,8 +1901,7 @@ impl App {
                         }
                         return;
                     }
-                    KeyCode::Down => picker.step(1),
-                    KeyCode::Up => picker.step(-1),
+                    code if let Some(delta) = cursor_delta(code) => picker.step(delta),
                     code => {
                         if edit_text(&mut picker.query, code) {
                             picker.refresh(self, None);
@@ -1921,29 +1910,35 @@ impl App {
                 }
                 self.popup = Some(Popup::Merge(picker));
             }
-            // The search applies as it is typed: Enter just closes the box.
-            Popup::Search if self.view == View::Files => match key.code {
-                KeyCode::Esc => self.open_dir(self.tree_at.clone(), None),
-                KeyCode::Enter => {}
-                code => {
-                    if edit_text(&mut self.tree_query, code) {
-                        self.tree_state.select(Some(0));
-                        self.refresh_tree_rows();
+            // A search is a filter that stays until Esc; ⏎ only closes the
+            // box. The arrows work as in the list, the box staying open
+            // while the view does (← → between folders, → with nothing to open).
+            Popup::Search => {
+                let (view, folders) = (self.view, self.view == View::Files);
+                match key.code {
+                    KeyCode::Esc if folders => self.end_tree_search(),
+                    KeyCode::Esc => self.clear_search(),
+                    KeyCode::Enter => {}
+                    code => {
+                        if let Some(delta) = cursor_delta(code) {
+                            self.move_cursor(delta);
+                        } else if matches!(code, KeyCode::Left | KeyCode::Right) {
+                            if folders { self.on_files_key(key) } else { self.on_series_key(key) }
+                        } else if folders {
+                            if edit_text(&mut self.tree_query, code) {
+                                self.tree_state.select(Some(0));
+                                self.refresh_tree_rows();
+                            }
+                        } else if edit_text(&mut self.query, code) {
+                            self.series_state.select(Some(0));
+                            self.refresh_series_rows();
+                        }
+                        if self.view == view {
+                            self.popup = Some(Popup::Search);
+                        }
                     }
-                    self.popup = Some(Popup::Search);
                 }
-            },
-            Popup::Search => match key.code {
-                KeyCode::Esc => self.clear_search(),
-                KeyCode::Enter => {}
-                code => {
-                    if edit_text(&mut self.query, code) {
-                        self.series_state.select(Some(0));
-                        self.refresh_series_rows();
-                    }
-                    self.popup = Some(Popup::Search);
-                }
-            },
+            }
             Popup::Input { series, purpose, mut text } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_input(series, purpose, &text),
@@ -2215,6 +2210,31 @@ fn step_cursor(state: &mut TableState, len: usize, delta: isize) {
     state.select(len.checked_sub(1).map(|last| cur.saturating_add_signed(delta).min(last)));
 }
 
+/// The cursor key a vi letter in a list stands for (`j` ↓, `k` ↑, `g` Home,
+/// `G` End); any other key is itself.
+fn vi_alias(code: KeyCode) -> KeyCode {
+    match code {
+        KeyCode::Char('j') => KeyCode::Down,
+        KeyCode::Char('k') => KeyCode::Up,
+        KeyCode::Char('g') => KeyCode::Home,
+        KeyCode::Char('G') => KeyCode::End,
+        code => code,
+    }
+}
+
+/// How far a cursor key moves the cursor in a list (`None`: not one).
+fn cursor_delta(code: KeyCode) -> Option<isize> {
+    Some(match code {
+        KeyCode::Down => 1,
+        KeyCode::Up => -1,
+        KeyCode::PageDown => isize::from(PAGE),
+        KeyCode::PageUp => -isize::from(PAGE),
+        KeyCode::Home => isize::MIN / 2,
+        KeyCode::End => isize::MAX / 2,
+        _ => return None,
+    })
+}
+
 /// `range` limited to a list of `len` rows, as a slice index.
 fn clip(range: &Range<usize>, len: usize) -> Range<usize> {
     let end = range.end.min(len);
@@ -2353,12 +2373,12 @@ mod tests {
                 .collect()
         };
         let selected = |app: &App| app.selected_entry().and_then(Entry::dir).map(Dir::name);
-        // The tree opens on the folder of the file under the cursor.
-        app.press("4t");
-        assert_eq!((app.files_mode, &app.tree_at), (FilesMode::Tree, &Dir::root("Downloads")));
-        app.press("h");
+        // `4` on the Files view switches to folders, which open on the roots.
+        app.press("44");
+        assert_eq!(app.files_mode, FilesMode::Tree);
         assert!(app.tree_at.is_top());
         assert_eq!(names(&app), ["Downloads", "Anime"], "roots in config order");
+        app.press("\nh");
         assert_eq!(selected(&app).as_deref(), Some("Downloads"), "back up on the folder it came from");
         app.press("j\n");
         let mono = names(&app).iter().position(|n| n == "Monogatari Series").unwrap();
@@ -2381,13 +2401,77 @@ mod tests {
         app.press("h");
         assert_eq!(selected(&app).as_deref(), Some("Monogatari Series"));
 
-        // A search lists folders by path; ⏎ opens one and ends the search.
+        // A search finds what is below the folder by path; ⏎ opens a hit and
+        // the search stays (it now covers what is below that), Esc ends it.
         app.press("/mono nise\n");
         assert!(app.tree_rows[0].dir().unwrap().display().ends_with("Monogatari Series/02 - Nisemonogatari"));
         app.press("\n");
-        assert_eq!((app.tree_at.name().as_str(), app.tree_query.as_str()), ("02 - Nisemonogatari", ""));
-        app.press("t");
+        assert_eq!((app.tree_at.name().as_str(), app.tree_query.as_str()), ("02 - Nisemonogatari", "mono nise"));
+        app.press("\x1b");
+        assert_eq!(app.tree_query, "");
+        app.press("/nise\nt");
         assert_eq!(app.files_mode, FilesMode::Recent);
+        // Back to folders: where you left them, the search over.
+        app.press("4");
+        assert_eq!((app.files_mode, app.tree_at.name().as_str()), (FilesMode::Tree, "02 - Nisemonogatari"));
+        assert_eq!(app.tree_query, "");
+    }
+
+    fn arrow(app: &mut App, code: KeyCode) {
+        app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// In the Series search box ↑/↓ move through the matches while typing, →
+    /// opens the one under the cursor (the query stays), ← does nothing.
+    #[test]
+    fn arrows_work_in_the_series_search() {
+        let (_dir, mut app) = demo_app();
+        app.press("3/mono");
+        arrow(&mut app, KeyCode::Down);
+        assert_eq!((app.popup.clone(), app.query.as_str()), (Some(Popup::Search), "mono"));
+        assert_eq!(app.series_state.selected(), Some(1));
+        arrow(&mut app, KeyCode::Left);
+        assert_eq!(app.popup, Some(Popup::Search));
+        let picked = app.selected_series().unwrap().key.clone();
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!((app.view, app.popup.clone()), (View::Detail, None));
+        assert_eq!(app.detail_key.as_deref(), Some(picked.as_str()));
+        app.press("\x1b");
+        assert_eq!((app.view, app.query.as_str()), (View::Series, "mono"), "the matches are still there");
+    }
+
+    /// In the folder search the arrows work as in the list, the box and the
+    /// query staying: ↑/↓ move, → goes into a folder (a file: its series),
+    /// ← goes up. Only Esc ends the search.
+    #[test]
+    fn arrows_work_in_the_folder_search() {
+        let (_dir, mut app) = demo_app();
+        app.press("44j\n/nise");
+        // Below Anime: the Nisemonogatari folder, then its files.
+        let nise = app.tree_rows[0].dir().cloned().unwrap();
+        assert_eq!(nise.relative(&app.tree_at), "Monogatari Series/02 - Nisemonogatari");
+        assert!(matches!(app.tree_rows[1], Entry::File(_)));
+        arrow(&mut app, KeyCode::Down);
+        arrow(&mut app, KeyCode::Up);
+        assert_eq!((app.popup.clone(), app.tree_state.selected()), (Some(Popup::Search), Some(0)));
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!((&app.tree_at, app.tree_query.as_str(), app.popup.clone()), (&nise, "nise", Some(Popup::Search)));
+        assert!(app.tree_rows.iter().all(|e| matches!(e, Entry::File(_))), "its episodes");
+        arrow(&mut app, KeyCode::Left);
+        assert_eq!((app.tree_at.name().as_str(), app.tree_query.as_str()), ("Monogatari Series", "nise"));
+        // ⏎ keeps the search; → on an episode opens its series, and back it is still there.
+        app.press("\n");
+        app.tree_state.select(Some(1));
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!(app.view, View::Detail);
+        app.press("\x1b");
+        assert_eq!((app.view, app.tree_query.as_str()), (View::Files, "nise"));
+        app.press("\x1b");
+        assert_eq!(app.tree_query, "");
+        // Nothing to open: the box stays open.
+        app.press("/zzzz");
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!((app.popup.clone(), app.tree_query.as_str()), (Some(Popup::Search), "zzzz"));
     }
 
     /// Ctrl-C, typed as `c` or (Caps Lock on) as `C`.
@@ -2590,17 +2674,30 @@ mod tests {
         assert_eq!(keys(&app), ["nisemonogatari", "nekomonogatari"]);
     }
 
-    /// A search lists every series, so `f` ends it first rather than change a
-    /// filter that does nothing while it lasts.
+    /// The status filter and the search work together: `f` (or `3` on the
+    /// Series view) changes the filter and the search stays, until Esc.
     #[test]
-    fn the_filter_key_ends_a_search_first() {
+    fn the_filter_and_the_search_work_together() {
         let (_dir, mut app) = demo_app();
         app.press("3/frieren\n");
-        let filter = app.filter;
+        let keys =
+            |app: &App| -> Vec<String> { app.series_ix.iter().map(|&i| app.lib.series[i].key.clone()).collect() };
+        assert!(keys(&app).contains(&"sousou no frieren".to_string()));
         app.press("f");
-        assert_eq!((app.query.as_str(), app.filter), ("", filter));
+        assert_eq!((app.query.as_str(), app.filter), ("frieren", SeriesFilter::Only(SeriesStatus::Following)));
+        assert!(keys(&app).iter().all(|k| app.lib.get(k).unwrap().status == SeriesStatus::Following));
         app.press("f");
-        assert_ne!(app.filter, filter);
+        assert_eq!(app.filter, SeriesFilter::Only(SeriesStatus::Paused));
+        assert!(keys(&app).is_empty(), "no paused series matches");
+        // `3` on the Series view does the same; in the search box it is a 3.
+        app.press("3");
+        assert_eq!((app.query.as_str(), app.filter), ("frieren", SeriesFilter::Only(SeriesStatus::Untracked)));
+        app.press("/3");
+        assert_eq!(app.query, "frieren3");
+        app.press("\x1b");
+        assert_eq!((app.query.as_str(), app.filter), ("", SeriesFilter::Only(SeriesStatus::Untracked)));
+        app.press("13");
+        assert_eq!(app.view, View::Series, "from another tab, 3 just switches");
     }
 
     /// Without a query, the merge picker lists similarly named series first,

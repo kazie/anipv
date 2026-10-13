@@ -868,8 +868,8 @@ fn queue_fills_the_view_after_it_shrinks() {
 #[test]
 fn files_tree_shows_folders_with_what_is_watched() {
     let (_d, mut app) = app();
-    // Downloads (the newest file's folder) → the roots → Anime → Monogatari Series.
-    app.press("4th");
+    // 4 again: the roots → Anime → Monogatari Series.
+    app.press("44");
     app.press("j\n");
     app.press("jjj\n");
     app.press("j ");

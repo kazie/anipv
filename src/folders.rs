@@ -72,9 +72,23 @@ impl Dir {
         }
     }
 
+    /// Its path from `at` (a folder it is in): `02 - Nisemonogatari`, with
+    /// the root when `at` is the top (`Anime/Monogatari Series`).
+    pub fn relative(&self, at: &Self) -> String {
+        path_from(at, &self.root, &self.rel)
+    }
+
     /// True if `other` is this folder or inside it.
     pub fn contains(&self, other: &Self) -> bool {
         self.is_top() || (self.root == other.root && other.rel.starts_with(&self.rel))
+    }
+}
+
+/// The path `rel` of root `root` from the folder `at` it is in.
+pub fn path_from(at: &Dir, root: &str, rel: &Path) -> String {
+    match rel.strip_prefix(&at.rel) {
+        Ok(rest) if !at.is_top() && at.root == root => rest.to_string_lossy().into_owned(),
+        _ => format!("{root}/{rel}", rel = rel.to_string_lossy()),
     }
 }
 
@@ -110,6 +124,20 @@ impl Entry {
             Self::File(_) => None,
         }
     }
+
+    /// Its path from the folder `at` it is in (see [`path_from`]).
+    pub fn path_from(&self, at: &Dir, lib: &Library) -> String {
+        match self {
+            Self::Folder(dir) => dir.relative(at),
+            Self::File(i) => path_from(at, &lib.files[*i].file.root, &lib.files[*i].file.rel),
+        }
+    }
+}
+
+/// A search candidate (see [`Folders::search`]), made an [`Entry`] only when it matches.
+enum Hit<'a> {
+    Folder(&'a Dir),
+    File(usize),
 }
 
 /// The folders of a library's files on disk.
@@ -123,6 +151,10 @@ pub struct Folders {
     /// Every folder but the top with its path (`Anime/Monogatari Series`), in
     /// path order: what [`Folders::search`] matches.
     paths: Vec<(Dir, String)>,
+    /// Every file on disk (index into [`Library::files`]) with its path
+    /// (`Anime/Monogatari Series/…/x.mkv`), in path order: what
+    /// [`Folders::search`] matches besides folders.
+    file_paths: Vec<(usize, String)>,
 }
 
 /// How far a file is watched: every item, some (or one started), none.
@@ -195,6 +227,13 @@ impl Folders {
         }
         out.paths = out.stats.keys().filter(|d| !d.is_top()).map(|d| (d.clone(), d.display())).collect();
         out.paths.sort();
+        out.file_paths = lib
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.file.present)
+            .map(|(i, f)| (i, format!("{root}/{rel}", root = f.file.root, rel = f.file.rel.to_string_lossy())))
+            .collect();
         out
     }
 
@@ -209,13 +248,23 @@ impl Folders {
         folders.chain(self.files.get(dir).into_iter().flatten().map(|&i| Entry::File(i))).collect()
     }
 
-    /// Folders whose path (`Anime/Monogatari Series/13 - …`) matches `query`
-    /// (fuzzy, each word on its own), best first.
-    pub fn search(&self, query: &str) -> Vec<Entry> {
-        // Ties keep path order.
-        crate::app::fuzzy_rank(self.paths.iter(), query, |(_, path)| path.as_str().into())
+    /// The folders and files below `at` whose path from it
+    /// (`02 - Nisemonogatari/[G] Nisemonogatari - 04.mkv`) matches `query`
+    /// (fuzzy, each word on its own), best first; on a tie, folders first,
+    /// then in path order.
+    pub fn search(&self, at: &Dir, query: &str) -> Vec<Entry> {
+        // The stored paths below `at`, without its own path in front: slices,
+        // so a keystroke allocates nothing per file.
+        let prefix = if at.is_top() { String::new() } else { format!("{path}/", path = at.display()) };
+        let folders = self.paths.iter().filter_map(|(d, path)| Some((Hit::Folder(d), path.strip_prefix(&prefix)?)));
+        let files = self.file_paths.iter().filter_map(|(i, path)| Some((Hit::File(*i), path.strip_prefix(&prefix)?)));
+        let candidates: Vec<(Hit<'_>, &str)> = folders.chain(files).collect();
+        crate::app::fuzzy_rank(candidates.iter(), query, |(_, path)| (*path).into())
             .into_iter()
-            .map(|((dir, _), _)| Entry::Folder(dir.clone()))
+            .map(|((hit, _), _)| match hit {
+                Hit::Folder(d) => Entry::Folder((*d).clone()),
+                Hit::File(i) => Entry::File(*i),
+            })
             .collect()
     }
 
@@ -328,9 +377,24 @@ mod tests {
     fn search_matches_paths_word_by_word() {
         let lib = sample();
         let f = Folders::build(&lib, &[]);
-        let hits: Vec<String> = f.search("mono nise").iter().filter_map(Entry::dir).map(Dir::display).collect();
+        let names = |at: &Dir, query: &str| -> Vec<String> {
+            f.search(at, query).iter().map(|e| e.path_from(at, &lib)).collect()
+        };
+        let hits = names(&Dir::top(), "mono nise");
         assert_eq!(hits.first(), Some(&format!("anime/{MONO}/02 - Nisemonogatari")), "best first: {hits:?}");
-        assert!(f.search("zzzz").is_empty());
+        // Below a folder: its folders and files, by their path from it.
+        let mono = Dir::root("anime").child(MONO);
+        let hits = names(&mono, "nise");
+        assert_eq!(
+            hits,
+            [
+                "02 - Nisemonogatari",
+                "02 - Nisemonogatari/[G] Nisemonogatari - 01.mkv",
+                "02 - Nisemonogatari/[G] Nisemonogatari - 02.mkv"
+            ]
+        );
+        assert!(names(&Dir::root("dl"), "nise").is_empty(), "nothing outside the folder");
+        assert!(names(&Dir::top(), "zzzz").is_empty());
     }
 
     #[test]

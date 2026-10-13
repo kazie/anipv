@@ -235,10 +235,10 @@ fn main() -> anyhow::Result<()> {
     write("status.svg", &shot(&mut app, 21), "anipv — set status")?;
 
     // Files as folders: a franchise folder, what is watched in each entry,
-    // and one entry queued (Downloads → the roots → Anime → Monogatari Series).
+    // and one entry queued (4 again: the roots → Anime → Monogatari Series).
     let home3 = tempfile::tempdir()?;
     let mut app = fresh(home3.path())?;
-    app.press("4th");
+    app.press("44");
     app.press("j\n");
     app.press("jjj\n");
     app.press("j ");

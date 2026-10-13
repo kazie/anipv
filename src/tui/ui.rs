@@ -368,8 +368,7 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let mut title = vec![
-        // A search lists every series, whatever the filter.
-        Span::raw(format!(" Series · {shown} ", shown = if app.query.is_empty() { app.filter.label() } else { "all" })),
+        Span::raw(format!(" Series · {filter} ", filter = app.filter.label())),
         Span::styled(format!("{len} "), Style::new().dark_gray()),
     ];
     if app.query.is_empty() && !app.lib.franchises.is_empty() {
@@ -743,19 +742,19 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Everywhere",
         &[
-            ("1-5 / Tab", "switch view"),
+            ("1-5 / Tab", "switch view; again: other mode / next filter"),
             ("j/k ↑/↓", "move"),
             ("g/G", "top / bottom"),
-            ("p", "play queue (or the next episode under the cursor)"),
+            ("p", "play queue (or the next episode here)"),
             ("y", "copy mpv command for the queue"),
             ("v", "while mpv plays: remote mode, keys go to mpv"),
             ("s", "set series status (in the Inbox: skip)"),
             ("r", "rescan media folders"),
             ("M", "refresh metadata for the series under the cursor"),
             ("o", "open the series under the cursor on AniList"),
-            ("ctrl-r", "refresh all metadata now (updates the anime database if old)"),
+            ("ctrl-r", "refresh all metadata (and an old anime DB)"),
             ("?", "this help"),
-            ("q / ctrl-c", "quit (asks first: q, y or ⏎ confirms); ctrl-c closes an open popup first"),
+            ("q / ctrl-c", "quit (asks first); ctrl-c closes a popup first"),
         ],
     ),
     (
@@ -782,14 +781,14 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Series",
         &[
-            ("/", "fuzzy search"),
-            ("f", "cycle filter (on disk, following, paused, …); ends a search"),
+            ("/", "fuzzy search (⏎ keeps it, Esc clears)"),
+            ("f / 3", "next status filter (works with a search)"),
             ("m", "merge into another series"),
             ("U", "undo merges into this series"),
             ("R", "rename"),
             ("L", "link AniList id"),
-            ("F", "fold / unfold franchises (one row per franchise: the entry you're at)"),
-            ("C", "catch up: mark this and the franchise's earlier entries watched"),
+            ("F", "fold franchises to the entry you're at"),
+            ("C", "catch up: this and earlier entries watched"),
             ("⏎", "open series"),
         ],
     ),
@@ -800,7 +799,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("⏎", "play this episode"),
             ("w", "toggle watched"),
             ("W", "mark everything up to here watched"),
-            ("C", "catch up: mark this series and the franchise's earlier entries watched"),
+            ("C", "catch up: this and earlier entries watched"),
             ("a", "queue all new"),
             ("x", "show / hide extras"),
             ("d", "show / hide episodes not on disk"),
@@ -810,12 +809,12 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Files",
         &[
-            ("t", "newest files ⇄ folders"),
-            ("space", "queue the file; on a folder: its unwatched episodes, in order (again: unqueue)"),
-            ("w", "toggle watched (a folder: everything in it)"),
-            ("⏎ / l", "folders: open the folder (a file: its series)"),
-            ("h / ⌫", "folders: up"),
-            ("/", "folders: fuzzy search by path"),
+            ("t / 4", "newest files ⇄ folders"),
+            ("space", "queue a file, or a folder's unwatched"),
+            ("w", "toggle watched (a folder: all of it)"),
+            ("⏎ / → / l", "open folder (a file: its series)"),
+            ("← / h / ⌫", "up a folder"),
+            ("/", "search below here (⏎ keeps it, Esc clears)"),
         ],
     ),
     ("Queue", &[("J/K", "move entry down / up"), ("d", "remove"), ("c", "clear"), ("⏎", "play")]),
@@ -964,7 +963,8 @@ fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
                     WatchState::Unwatched
                 };
                 let mark = mark_span(queued_dirs.iter().any(|d| dir.contains(d)), &state);
-                let name = if searching { dir.display() } else { dir.name() };
+                // A search hit shows where it is, from the folder you're in.
+                let name = if searching { e.path_from(&app.tree_at, &app.lib) } else { dir.name() };
                 let series = match stats.series.len() {
                     1 => stats
                         .series
@@ -991,7 +991,7 @@ fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
                 let status = series.map(|s| s.status).unwrap_or_default();
                 Row::new(vec![
                     Cell::from(Line::from(mark_span(queued, &state))),
-                    Cell::from(fi.file.name()),
+                    Cell::from(if searching { e.path_from(&app.tree_at, &app.lib) } else { fi.file.name() }),
                     Cell::from(items),
                     Cell::from(ago(fi.file.added(), ts)).dark_gray(),
                     Cell::from(series.map(|s| s.title.clone()).unwrap_or_default())

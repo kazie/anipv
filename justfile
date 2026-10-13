@@ -34,9 +34,9 @@ doc:
 deny:
     cargo deny check
 
-# Build with the minimum supported Rust version (rustup toolchain 1.89).
+# Build with the minimum supported Rust version (rustup toolchain 1.99).
 msrv:
-    cargo +1.89 check --all-targets --locked
+    cargo +1.99 check --all-targets --locked
 
 # Apply clippy's suggestions, then format.
 fix:

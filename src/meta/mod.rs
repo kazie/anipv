@@ -1355,7 +1355,7 @@ mod tests {
         assert!(OfflineDb::needs_update(dir.path()), "missing");
         let file = std::fs::File::create(OfflineDb::path(dir.path())).unwrap();
         assert!(!OfflineDb::needs_update(dir.path()), "fresh");
-        file.set_modified(SystemTime::now() - Duration::from_secs(8 * 86_400)).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_hours(8 * 24)).unwrap();
         assert!(OfflineDb::needs_update(dir.path()), "older than a week");
     }
 }
