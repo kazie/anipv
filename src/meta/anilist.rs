@@ -9,6 +9,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use std::time::Duration;
+
+use super::ratelimit::{Limiter, RateHeaders, RealClock, Reply, paced};
 use crate::index::db::SeriesMeta;
 
 /// GraphQL endpoint.
@@ -46,32 +49,60 @@ pub trait Http {
     fn post_json(&self, url: &str, body: &Value) -> Result<Value>;
 }
 
-/// Real HTTP client.
-pub struct Ureq;
+/// The real HTTP client, keeping to `AniList`'s rate limits (see
+/// [`super::ratelimit`]): it waits as long as they ask, up to `max_wait` in
+/// all per request, telling `on_wait` about each wait worth mentioning.
+pub struct Ureq<'a> {
+    /// The most a request may spend waiting before it fails.
+    pub max_wait: Duration,
+    /// Told how long a wait will be, before it starts.
+    pub on_wait: &'a dyn Fn(Duration),
+}
+
+/// How long a request may wait on the rate limit while someone watches (the
+/// TUI, a command).
+pub const INTERACTIVE_WAIT: Duration = Duration::from_secs(120);
+
+/// How long a request may wait on the rate limit in `anipv update`, which
+/// runs unattended.
+pub const BACKGROUND_WAIT: Duration = Duration::from_secs(600);
+
+impl Default for Ureq<'_> {
+    fn default() -> Self {
+        Self { max_wait: INTERACTIVE_WAIT, on_wait: &|_| {} }
+    }
+}
+
+/// What this process knows about the rate limit, shared by every request.
+static LIMITER: std::sync::LazyLock<std::sync::Mutex<Limiter>> = std::sync::LazyLock::new(Default::default);
 
 /// One agent for the whole process, so a sync's batches reuse the connection.
 static AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
     ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .timeout_global(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
         .build()
         .into()
 });
 
-impl Http for Ureq {
+impl Http for Ureq<'_> {
     fn post_json(&self, url: &str, body: &Value) -> Result<Value> {
-        let mut resp = AGENT
-            .post(url)
-            .header("Accept", "application/json")
-            .header("User-Agent", concat!("anipv/", env!("CARGO_PKG_VERSION")))
-            .send_json(body)
-            .context("contacting AniList")?;
-        let status = resp.status();
+        let reply = paced(&LIMITER, &RealClock, self.max_wait, self.on_wait, &mut || {
+            let mut resp = AGENT
+                .post(url)
+                .header("Accept", "application/json")
+                .header("User-Agent", concat!("anipv/", env!("CARGO_PKG_VERSION")))
+                .send_json(body)
+                .context("contacting AniList")?;
+            let headers = RateHeaders::parse(|name| resp.headers().get(name).and_then(|v| v.to_str().ok()));
+            let status = resp.status().as_u16();
+            let body = resp.body_mut().read_to_string().context("reading AniList response")?;
+            Ok(Reply { status, headers, body })
+        })?;
         // Errors (rate limits, proxies, outages) often come as HTML or plain
         // text, so check the status before expecting JSON.
-        let text = resp.body_mut().read_to_string().context("reading AniList response")?;
-        check_status(status.as_u16(), &text)?;
-        serde_json::from_str(&text).context("AniList sent a response that isn't JSON")
+        check_status(reply.status, &reply.body)?;
+        serde_json::from_str(&reply.body).context("AniList sent a response that isn't JSON")
     }
 }
 

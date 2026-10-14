@@ -316,6 +316,8 @@ pub enum Msg {
     Player(PlayerEvent),
     /// What a background metadata update is doing now (header text).
     MetaProgress(&'static str),
+    /// A background metadata update waits for `AniList`'s rate limit until then.
+    AniListWait(Instant),
     /// Metadata sync finished; the number is the link epoch it started under.
     Meta(crate::meta::SyncResult, u64),
     /// Metadata error.
@@ -399,6 +401,8 @@ pub struct App {
     relinked: HashMap<String, u64>,
     /// The metadata update running now, with what it is doing (for the header).
     meta_running: Option<(MetaRequest, &'static str)>,
+    /// Until when the running metadata update waits for `AniList`'s rate limit.
+    anilist_wait: Option<Instant>,
     /// A metadata update requested while one ran: it starts when that ends.
     meta_pending: Option<MetaRequest>,
     /// Playback state while mpv runs.
@@ -486,6 +490,7 @@ impl App {
             meta_epoch: 0,
             relinked: HashMap::new(),
             meta_running: None,
+            anilist_wait: None,
             meta_pending: None,
             playing: None,
             quit: false,
@@ -916,6 +921,17 @@ impl App {
         self.meta_running.as_ref().map(|(_, doing)| *doing)
     }
 
+    /// [`App::meta_busy`] for the header, with the seconds left while it
+    /// waits for `AniList`'s rate limit.
+    pub fn meta_status(&self) -> Option<String> {
+        let doing = self.meta_busy()?;
+        let left = self.anilist_wait.and_then(|t| t.checked_duration_since(Instant::now())).filter(|d| !d.is_zero());
+        Some(match left {
+            Some(d) => format!("{doing} · AniList rate limit {s}s", s = d.as_secs() + 1),
+            None => doing.to_string(),
+        })
+    }
+
     /// Counts for the tab bar: Up next rows with something new, inbox size.
     pub fn tab_counts(&self) -> (usize, usize) {
         (self.upnext_ready, self.inbox.len())
@@ -1279,8 +1295,10 @@ impl App {
                     *doing = what;
                 }
             }
+            Msg::AniListWait(until) => self.anilist_wait = Some(until),
             Msg::Meta(mut res, epoch) => {
                 let request = self.meta_running.take().map_or(STARTUP, |(r, _)| r);
+                self.anilist_wait = None;
                 // Keep everything except what this sync found for series
                 // relinked while it ran; their own refresh is queued.
                 let stale = |series: &String| self.relinked.get(series).is_some_and(|&at| at > epoch);
@@ -2149,7 +2167,12 @@ impl App {
             (Arc::clone(&self.lib), self.ctx.paths.cache_dir.clone(), self.tx.clone(), self.meta_epoch);
         spawn_meta(&self.tx, epoch, move || {
             // `opts` says whether the network may be used (see `plan`).
-            let http = Some(&crate::meta::anilist::Ureq as &dyn crate::meta::anilist::Http);
+            let waiting = tx.clone();
+            let on_wait = move |d: Duration| {
+                let _ = waiting.send(Msg::AniListWait(Instant::now() + d));
+            };
+            let ureq = crate::meta::anilist::Ureq { on_wait: &on_wait, ..Default::default() };
+            let http = Some(&ureq as &dyn crate::meta::anilist::Http);
             crate::meta::sync_with_progress(&lib, &cache, http, &opts, now(), &mut |step| {
                 let _ = tx.send(Msg::MetaProgress(match step {
                     crate::meta::SyncStep::Downloading => "downloading anime database…",
@@ -2930,6 +2953,20 @@ mod tests {
         app.playing = Some(NowPlaying::starting(1));
         app.on_player(PlayerEvent::Exited { played: false, error: None });
         assert_eq!(app.current_message(), Some("mpv exited before playing anything"));
+    }
+
+    /// While a metadata update waits for AniList's rate limit, the header
+    /// says so, with the seconds left; once it is over, it doesn't.
+    #[test]
+    fn rate_limit_waits_show_in_the_header() {
+        let (_dir, mut app) = demo_app();
+        assert_eq!(app.meta_status(), None);
+        app.meta_running = Some((STARTUP, "metadata"));
+        app.on_msg(Msg::AniListWait(Instant::now() + Duration::from_secs(41)));
+        let shown = app.meta_status().unwrap();
+        assert!(shown.starts_with("metadata · AniList rate limit ") && shown.ends_with('s'), "{shown}");
+        app.anilist_wait = Some(Instant::now());
+        assert_eq!(app.meta_status().as_deref(), Some("metadata"));
     }
 
     /// A start right after a scan (the demo's own) doesn't scan again, but

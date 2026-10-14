@@ -14,6 +14,7 @@
 
 pub mod anilist;
 pub mod offline;
+pub mod ratelimit;
 pub mod search;
 
 pub use search::{SearchOutcome, add_title_search, search_due, search_unmatched};

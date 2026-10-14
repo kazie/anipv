@@ -17,6 +17,12 @@ project uses [Semantic Versioning](https://semver.org/).
 - `anipv init` writes a commented config file: every setting with its
   default and what it does, your folders filled in
   ([`config.example.toml`](config.example.toml) is the same file).
+- AniList rate limits are kept to: requests are paced by AniList's own
+  count of what is left (other clients on your connection included) with a
+  small gap against its burst limiter, and a "too many requests" answer is
+  waited out and asked again instead of failing (up to 2 minutes while you
+  watch, with a countdown in the TUI header; 10 minutes in `anipv update`).
+  A server error or failed request is retried once.
 - The TUI skips its scan on start when every folder was looked at within
   `scan_fresh_for` minutes (30 by default), and picks up what another
   process (the timer) stored while it is open.

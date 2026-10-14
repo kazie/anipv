@@ -65,6 +65,19 @@ fn anilist_arg(s: &str) -> Result<u64, String> {
 /// `kv` key holding when `update` last tried to download the offline database.
 const OFFLINE_DB_TRIED: &str = "offline_db_tried";
 
+/// The `AniList` client for a command someone waits for (see
+/// [`crate::meta::anilist::INTERACTIVE_WAIT`]).
+fn interactive() -> anilist::Ureq<'static> {
+    anilist::Ureq { on_wait: &tell_wait, ..anilist::Ureq::default() }
+}
+
+/// Say why a command pauses: `AniList`'s rate limit (on stderr, which
+/// `anipv update` under systemd sends to the journal too).
+#[expect(clippy::print_stderr, reason = "a note while the command runs, not its output")]
+fn tell_wait(d: std::time::Duration) {
+    eprintln!("{warn} AniList rate limit: waiting {s} s", warn = yellow("!"), s = d.as_secs());
+}
+
 /// Why a command that needs the network doesn't run.
 const NETWORK_OFF: &str = "network metadata is turned off (`anilist = false` in the config)";
 
@@ -133,7 +146,7 @@ fn match_series(ctx: &Ctx, lib: &Library, dry_run: bool, search: bool, out: &mut
     };
     let before = rep.rows.len() - rep.scored;
     // `--search` asks again about series searched before.
-    let found = searching.then(|| crate::meta::add_title_search(&mut rep, lib, &anilist::Ureq, ts, search));
+    let found = searching.then(|| crate::meta::add_title_search(&mut rep, lib, &interactive(), ts, search));
     // Rows that only add a score to a link already made aren't matches.
     let matched = rep.rows.len() - rep.scored;
     if !dry_run {
@@ -185,7 +198,8 @@ fn link(ctx: &Ctx, s: &mut Session, query: &str, anilist: u64, out: &mut impl Wr
     let request = Request::Series(key.clone());
     let planned = crate::meta::plan(&s.lib, &ctx.cfg, &s.index.meta.anilist_checks, &request, now());
     let opts = SyncOptions { update_offline: false, ..planned.unwrap_or_default() };
-    let http = Some(&anilist::Ureq as &dyn anilist::Http);
+    let ureq = interactive();
+    let http = Some(&ureq as &dyn anilist::Http);
     let res = crate::meta::sync(&s.lib, &ctx.paths.cache_dir, http, &opts, now());
     ctx.store_sync(&res)?;
     let linked = res.rows.iter().find(|r| r.series == key).and_then(|r| r.title.clone());
@@ -226,7 +240,8 @@ pub(super) fn background(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
     }
     let mut shown = Ok(());
     let first_url = opts.offline_urls.first().map_or("", String::as_str);
-    let http = Some(&anilist::Ureq as &dyn anilist::Http);
+    let ureq = anilist::Ureq { max_wait: anilist::BACKGROUND_WAIT, on_wait: &tell_wait };
+    let http = Some(&ureq as &dyn anilist::Http);
     let res = crate::meta::sync_with_progress(&s.lib, &ctx.paths.cache_dir, http, &opts, now(), &mut |step| {
         if step == SyncStep::Downloading {
             shown = writeln!(out, "downloading {first_url} …", first_url = dim(first_url));
@@ -264,7 +279,8 @@ fn refresh(
     let opts = SyncOptions { update_offline: all, untracked, ..opts };
     let mut shown = Ok(());
     let first_url = opts.offline_urls.first().map_or("", String::as_str);
-    let http = Some(&anilist::Ureq as &dyn anilist::Http);
+    let ureq = interactive();
+    let http = Some(&ureq as &dyn anilist::Http);
     let res = crate::meta::sync_with_progress(lib, &ctx.paths.cache_dir, http, &opts, now(), &mut |step| {
         if step == SyncStep::Downloading {
             shown = writeln!(out, "downloading {first_url} …", first_url = dim(first_url));

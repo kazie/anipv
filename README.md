@@ -198,6 +198,12 @@ library, tracked or not: AniList then sees which anime you have, though still
 nothing about what you watched. It only runs when you ask for it, or a few at a
 time from `anipv update` when you set `refresh_untracked = true`.
 
+anipv keeps to AniList's [rate limits](https://docs.anilist.co/guide/rate-limiting):
+it paces its requests by what AniList says is left, and when it is told to
+wait anyway, it waits and tries again (the TUI header shows the countdown).
+So an update may take a little longer while AniList's API is degraded, rather
+than fail.
+
 Pressing `o` opens an AniList page in your browser; that request is yours,
 made only when you ask.
 

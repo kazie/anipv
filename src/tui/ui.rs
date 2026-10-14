@@ -105,7 +105,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     if let Some(s) = &app.scanning {
         right.push(Span::styled(format!("⟳ {s} "), Style::new().fg(Color::Yellow)));
     }
-    if let Some(m) = app.meta_busy() {
+    if let Some(m) = app.meta_status() {
         right.push(Span::styled(format!("⟳ {m} "), Style::new().fg(Color::Blue)));
     }
     if !app.offline_roots.is_empty() {
