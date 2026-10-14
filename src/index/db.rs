@@ -69,6 +69,24 @@ fn recorded_mount(value: &str, base: &Path) -> Option<bool> {
 /// `kv` key holding the version of the downloaded offline database.
 pub const OFFLINE_DB_VERSION: &str = "offline_db_version";
 
+/// `kv` key prefix (followed by the root name) remembering the last attempt
+/// to scan the root, reached or not, and what was scanned
+/// (`"1760000000:ok:<fingerprint>"` or `"…:offline:…"`): an unmounted root
+/// has no scan of its own, but was looked at all the same.
+const SCAN_TRIED: &str = "scan_tried:";
+
+/// `kv` key counting scans that changed which files are present, and roots
+/// that became reachable or unreachable, so an open TUI notices them (and
+/// not every scan that found nothing new).
+const FILE_CHANGES: &str = "file_changes";
+
+/// `kv` key counting the metadata writes (updates, links, renames), so an
+/// open TUI notices one made by another process.
+const META_SYNCS: &str = "meta_syncs";
+
+/// `kv` key prefixes followed by a root name, forgotten with the root.
+const ROOT_KEYS: [&str; 2] = [ROOT_MOUNTED, SCAN_TRIED];
+
 const TABLES: [&str; 8] =
     ["files", "scans", "kv", "series_meta", "match_attempts", "prequels", "sequels", "anilist_checks"];
 
@@ -318,6 +336,27 @@ pub struct ScanRecord {
     pub stats: ScanStats,
 }
 
+/// The last attempt to scan a root (see [`Db::set_scan_tried`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanTry {
+    /// When it started.
+    pub at: i64,
+    /// The root could not be reached (unmounted, say).
+    pub offline: bool,
+    /// What was scanned (see [`crate::app::scan_fingerprint`]): a scan of
+    /// another folder, or with other settings, says nothing about this one.
+    pub fingerprint: String,
+}
+
+/// What [`Db::changes`] reports: equal values mean nothing new was stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Changes {
+    /// Scans that changed something.
+    pub files: Option<String>,
+    /// Metadata updates.
+    pub meta: Option<String>,
+}
+
 /// Outcome of applying a root scan.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScanStats {
@@ -421,6 +460,10 @@ impl Db {
             Ok(from_sql(tx.query_row("SELECT COUNT(*) FROM files", [], |r| r.get::<_, i64>(0))?))
         };
         let before = count(&tx)?;
+        let present = |tx: &rusqlite::Transaction<'_>| -> Result<i64> {
+            Ok(tx.query_row("SELECT COUNT(*) FROM files WHERE root = ?1 AND present = 1", [root], |r| r.get(0))?)
+        };
+        let present_before = present(&tx)?;
         {
             let mut upsert = tx.prepare_cached(
                 "INSERT INTO files(path, root, rel, size, mtime, present, first_seen, last_scan)
@@ -458,6 +501,10 @@ impl Db {
                 "UPDATE files SET present = 0 WHERE root = ?1 AND present = 1 AND last_scan < ?2",
                 params![root, scan],
             )?;
+        }
+        // Files that came back (a remounted drive) are neither new nor gone.
+        if stats.new > 0 || stats.gone > 0 || present(&tx)? != present_before {
+            count_write(&tx, FILE_CHANGES)?;
         }
         tx.execute(
             "UPDATE scans SET finished_at = ?2, seen = ?3, new = ?4, gone = ?5 WHERE id = ?1",
@@ -497,15 +544,48 @@ impl Db {
         for r in all.iter().filter(|r| !roots.contains(&r.as_str())) {
             n += self.conn.execute("DELETE FROM files WHERE root = ?1", [r])?;
         }
-        let keys: Vec<String> = {
-            let mut st = self.conn.prepare("SELECT k FROM kv WHERE substr(k, 1, ?2) = ?1")?;
-            st.query_map(params![ROOT_MOUNTED, to_sql(ROOT_MOUNTED.len())], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?
-        };
-        for k in keys.iter().filter(|k| !roots.contains(&&k[ROOT_MOUNTED.len()..])) {
-            self.conn.execute("DELETE FROM kv WHERE k = ?1", [k])?;
+        for prefix in ROOT_KEYS {
+            let keys: Vec<String> = {
+                let mut st = self.conn.prepare("SELECT k FROM kv WHERE substr(k, 1, ?2) = ?1")?;
+                st.query_map(params![prefix, to_sql(prefix.len())], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+            };
+            for k in keys.iter().filter(|k| !roots.contains(&&k[prefix.len()..])) {
+                self.conn.execute("DELETE FROM kv WHERE k = ?1", [k])?;
+            }
         }
         Ok(n)
+    }
+
+    /// Remember an attempt to scan `root` (see [`ScanTry`]). A root that
+    /// became reachable or unreachable counts as a change (see [`Db::changes`]).
+    pub fn set_scan_tried(&self, root: &str, tried: &ScanTry) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let was = scan_tried(&tx, root)?;
+        let state = if tried.offline { "offline" } else { "ok" };
+        let value = format!("{at}:{state}:{fp}", at = tried.at, fp = tried.fingerprint);
+        write_kv(&tx, &format!("{SCAN_TRIED}{root}"), &value)?;
+        if was.is_none_or(|w| w.offline != tried.offline) {
+            count_write(&tx, FILE_CHANGES)?;
+        }
+        Ok(tx.commit()?)
+    }
+
+    /// The last attempt to scan `root` (see [`Db::set_scan_tried`]).
+    pub fn scan_tried(&self, root: &str) -> Result<Option<ScanTry>> {
+        scan_tried(&self.conn, root)
+    }
+
+    /// Roots with files present in the index.
+    pub fn indexed_roots(&self) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare_cached("SELECT DISTINCT root FROM files WHERE present = 1 ORDER BY root")?;
+        Ok(st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Something that changes whenever a scan changes which files are
+    /// present, or metadata is written, by this process or another one:
+    /// compare two to know whether to reload.
+    pub fn changes(&self) -> Result<Changes> {
+        Ok(Changes { files: get_kv(&self.conn, FILE_CHANGES)?, meta: get_kv(&self.conn, META_SYNCS)? })
     }
 
     /// The most recent scan of `root`.
@@ -597,6 +677,7 @@ impl Db {
         if let Some(v) = db_version {
             write_kv(&tx, OFFLINE_DB_VERSION, v)?;
         }
+        count_meta_write(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -651,6 +732,7 @@ impl Db {
     pub fn put_metas(&self, rows: &[SeriesMeta]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         write_metas(&tx, rows)?;
+        count_meta_write(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -699,13 +781,17 @@ impl Db {
                 delete_attempt(&tx, old)?;
             }
         }
+        count_meta_write(&tx)?;
         tx.commit()?;
         Ok(pairs.len())
     }
 
     /// Remove cached metadata for a series.
     pub fn delete_meta(&self, series: &str) -> Result<()> {
-        delete_meta_row(&self.conn, series)
+        let tx = self.conn.unchecked_transaction()?;
+        delete_meta_row(&tx, series)?;
+        count_meta_write(&tx)?;
+        Ok(tx.commit()?)
     }
 
     /// All cached metadata.
@@ -784,6 +870,26 @@ fn delete_meta_row(conn: &Connection, series: &str) -> Result<()> {
 fn delete_attempt(conn: &Connection, series: &str) -> Result<()> {
     conn.prepare_cached("DELETE FROM match_attempts WHERE series = ?1")?.execute([series])?;
     Ok(())
+}
+
+/// Count a metadata write (see [`META_SYNCS`]).
+fn count_meta_write(conn: &Connection) -> Result<()> {
+    count_write(conn, META_SYNCS)
+}
+
+/// Add one to the counter under `kv` key `k`.
+fn count_write(conn: &Connection, k: &str) -> Result<()> {
+    conn.execute("INSERT INTO kv(k, v) VALUES (?1, '1') ON CONFLICT(k) DO UPDATE SET v = CAST(v AS INTEGER) + 1", [k])?;
+    Ok(())
+}
+
+fn scan_tried(conn: &Connection, root: &str) -> Result<Option<ScanTry>> {
+    Ok(get_kv(conn, &format!("{SCAN_TRIED}{root}"))?.and_then(|v| {
+        let (at, rest) = v.split_once(':')?;
+        // Older records have no fingerprint: they match nothing.
+        let (state, fingerprint) = rest.split_once(':').unwrap_or((rest, ""));
+        Some(ScanTry { at: at.parse().ok()?, offline: state == "offline", fingerprint: fingerprint.into() })
+    }))
 }
 
 fn get_kv(conn: &Connection, k: &str) -> Result<Option<String>> {
@@ -995,6 +1101,65 @@ mod tests {
         db.set_kv("root_mounted:gone", "0:/g").unwrap();
         db.retain_roots(&["dl"]).unwrap();
         assert_eq!(db.get_kv("root_mounted:gone").unwrap(), None);
+    }
+
+    #[test]
+    fn scan_attempts_are_kept_per_root_and_pruned_with_it() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.scan_tried("dl").unwrap(), None);
+        let dl = ScanTry { at: 10, offline: false, fingerprint: "f1".into() };
+        let anime = ScanTry { at: 20, offline: true, fingerprint: "f2".into() };
+        db.set_scan_tried("dl", &dl).unwrap();
+        db.set_scan_tried("anime", &anime).unwrap();
+        assert_eq!(db.scan_tried("dl").unwrap(), Some(dl));
+        assert_eq!(db.scan_tried("anime").unwrap(), Some(anime));
+        // A record from before fingerprints matches none.
+        db.set_kv("scan_tried:old", "5:ok").unwrap();
+        assert_eq!(db.scan_tried("old").unwrap(), Some(ScanTry { at: 5, offline: false, fingerprint: String::new() }));
+        db.retain_roots(&["dl"]).unwrap();
+        assert_eq!(db.scan_tried("anime").unwrap(), None);
+        assert!(db.scan_tried("dl").unwrap().is_some());
+    }
+
+    /// Scans that change which files are present, roots becoming
+    /// (un)reachable and stored metadata each change what [`Db::changes`]
+    /// reports, also when made through another connection; a scan that finds
+    /// the same files, or the same state again, doesn't.
+    #[test]
+    fn changes_follow_scans_attempts_and_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let mut writer = Db::open(&path).unwrap();
+        let reader = Db::open(&path).unwrap();
+        let start = reader.changes().unwrap();
+        writer.apply_scan("dl", &[f("a.mkv")], 10, true, m(), None).unwrap();
+        let scanned = reader.changes().unwrap();
+        assert_ne!(scanned.files, start.files);
+        assert_eq!(scanned.meta, start.meta);
+        writer.apply_scan("dl", &[f("a.mkv")], 11, true, m(), None).unwrap();
+        assert_eq!(reader.changes().unwrap(), scanned, "nothing new");
+        let tried = |at, offline| ScanTry { at, offline, fingerprint: String::new() };
+        writer.set_scan_tried("dl", &tried(10, true)).unwrap();
+        let tried_offline = reader.changes().unwrap();
+        assert_ne!(tried_offline.files, scanned.files);
+        writer.set_scan_tried("dl", &tried(20, true)).unwrap();
+        assert_eq!(reader.changes().unwrap(), tried_offline, "still offline");
+        writer.set_scan_tried("dl", &tried(30, false)).unwrap();
+        let tried = reader.changes().unwrap();
+        assert_ne!(tried.files, tried_offline.files, "back");
+        // Gone, then back (a remounted drive): both are changes.
+        writer.apply_scan("dl", &[f("b.mkv")], 40, true, m(), None).unwrap();
+        let gone = reader.changes().unwrap();
+        assert_ne!(gone.files, tried.files);
+        writer.apply_scan("dl", &[f("a.mkv"), f("b.mkv")], 50, true, m(), None).unwrap();
+        assert_ne!(reader.changes().unwrap().files, gone.files);
+        let tried = reader.changes().unwrap();
+        writer.store_sync(&[], &[], None, &[], &[], &[], 20).unwrap();
+        let synced = reader.changes().unwrap();
+        assert_eq!(synced.files, tried.files);
+        assert_ne!(synced.meta, tried.meta);
+        writer.store_sync(&[], &[], None, &[], &[], &[], 20).unwrap();
+        assert_ne!(reader.changes().unwrap().meta, synced.meta, "two syncs in the same second");
     }
 
     #[test]

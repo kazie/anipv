@@ -47,6 +47,15 @@ enum Cmd {
         /// Only scan this root.
         root: Option<String>,
     },
+    /// Scan every media folder, then update metadata as the TUI does on start
+    /// (and the offline database weekly). Made to run unattended, from a
+    /// systemd timer say: a folder that can't be reached (unmounted) or
+    /// trouble with the network is a warning, and what is known stays as it was.
+    Update {
+        /// Only scan; leave metadata alone.
+        #[arg(long)]
+        no_meta: bool,
+    },
     /// Followed series with unwatched episodes on disk.
     Next {
         /// Include paused series.
@@ -233,6 +242,10 @@ fn run(cli: Cli) -> Result<()> {
             let mut ctx = Ctx::load()?;
             scan(&mut ctx, root.as_deref(), &mut out)
         }
+        Cmd::Update { no_meta } => {
+            let mut ctx = Ctx::load()?;
+            update(&mut ctx, no_meta, &mut out)
+        }
         Cmd::Next { paused } => next(&Ctx::load()?, paused, &mut out),
         Cmd::New => inbox(&Ctx::load()?, &mut out),
         Cmd::Ls { status, all } => ls(&Ctx::load()?, &status, all, &mut out),
@@ -374,19 +387,22 @@ fn writing<W: Write>(ctx: &Ctx, out: &mut W, command: impl FnOnce(&mut Session, 
     if let (Err(_), Err(e)) = (&res, &done) {
         eprintln!("warning: {e:#}");
     }
-    let reported = done.iter().try_for_each(|done| -> std::io::Result<()> {
-        for title in &done.completed {
-            writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(title))?;
-        }
-        for (title, after) in &done.followed {
-            let (ok, title) = (green("→"), bold(title));
-            writeln!(out, "{ok} {title} is now following: the next entry after {after}")?;
-        }
-        Ok(())
-    });
+    let reported = done.iter().try_for_each(|done| report_automated(done, out));
     res?;
     done?;
     Ok(reported?)
+}
+
+/// Tell what [`complete`] recorded.
+fn report_automated(done: &crate::app::Automated, out: &mut impl Write) -> std::io::Result<()> {
+    for title in &done.completed {
+        writeln!(out, "{ok} {title} completed: all episodes watched", ok = green("✓"), title = bold(title))?;
+    }
+    for (title, after) in &done.followed {
+        let (ok, title) = (green("→"), bold(title));
+        writeln!(out, "{ok} {title} is now following: the next entry after {after}")?;
+    }
+    Ok(())
 }
 
 /// [`writing`]'s second half: rebuild the library from what the command
@@ -563,6 +579,17 @@ fn scan(ctx: &mut Ctx, only: Option<&str>, out: &mut impl Write) -> Result<()> {
         eprint!("\r\x1b[2K");
     }
     let total = res.len();
+    let failed = print_scans(res, false, out)?;
+    // Any failed root fails the command, so scripts notice an unmounted drive.
+    if failed > 0 {
+        bail!("{failed} of {total} root(s) could not be scanned");
+    }
+    Ok(())
+}
+
+/// One line per scanned root. Returns how many failed; with `lenient`, a
+/// root that could not be reached (unmounted) is a warning instead.
+fn print_scans(res: Vec<crate::app::RootScan>, lenient: bool, out: &mut impl Write) -> Result<usize> {
     let mut failed = 0;
     for r in res {
         match r.stats {
@@ -580,17 +607,33 @@ fn scan(ctx: &mut Ctx, only: Option<&str>, out: &mut impl Write) -> Result<()> {
                     red(&format!("  ({errors} unreadable dirs)", errors = r.errors.len()))
                 }
             )?,
+            Err(e) if lenient && r.offline => {
+                writeln!(out, "{warn} {root:<12} {e:#}; index kept as it was", warn = yellow("!"), root = r.root)?;
+            }
             Err(e) => {
                 failed += 1;
                 writeln!(out, "{fail} {root:<12} {e:#}", fail = red("✗"), root = r.root)?;
             }
         }
     }
-    // Any failed root fails the command, so scripts notice an unmounted drive.
+    Ok(failed)
+}
+
+/// `update`: [`scan`] every root, leniently, then a background metadata
+/// update (see [`meta::background`]), which runs even if a root failed.
+fn update(ctx: &mut Ctx, no_meta: bool, out: &mut impl Write) -> Result<()> {
+    let res = ctx.scan(None, &|_, _| {})?;
+    let total = res.len();
+    let failed = print_scans(res, true, out)?;
+    let meta = if no_meta { Ok(()) } else { meta::background(ctx, out) };
     if failed > 0 {
+        // The scan's error is returned; the metadata one is still told.
+        if let Err(e) = &meta {
+            writeln!(out, "{fail} metadata: {e:#}", fail = red("✗"))?;
+        }
         bail!("{failed} of {total} root(s) could not be scanned");
     }
-    Ok(())
+    meta
 }
 
 fn status_label(s: SeriesStatus) -> String {
@@ -1102,6 +1145,9 @@ mod tests {
         Cli::try_parse_from(["anipv"]).unwrap();
         Cli::try_parse_from(["anipv", "play", "one piece", "grand blue", "-n", "2", "--print"]).unwrap();
         Cli::try_parse_from(["anipv", "status", "x", "dropped", "--note", "meh"]).unwrap();
+        Cli::try_parse_from(["anipv", "update"]).unwrap();
+        Cli::try_parse_from(["anipv", "update", "--no-meta"]).unwrap();
+        assert!(Cli::try_parse_from(["anipv", "update", "anime"]).is_err(), "always every root");
         Cli::try_parse_from(["anipv", "meta", "refresh"]).unwrap();
         Cli::try_parse_from(["anipv", "meta", "refresh", "frieren"]).unwrap();
         Cli::try_parse_from(["anipv", "meta", "refresh", "--all"]).unwrap();

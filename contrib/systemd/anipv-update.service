@@ -1,0 +1,11 @@
+# Scan media folders and update metadata: `anipv update`.
+# Installed by `just install-timer` (see the README); run by anipv-update.timer.
+[Unit]
+Description=anipv: scan media folders and update metadata
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/anipv update
+# Background work: yield CPU and disk to everything else.
+Nice=10
+IOSchedulingClass=idle

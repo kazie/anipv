@@ -47,6 +47,24 @@ fix:
 install:
     cargo install --path . --locked
 
+# Where `cargo install` (`just install`) puts anipv.
+anipv_bin := env("CARGO_INSTALL_ROOT", env("CARGO_HOME", env("HOME") / ".cargo")) / "bin/anipv"
+
+# Run `anipv update` every 15 minutes from a systemd user timer (after `just install`).
+install-timer:
+    test -x "{{anipv_bin}}" || { echo "{{anipv_bin}} not found: run \`just install\` first"; exit 1; }
+    mkdir -p ~/.config/systemd/user
+    sed 's|^ExecStart=.*/anipv |ExecStart={{anipv_bin}} |' contrib/systemd/anipv-update.service > ~/.config/systemd/user/anipv-update.service
+    cp contrib/systemd/anipv-update.timer ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now anipv-update.timer
+
+# Stop and remove the timer `install-timer` set up.
+uninstall-timer:
+    -systemctl --user disable --now anipv-update.timer
+    rm -f ~/.config/systemd/user/anipv-update.service ~/.config/systemd/user/anipv-update.timer
+    systemctl --user daemon-reload
+
 # Run anipv with arguments, e.g. `just run next`.
 run *args:
     cargo run -- {{args}}

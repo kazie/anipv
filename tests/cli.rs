@@ -595,6 +595,27 @@ fn scan_fails_when_a_root_fails() {
     anipv(d.path()).args(["scan", "anime"]).assert().success();
 }
 
+/// `update` is lenient: an unreachable root is a warning, the others are
+/// scanned, metadata is still updated, and the command succeeds.
+#[test]
+fn update_warns_about_unreachable_roots() {
+    let d = demo();
+    std::fs::rename(d.path().join("media/Downloads"), d.path().join("media/gone")).unwrap();
+    anipv(d.path()).arg("update").assert().success().stdout(
+        predicate::str::contains("✓ Anime")
+            .and(predicate::str::contains("! Downloads"))
+            .and(predicate::str::contains("index kept as it was"))
+            .and(predicate::str::contains("metadata")),
+    );
+    // The files under the unreachable root are still known.
+    anipv(d.path()).arg("next").assert().success().stdout(predicate::str::contains("Sousou no Frieren"));
+    anipv(d.path())
+        .args(["update", "--no-meta"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ Anime").and(predicate::str::contains("metadata").not()));
+}
+
 /// `anilist = false` (as in the demo) means no network from the CLI either.
 #[test]
 fn meta_refresh_respects_anilist_off() {

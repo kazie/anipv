@@ -14,6 +14,7 @@ use ratatui::widgets::TableState;
 use crate::app::{Ctx, Index, QueueEntry, fuzzy_rank, queue_new};
 use crate::events::{CachedLog, EventBody, Recorded, now};
 use crate::folders::{Dir, Entry, Folders};
+use crate::index::db::Changes;
 use crate::library::{Hint, InboxEntry, Item, Library, Series};
 use crate::model::{ItemKey, ItemKind, SeriesStatus};
 use crate::mpv::{Outcome, PlayerEvent};
@@ -432,6 +433,11 @@ pub struct App {
     detail_ix: Vec<usize>,
     /// When the last scan progress message was taken (they come in faster than they can be drawn).
     last_progress: Option<Instant>,
+    /// What the cache held at the last reload, to notice what another process
+    /// (`anipv update`) stored since (see [`App::pick_up_changes`]).
+    changes: Option<Changes>,
+    /// When `changes` was last compared.
+    changes_checked: Instant,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     /// Opens a URL in the browser (`o`); tests swap in a recorder.
@@ -441,6 +447,8 @@ pub struct App {
 impl App {
     /// Create the app and load the library.
     pub fn new(ctx: Ctx) -> Result<Self> {
+        // Taken before reading, so what is stored meanwhile counts as new.
+        let changes = ctx.db.changes().ok();
         let mut index = ctx.index()?;
         let mut events = ctx.log.load_cached()?;
         // Like every reload: a series finished while anipv was closed (watched
@@ -495,6 +503,8 @@ impl App {
             files_ix: Vec::new(),
             detail_ix: Vec::new(),
             last_progress: None,
+            changes,
+            changes_checked: Instant::now(),
             tx,
             rx,
             opener: Box::new(open_url),
@@ -557,17 +567,92 @@ impl App {
     /// Re-read the indexed files from the cache database (after a scan: files
     /// known before keep their classification), then reload.
     pub fn reload_index(&mut self) {
+        // Taken first, so what is stored meanwhile counts as new; kept only
+        // if the read works, so a failed one is tried again.
+        let changes = self.ctx.db.changes().ok();
         match self.ctx.index_from(&self.index) {
-            Ok(index) => self.index = index,
+            Ok(index) => {
+                self.index = index;
+                // Files and metadata were both read again.
+                self.changes = changes;
+            }
             Err(e) => self.fail(format!("reading the index failed: {e:#}")),
         }
         self.reload();
     }
 
+    /// [`App::reload_index`], telling of shows that arrived in the inbox.
+    fn reload_index_with_news(&mut self) -> Option<String> {
+        let before: HashSet<String> = self.inbox_rows().iter().map(|(s, _)| s.key.clone()).collect();
+        self.reload_index();
+        let arrived = self.inbox_rows().iter().filter(|(s, _)| !before.contains(&s.key)).count();
+        (arrived > 0).then(|| {
+            format!("{arrived} new show{plural} in your inbox (press 2)", plural = if arrived == 1 { "" } else { "s" })
+        })
+    }
+
+    /// Reload what another process (`anipv update`, from a timer) stored in
+    /// the cache since the last reload: scans, or else metadata. Not while a
+    /// scan or update of this TUI runs, whose own reload follows. True if
+    /// anything was reloaded.
+    pub fn pick_up_changes(&mut self) -> bool {
+        self.changes_checked = Instant::now();
+        if self.scanning.is_some() || self.meta_running.is_some() {
+            return false;
+        }
+        let Ok(now) = self.ctx.db.changes() else { return false };
+        match &self.changes {
+            Some(seen) if seen.files != now.files => {
+                match crate::app::offline_roots(&self.ctx.cfg, &self.ctx.db) {
+                    Ok(roots) => self.offline_roots = roots,
+                    Err(e) => self.fail(format!("reading the index failed: {e:#}")),
+                }
+                if let Some(news) = self.reload_index_with_news() {
+                    self.say(news);
+                }
+                true
+            }
+            Some(seen) if seen.meta != now.meta => {
+                self.reload_meta();
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.changes = Some(now);
+                false
+            }
+        }
+    }
+
+    /// On start: scan, unless every root was looked at lately (see
+    /// [`crate::app::index_fresh`]), by `anipv update` say.
+    pub fn scan_unless_fresh(&mut self) {
+        // The clock scans are recorded by, not a test or demo clock.
+        let now = now();
+        match crate::app::index_fresh(&self.ctx.cfg, &self.ctx.db, now) {
+            Ok(Some(fresh)) => {
+                self.offline_roots = fresh.offline_roots;
+                let when = match crate::fmt::ago(fresh.oldest, now).as_str() {
+                    "now" => "just now".to_string(),
+                    ago => format!("{ago} ago"),
+                };
+                self.say(format!("index scanned {when} · r rescans"));
+            }
+            Ok(None) | Err(_) => self.start_scan(),
+        }
+    }
+
     /// Re-read only the cached metadata (the files are unchanged), then reload.
     fn reload_meta(&mut self) {
+        let changes = self.ctx.db.changes();
         match self.ctx.meta_cache() {
-            Ok(meta) => self.index.meta = meta,
+            Ok(meta) => {
+                self.index.meta = meta;
+                // Only metadata was read again: a scan stored elsewhere stays new.
+                if let (Some(seen), Ok(now)) = (&mut self.changes, changes) {
+                    seen.meta = now.meta;
+                }
+            }
             Err(e) => self.fail(format!("reading the cached metadata failed: {e:#}")),
         }
         self.reload();
@@ -1178,15 +1263,7 @@ impl App {
                 if let Ok(done) = &res {
                     self.offline_roots.clone_from(&done.offline_roots);
                 }
-                let before: HashSet<String> = self.inbox_rows().iter().map(|(s, _)| s.key.clone()).collect();
-                self.reload_index();
-                let arrived = self.inbox_rows().iter().filter(|(s, _)| !before.contains(&s.key)).count();
-                let inbox = (arrived > 0).then(|| {
-                    format!(
-                        "{arrived} new show{plural} in your inbox (press 2)",
-                        plural = if arrived == 1 { "" } else { "s" }
-                    )
-                });
+                let inbox = self.reload_index_with_news();
                 match res {
                     // A root that failed is not left out for the inbox news.
                     Ok(done) if done.failed => {
@@ -1312,6 +1389,9 @@ impl App {
         if self.reload_due {
             self.reload();
             any = true;
+        }
+        if self.changes_checked.elapsed() >= CHANGES_INTERVAL {
+            any |= self.pick_up_changes();
         }
         any
     }
@@ -2294,6 +2374,9 @@ fn spawn_meta(tx: &Sender<Msg>, epoch: u64, sync: impl FnOnce() -> crate::meta::
     });
 }
 
+/// How often the TUI looks for scans and metadata stored by another process.
+const CHANGES_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Scan progress is shown at most this often.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -2847,6 +2930,63 @@ mod tests {
         app.playing = Some(NowPlaying::starting(1));
         app.on_player(PlayerEvent::Exited { played: false, error: None });
         assert_eq!(app.current_message(), Some("mpv exited before playing anything"));
+    }
+
+    /// A start right after a scan (the demo's own) doesn't scan again, but
+    /// knows the unreachable roots; with `scan_fresh_for = 0` it scans.
+    #[test]
+    fn a_fresh_index_is_not_scanned_on_start() {
+        let (_dir, mut app) = demo_app();
+        let fingerprint = crate::app::scan_fingerprint(&app.ctx.cfg, &app.ctx.cfg.roots[0]);
+        let tried = crate::index::db::ScanTry { at: now(), offline: true, fingerprint };
+        app.ctx.db.set_scan_tried("Downloads", &tried).unwrap();
+        app.scan_unless_fresh();
+        assert!(app.scanning.is_none());
+        assert_eq!(app.offline_roots, ["Downloads"]);
+        assert_eq!(app.current_message(), Some("index scanned just now · r rescans"));
+        app.ctx.cfg.scan_fresh_for = 0;
+        app.scan_unless_fresh();
+        assert!(app.scanning.is_some());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.scanning.is_some() && Instant::now() < deadline {
+            app.wait_msg(Duration::from_millis(50));
+        }
+        assert!(app.scanning.is_none(), "the scan finished");
+    }
+
+    /// What another process stores (here: a scan that finds a new file and an
+    /// unreachable root, then a metadata update) is picked up, once, but not
+    /// while a scan of the TUI's own runs.
+    #[test]
+    fn changes_stored_elsewhere_are_picked_up() {
+        let (_dir, mut app) = demo_app();
+        assert!(!app.pick_up_changes(), "nothing new");
+        let roots = &app.ctx.cfg.roots;
+        let (dl, anime) = (roots[0].resolved(), roots[1].resolved());
+        std::fs::write(dl.join("[Fake] Brand New Show - 01.mkv"), b"x").unwrap();
+        let mut other = crate::index::Db::open(&app.ctx.paths.db_file).unwrap();
+        crate::app::scan_all(&app.ctx.cfg, &mut other, Some("Downloads"), &|_, _| {}).unwrap();
+        std::fs::rename(&anime, anime.with_extension("away")).unwrap();
+        crate::app::scan_all(&app.ctx.cfg, &mut other, Some("Anime"), &|_, _| {}).unwrap();
+        app.scanning = Some("scanning…".into());
+        assert!(!app.pick_up_changes(), "not while scanning");
+        app.scanning = None;
+        assert!(app.pick_up_changes());
+        assert_eq!(app.offline_roots, ["Anime"]);
+        assert!(app.lib.get("brand new show").is_some());
+        assert_eq!(app.current_message(), Some("1 new show in your inbox (press 2)"));
+        assert!(!app.pick_up_changes(), "once");
+        other.store_sync(&[], &[], None, &[], &[], &[], now()).unwrap();
+        assert!(app.pick_up_changes());
+        assert!(!app.pick_up_changes());
+        // The TUI's own metadata reload doesn't hide a scan stored meanwhile.
+        std::fs::write(dl.join("[Fake] Another Show - 01.mkv"), b"x").unwrap();
+        crate::app::scan_all(&app.ctx.cfg, &mut other, Some("Downloads"), &|_, _| {}).unwrap();
+        app.reload_meta();
+        assert!(app.pick_up_changes(), "the scan is still new");
+        // Nor does a link made elsewhere go unnoticed.
+        other.delete_meta("sousou no frieren").unwrap();
+        assert!(app.pick_up_changes());
     }
 
     /// mpv finishing a file and exiting right after reload the library once,

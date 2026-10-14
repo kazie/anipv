@@ -8,6 +8,19 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `anipv update`: scans every media folder, then updates metadata as the TUI
+  does on start (and the offline database weekly), made to run unattended.
+  An unreachable folder or network trouble is a warning and changes nothing.
+  `just install-timer` runs it every 15 minutes from a systemd user timer
+  (`contrib/systemd/`). With `refresh_untracked = true` it also refreshes
+  series you don't track, 50 at a time, a month apart.
+- `anipv init` writes a commented config file: every setting with its
+  default and what it does, your folders filled in
+  ([`config.example.toml`](config.example.toml) is the same file).
+- The TUI skips its scan on start when every folder was looked at within
+  `scan_fresh_for` minutes (30 by default), and picks up what another
+  process (the timer) stored while it is open.
+
 - Remote mode in the TUI: while mpv plays, keys are pressed in mpv (over its
   IPC socket, as mpv key names), so your own `input.conf` decides what they
   do: pause, seek, quit and so on, without reaching for the player window.
