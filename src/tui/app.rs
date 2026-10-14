@@ -1,8 +1,8 @@
 //! TUI state and input handling (rendering lives in `ui.rs`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -13,6 +13,7 @@ use ratatui::widgets::TableState;
 
 use crate::app::{Ctx, Index, QueueEntry, fuzzy_rank, queue_new};
 use crate::events::{CachedLog, EventBody, Recorded, now};
+use crate::folders::{Dir, Entry, Folders};
 use crate::library::{Hint, InboxEntry, Item, Library, Series};
 use crate::model::{ItemKey, ItemKind, SeriesStatus};
 use crate::mpv::{Outcome, PlayerEvent};
@@ -106,6 +107,15 @@ impl SeriesFilter {
     }
 }
 
+/// What the Files view shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesMode {
+    /// Files in the download folders, newest first.
+    Recent,
+    /// Every root as folders, one folder at a time.
+    Tree,
+}
+
 /// What a text input about a series is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputPurpose {
@@ -160,6 +170,13 @@ pub enum Popup {
     },
     /// Quit anipv? (Warns that tracking is lost while mpv is still running.)
     ConfirmQuit,
+    /// Catch up to a series (see [`crate::app::catch_up`])?
+    CatchUp {
+        /// Series key.
+        series: String,
+        /// What it would do.
+        prompt: String,
+    },
 }
 
 /// State of the merge picker: the filter text, the candidates it matches
@@ -207,6 +224,40 @@ impl MergePicker {
     }
 }
 
+/// `ix` (indices of series sorted by title) with the entries of each
+/// franchise together, in watch order, where the franchise's name sorts; with
+/// `fold`, only the entry you're at (the first not completed, dropped or
+/// skipped, else the last) of each, and any other you follow.
+fn franchise_order(lib: &Library, ix: impl Iterator<Item = usize>, fold: bool) -> Vec<usize> {
+    let mut by_franchise: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut rows: Vec<(String, Option<usize>, usize)> = Vec::new();
+    for i in ix {
+        let s = &lib.series[i];
+        match (lib.franchise_index(i), lib.franchise_pos(i)) {
+            (Some(f_ix), Some((_, pos))) => by_franchise.entry(f_ix).or_default().push(pos),
+            _ => rows.push((s.title.to_lowercase(), None, i)),
+        }
+    }
+    for (f_ix, mut positions) in by_franchise {
+        let f = &lib.franchises[f_ix];
+        positions.sort_unstable();
+        if fold {
+            let done = |p: &usize| {
+                matches!(
+                    lib.series[f.stops[*p].series].status,
+                    SeriesStatus::Completed | SeriesStatus::Dropped | SeriesStatus::Skipped
+                )
+            };
+            let at = positions.iter().find(|p| !done(p)).or_else(|| positions.last()).copied();
+            let following = |p: &usize| lib.series[f.stops[*p].series].status == SeriesStatus::Following;
+            positions.retain(|p| Some(*p) == at || following(p));
+        }
+        rows.extend(positions.into_iter().map(|p| (f.name.to_lowercase(), Some(p), f.stops[p].series)));
+    }
+    rows.sort();
+    rows.into_iter().map(|(_, _, i)| i).collect()
+}
+
 /// What a list row stands for, to find it again after a reload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RowId {
@@ -216,6 +267,8 @@ enum RowId {
     File(PathBuf),
     /// An item of the series in Detail.
     Item(ItemKey),
+    /// A folder in the Files view's tree.
+    Dir(Dir),
 }
 
 /// Live playback info.
@@ -283,6 +336,7 @@ pub struct ScanSummary {
 pub type Opener = Box<dyn FnMut(&str) -> Result<()>>;
 
 /// The whole TUI state.
+#[expect(clippy::struct_excessive_bools, reason = "independent view switches")]
 pub struct App {
     /// Shared context.
     pub ctx: Ctx,
@@ -298,14 +352,28 @@ pub struct App {
     pub inbox_state: TableState,
     /// Series view selection.
     pub series_state: TableState,
-    /// Files view selection.
+    /// Files view selection (newest first).
     pub files_state: TableState,
+    /// What the Files view shows: the newest files, or the folder tree.
+    pub files_mode: FilesMode,
+    /// The folder tree of the files on disk (see [`crate::folders`]).
+    pub folders: Folders,
+    /// The folder the tree shows.
+    pub tree_at: Dir,
+    /// Applied fuzzy query for the tree: it lists matching folders.
+    pub tree_query: String,
+    /// Tree rows: the listing of `tree_at`, or the folders found.
+    tree_rows: Vec<Entry>,
+    /// Files view selection in the tree.
+    pub tree_state: TableState,
     /// Queue view selection.
     pub queue_state: TableState,
     /// Detail view selection.
     pub detail_state: TableState,
     /// Series filter.
     pub filter: SeriesFilter,
+    /// The Series view lists one entry per franchise, the one you're at.
+    pub fold_franchises: bool,
     /// Applied fuzzy query for the Series view.
     pub query: String,
     /// Include paused series in Up next.
@@ -389,9 +457,16 @@ impl App {
             inbox_state: TableState::default().with_selected(0),
             series_state: TableState::default().with_selected(0),
             files_state: TableState::default().with_selected(0),
+            files_mode: FilesMode::Recent,
+            folders: Folders::default(),
+            tree_at: Dir::top(),
+            tree_query: String::new(),
+            tree_rows: Vec::new(),
+            tree_state: TableState::default().with_selected(0),
             queue_state: TableState::default().with_selected(0),
             detail_state: TableState::default().with_selected(0),
             filter: SeriesFilter::Active,
+            fold_franchises: true,
             query: String::new(),
             include_paused: false,
             episodes_shown: EpisodeFilter::default(),
@@ -426,7 +501,7 @@ impl App {
         };
         app.warn_all();
         if !completed.is_empty() {
-            app.say(format!("✓ completed: {} (all episodes watched)", completed.join(", ")));
+            app.say(completed.summary());
         }
         app.refresh_rows();
         if app.upnext_ix.is_empty() {
@@ -517,7 +592,7 @@ impl App {
                     self.warn_all();
                 }
                 if !done.is_empty() {
-                    self.say(format!("✓ completed: {} (all episodes watched)", done.join(", ")));
+                    self.say(done.summary());
                 }
             }
             Err(e) => self.fail(format!("reload failed: {e:#}")),
@@ -549,6 +624,7 @@ impl App {
             View::UpNext => self.upnext_ix.len(),
             View::Inbox => self.inbox.len(),
             View::Series => self.series_ix.len(),
+            View::Files if self.files_mode == FilesMode::Tree => self.tree_rows.len(),
             View::Files => self.files_ix.len(),
             View::Queue => self.queue.len(),
             View::Detail => self.detail_ix.len(),
@@ -560,6 +636,7 @@ impl App {
             View::UpNext => &mut self.upnext_state,
             View::Inbox => &mut self.inbox_state,
             View::Series => &mut self.series_state,
+            View::Files if self.files_mode == FilesMode::Tree => &mut self.tree_state,
             View::Files => &mut self.files_state,
             View::Queue => &mut self.queue_state,
             View::Detail => &mut self.detail_state,
@@ -571,6 +648,7 @@ impl App {
             View::UpNext => &self.upnext_state,
             View::Inbox => &self.inbox_state,
             View::Series => &self.series_state,
+            View::Files if self.files_mode == FilesMode::Tree => &self.tree_state,
             View::Files => &self.files_state,
             View::Queue => &self.queue_state,
             View::Detail => &self.detail_state,
@@ -582,6 +660,12 @@ impl App {
             let len = self.rows_len(view);
             clamp_cursor(self.state_mut(view), len);
         }
+        // The Files view's other mode keeps its cursor too.
+        let (len, state) = match self.files_mode {
+            FilesMode::Tree => (self.files_ix.len(), &mut self.files_state),
+            FilesMode::Recent => (self.tree_rows.len(), &mut self.tree_state),
+        };
+        clamp_cursor(state, len);
     }
 
     /// What the highlighted row of `view` stands for.
@@ -592,6 +676,10 @@ impl App {
             View::UpNext => series(*self.upnext_ix.get(i)?),
             View::Inbox => series(self.inbox.get(i)?.index),
             View::Series => series(*self.series_ix.get(i)?),
+            View::Files if self.files_mode == FilesMode::Tree => match self.tree_rows.get(i)? {
+                Entry::Folder(dir) => RowId::Dir(dir.clone()),
+                Entry::File(f) => RowId::File(self.lib.files.get(*f)?.file.path.clone()),
+            },
             View::Files => RowId::File(self.lib.files[*self.files_ix.get(i)?].file.path.clone()),
             View::Queue => RowId::File(self.queue.get(i)?.file.clone()),
             View::Detail => RowId::Item(self.detail_rows().get(i)?.key.clone()),
@@ -613,6 +701,13 @@ impl App {
                 self.inbox.iter().position(|e| Some(e.index) == at)
             }
             (View::Series, RowId::Series(k)) => series_at(&self.series_ix, k),
+            (View::Files, id) if self.files_mode == FilesMode::Tree => {
+                self.tree_rows.iter().position(|e| match (e, id) {
+                    (Entry::Folder(dir), RowId::Dir(d)) => dir == d,
+                    (Entry::File(i), RowId::File(p)) => lib.files.get(*i).is_some_and(|f| f.file.path == *p),
+                    _ => false,
+                })
+            }
             (View::Files, RowId::File(p)) => self.files_ix.iter().position(|&i| lib.files[i].file.path == *p),
             (View::Queue, RowId::File(p)) => self.queue.iter().position(|q| q.file == *p),
             (View::Detail, RowId::Item(k)) => self.detail_rows().iter().position(|it| it.key == *k),
@@ -646,22 +741,80 @@ impl App {
             .unwrap_or(0);
         self.upnext_ready = upnext.iter().filter(|&&i| lib.series[i].next_up().is_some()).count();
         (self.upnext_ix, self.inbox, self.files_ix) = (upnext, inbox, files);
+        // The folder tree only while it is shown (`t` builds it).
+        if self.files_mode == FilesMode::Tree {
+            self.rebuild_folders();
+        } else {
+            self.folders = Folders::default();
+        }
         self.clamp_selections();
+    }
+
+    /// Build the folder tree from the library, then its rows.
+    fn rebuild_folders(&mut self) {
+        let roots: Vec<String> = self.ctx.cfg.roots.iter().map(|r| r.name.clone()).collect();
+        self.folders = Folders::build(&self.lib, &roots);
+        self.refresh_tree_rows();
+    }
+
+    /// Recompute the tree rows: the listing of the folder shown, or, during
+    /// a search, the folders and files below it that match (see
+    /// [`Folders::search`]). A folder gone from disk (its files moved or
+    /// deleted) gives way to the nearest one above it that still has files.
+    fn refresh_tree_rows(&mut self) {
+        while !self.tree_at.is_top() && self.folders.stats(&self.tree_at).is_none() {
+            self.tree_at = self.tree_at.parent().unwrap_or_default();
+        }
+        self.tree_rows = if self.tree_query.is_empty() {
+            self.folders.list(&self.tree_at)
+        } else {
+            self.folders.search(&self.tree_at, &self.tree_query)
+        };
+        clamp_cursor(&mut self.tree_state, self.tree_rows.len());
+    }
+
+    /// End the folder search: the folder's own listing again.
+    fn end_tree_search(&mut self) {
+        self.tree_query.clear();
+        self.tree_state.select(Some(0));
+        self.refresh_tree_rows();
+    }
+
+    /// Show `dir` in the tree (a search then covers what is below it), with
+    /// the cursor on `cursor` if it is listed, else on the first row.
+    fn open_dir(&mut self, dir: Dir, cursor: Option<RowId>) {
+        self.tree_at = dir;
+        self.tree_state.select(Some(0));
+        self.refresh_tree_rows();
+        if let Some(id) = cursor {
+            self.select_id(View::Files, &id);
+        }
     }
 
     /// Recompute only the Series list: all a filter or search change affects,
     /// so typing in the search box stays cheap on a big library.
     fn refresh_series_rows(&mut self) {
         let lib = &self.lib;
+        // The status filter and the search work together.
         let candidates: Vec<(usize, &Series)> =
-            lib.series.iter().enumerate().filter(|(_, s)| !self.query.is_empty() || self.filter.accepts(s)).collect();
+            lib.series.iter().enumerate().filter(|(_, s)| self.filter.accepts(s)).collect();
         self.series_ix = if self.query.is_empty() {
-            candidates.iter().map(|c| c.0).collect()
+            franchise_order(lib, candidates.iter().map(|c| c.0), self.fold_franchises)
         } else {
-            fuzzy_rank(candidates.iter(), &self.query, |(_, s)| s.search_text().into())
+            let mut hits: Vec<usize> = fuzzy_rank(candidates.iter(), &self.query, |(_, s)| s.search_text().into())
                 .into_iter()
                 .map(|(c, _)| c.0)
-                .collect()
+                .collect();
+            // Then every entry of a franchise the query names.
+            let q = self.query.to_lowercase();
+            for f in lib.franchises.iter().filter(|f| f.name.to_lowercase().contains(&q)) {
+                for i in f.series() {
+                    if !hits.contains(&i) && self.filter.accepts(&lib.series[i]) {
+                        hits.push(i);
+                    }
+                }
+            }
+            hits
         };
         clamp_cursor(&mut self.series_state, self.series_ix.len());
     }
@@ -705,8 +858,31 @@ impl App {
         self.files_ix[clip(&range, self.files_ix.len())].iter().map(|&i| &self.lib.files[i]).collect()
     }
 
+    /// Tree rows `range` only.
+    pub fn tree_rows_in(&self, range: Range<usize>) -> &[Entry] {
+        &self.tree_rows[clip(&range, self.tree_rows.len())]
+    }
+
     fn selected_file(&self) -> Option<&crate::library::IndexedFile> {
-        self.files_state.selected().and_then(|i| self.files_ix.get(i)).map(|&i| &self.lib.files[i])
+        let i = match self.files_mode {
+            FilesMode::Recent => *self.files_state.selected().and_then(|i| self.files_ix.get(i))?,
+            FilesMode::Tree => match self.selected_entry()? {
+                Entry::File(i) => *i,
+                Entry::Folder { .. } => return None,
+            },
+        };
+        self.lib.files.get(i)
+    }
+
+    /// The tree row under the cursor.
+    fn selected_entry(&self) -> Option<&Entry> {
+        self.tree_state.selected().and_then(|i| self.tree_rows.get(i))
+    }
+
+    /// The query the search box edits: the tree's in the Files view, else the
+    /// Series view's.
+    pub fn search_query(&self) -> &str {
+        if self.view == View::Files { &self.tree_query } else { &self.query }
     }
 
     /// Map series keys held across a reload (Detail, the queue, an open popup,
@@ -726,7 +902,9 @@ impl App {
         self.detail_key.iter_mut().for_each(&resolve);
         self.queue.iter_mut().map(|q| &mut q.series).for_each(&resolve);
         match &mut self.popup {
-            Some(Popup::Status { series, .. } | Popup::Input { series, .. }) => resolve(series),
+            Some(Popup::Status { series, .. } | Popup::Input { series, .. } | Popup::CatchUp { series, .. }) => {
+                resolve(series);
+            }
             Some(Popup::Merge(picker)) => resolve(&mut picker.from),
             Some(Popup::Help { .. } | Popup::ConfirmQuit | Popup::Search) | None => {}
         }
@@ -791,7 +969,14 @@ impl App {
             View::Inbox => self.selected_inbox(),
             View::Series => self.selected_series(),
             View::Detail => self.detail_series(),
-            View::Files => self.selected_file().and_then(|f| self.lib.get(&f.series)),
+            View::Files => {
+                if let Some(f) = self.selected_file() {
+                    return self.lib.get(&f.series);
+                }
+                // A folder of one series stands for it.
+                let series = &self.folders.stats(self.selected_entry()?.dir()?)?.series;
+                if series.len() == 1 { self.lib.get(series.first()?) } else { None }
+            }
             View::Queue => {
                 self.queue_state.selected().and_then(|i| self.queue.get(i)).and_then(|q| self.lib.get(&q.series))
             }
@@ -831,7 +1016,7 @@ impl App {
         }
         let n = entries.len();
         self.queue.extend(entries);
-        self.say(format!("queued {n} from {title} ({} in queue)", self.queue.len()));
+        self.say(format!("queued {n} from {title} ({queue} in queue)", queue = self.queue.len()));
     }
 
     /// Keep events just recorded (without reading the log again), or report
@@ -839,7 +1024,7 @@ impl App {
     fn after_write(&mut self, res: Result<Recorded>) {
         match res {
             Ok(recorded) => self.ctx.log.merge(&mut self.events, recorded),
-            Err(e) => self.fail(format!("{}: {e:#}", crate::app::WRITE_FAILED)),
+            Err(e) => self.fail(format!("{failed}: {e:#}", failed = crate::app::WRITE_FAILED)),
         }
         self.reload();
     }
@@ -863,7 +1048,7 @@ impl App {
         let Some(s) = lib.get(series) else { return };
         let Some(upto) = upto.ep else { return };
         let keys = s.unwatched_through(upto);
-        self.say(format!("marked {} episode(s) watched", keys.len()));
+        self.say(format!("marked {keys} episode(s) watched", keys = keys.len()));
         let res = self.ctx.mark(s, &keys, true);
         self.after_write(res);
     }
@@ -946,7 +1131,7 @@ impl App {
     fn open_anilist(&mut self) {
         let Some(s) = self.focused_series() else { return self.say("no series under the cursor") };
         let Some(id) = s.anilist_id() else {
-            return self.fail(format!("{}: not linked to AniList (L links it)", s.title));
+            return self.fail(format!("{title}: not linked to AniList (L links it)", title = s.title));
         };
         let url = format!("https://anilist.co/anime/{id}");
         match (self.opener)(&url) {
@@ -997,7 +1182,10 @@ impl App {
                 self.reload_index();
                 let arrived = self.inbox_rows().iter().filter(|(s, _)| !before.contains(&s.key)).count();
                 let inbox = (arrived > 0).then(|| {
-                    format!("{arrived} new show{} in your inbox (press 2)", if arrived == 1 { "" } else { "s" })
+                    format!(
+                        "{arrived} new show{plural} in your inbox (press 2)",
+                        plural = if arrived == 1 { "" } else { "s" }
+                    )
                 });
                 match res {
                     // A root that failed is not left out for the inbox news.
@@ -1082,7 +1270,7 @@ impl App {
                     Ok((label, outcome)) => match outcome {
                         Outcome::Watched => self.say(format!("✓ watched {label}")),
                         Outcome::Partial { pos, .. } => {
-                            self.say(format!("◐ {label} stopped at {}", crate::fmt::clock(pos)));
+                            self.say(format!("◐ {label} stopped at {clock}", clock = crate::fmt::clock(pos)));
                         }
                         Outcome::Nothing => {}
                     },
@@ -1251,7 +1439,13 @@ impl App {
                 self.popup = Some(Popup::Help { scroll: 0, fits: false });
             }
             KeyCode::Char(c @ '1'..='5') => {
-                self.view = View::TABS[(c as u8 - b'1') as usize];
+                let to = View::TABS[(c as u8 - b'1') as usize];
+                // The tab you're on, again: its other mode (Files) or next filter (Series).
+                match (self.view == to, to) {
+                    (true, View::Files) => self.toggle_files_mode(),
+                    (true, View::Series) => self.cycle_series_filter(),
+                    _ => self.view = to,
+                }
             }
             KeyCode::Tab => self.view = self.tab().cycle(true),
             KeyCode::BackTab => self.view = self.tab().cycle(false),
@@ -1274,24 +1468,7 @@ impl App {
                     self.popup = Some(Popup::Status { series: s.key.clone(), idx });
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.move_cursor(1);
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.move_cursor(-1);
-            }
-            KeyCode::PageDown => {
-                self.move_cursor(PAGE.into());
-            }
-            KeyCode::PageUp => {
-                self.move_cursor(-isize::from(PAGE));
-            }
-            KeyCode::Home | KeyCode::Char('g') => {
-                self.move_cursor(isize::MIN / 2);
-            }
-            KeyCode::End | KeyCode::Char('G') => {
-                self.move_cursor(isize::MAX / 2);
-            }
+            code if let Some(delta) = cursor_delta(vi_alias(code)) => self.move_cursor(delta),
             _ => return false,
         }
         true
@@ -1366,7 +1543,7 @@ impl App {
             KeyCode::Char('w') => {
                 let next = self.lib.get(&sel).and_then(|s| s.next_up().cloned());
                 if let Some(item) = next {
-                    self.say(format!("marked {} watched", item.key.describe()));
+                    self.say(format!("marked {key} watched", key = item.key.describe()));
                     self.toggle_watched(&sel, std::slice::from_ref(&item));
                 }
             }
@@ -1384,16 +1561,17 @@ impl App {
                 self.clear_search();
                 return;
             }
-            KeyCode::Char('f') => {
-                // A search lists every series: the first `f` ends it, showing
-                // the filter again.
-                if self.query.is_empty() {
-                    self.filter = self.filter.next();
-                } else {
-                    self.query.clear();
-                }
-                self.series_state.select(Some(0));
+            KeyCode::Char('F') => {
+                self.fold_franchises = !self.fold_franchises;
+                let keep = self.selected_series().map(|s| s.key.clone());
                 self.refresh_series_rows();
+                if let Some(k) = keep {
+                    self.select_id(View::Series, &RowId::Series(k));
+                }
+                return;
+            }
+            KeyCode::Char('f') => {
+                self.cycle_series_filter();
                 return;
             }
             _ => {}
@@ -1420,12 +1598,22 @@ impl App {
                     self.lib.get(&series).and_then(Series::anilist_id).map(|i| i.to_string()).unwrap_or_default();
                 self.popup = Some(Popup::Input { series, purpose: InputPurpose::Link, text });
             }
+            KeyCode::Char('C') => match crate::app::catch_up(&self.lib, &series) {
+                Ok(plan) if plan.events.is_empty() => self.say("caught up already"),
+                Ok(plan) => {
+                    let (n, eps) = (plan.entries.len(), plan.episodes);
+                    let prompt =
+                        format!("{eps} episode(s) of {n} entries: {entries}", entries = plan.entries.join(", "));
+                    self.popup = Some(Popup::CatchUp { series, prompt });
+                }
+                Err(e) => self.fail(format!("{e:#}")),
+            },
             KeyCode::Char('U') => {
                 let aliases = self.lib.get(&series).map(|s| s.aliases.clone()).unwrap_or_default();
                 if aliases.is_empty() {
                     self.say("nothing merged into this series");
                 } else {
-                    self.say(format!("split off {} merged name(s)", aliases.len()));
+                    self.say(format!("split off {aliases} merged name(s)", aliases = aliases.len()));
                     let res = self.ctx.unmerge(&self.lib, aliases.iter().map(String::as_str));
                     self.after_write(res);
                 }
@@ -1435,6 +1623,13 @@ impl App {
     }
 
     fn on_files_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('t') {
+            self.toggle_files_mode();
+            return;
+        }
+        if self.files_mode == FilesMode::Tree && self.on_tree_key(key) {
+            return;
+        }
         let Some(f) = self.selected_file() else { return };
         let series = f.series.clone();
         let items: Vec<Item> =
@@ -1455,6 +1650,107 @@ impl App {
             }
             KeyCode::Char('w') => self.toggle_watched(&series, &items),
             _ => {}
+        }
+    }
+
+    /// The Series view's next status filter (`f`, or `3` on the Series
+    /// view); a search stays, the two work together.
+    fn cycle_series_filter(&mut self) {
+        self.filter = self.filter.next();
+        self.series_state.select(Some(0));
+        self.refresh_series_rows();
+    }
+
+    /// Recent ⇄ tree (`t`, or `4` on the Files view). The tree opens on the
+    /// roots the first time, then where you left it.
+    fn toggle_files_mode(&mut self) {
+        match self.files_mode {
+            FilesMode::Tree => self.files_mode = FilesMode::Recent,
+            FilesMode::Recent => {
+                self.files_mode = FilesMode::Tree;
+                self.tree_query.clear();
+                self.rebuild_folders();
+            }
+        }
+    }
+
+    /// Keys of the tree that aren't about a file: moving through folders,
+    /// searching them, and queueing or marking a whole folder. True if the
+    /// key was one of them.
+    fn on_tree_key(&mut self, key: KeyEvent) -> bool {
+        let folder = self.selected_entry().and_then(Entry::dir).cloned();
+        match (key.code, folder) {
+            (KeyCode::Char('/'), _) => self.popup = Some(Popup::Search),
+            (KeyCode::Esc, _) if !self.tree_query.is_empty() => self.end_tree_search(),
+            (KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace, _) => {
+                if let Some(up) = self.tree_at.parent() {
+                    let came_from = RowId::Dir(self.tree_at.clone());
+                    self.open_dir(up, Some(came_from));
+                }
+            }
+            (KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right, Some(dir)) => self.open_dir(dir, None),
+            (KeyCode::Char(' '), Some(dir)) => {
+                self.toggle_queue_folder(&dir);
+                self.move_cursor(1);
+            }
+            (KeyCode::Char('w'), Some(dir)) => self.toggle_watched_folder(&dir),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Queue the unwatched files below `dir` in path order (those not queued
+    /// yet), or take them out of the queue if all of them are in it.
+    fn toggle_queue_folder(&mut self, dir: &Dir) {
+        let lib = Arc::clone(&self.lib);
+        let mut unwatched = self.folders.countable_under(&lib, dir);
+        unwatched.retain(|f| !crate::folders::file_state(&lib, f).0);
+        let queued = |f: &crate::library::IndexedFile| self.queue.iter().any(|q| q.file == f.file.path);
+        let name = dir.name();
+        if unwatched.is_empty() {
+            self.say(format!("nothing unwatched in {name}"));
+        } else if unwatched.iter().all(|f| queued(f)) {
+            let paths: HashSet<&Path> = unwatched.iter().map(|f| f.file.path.as_path()).collect();
+            self.queue.retain(|q| !paths.contains(q.file.as_path()));
+            self.say(format!("took {paths} from {name} out of the queue", paths = paths.len()));
+        } else {
+            let new: Vec<QueueEntry> = unwatched
+                .iter()
+                .filter(|f| !queued(f))
+                .map(|f| QueueEntry { series: f.series.clone(), item: f.items[0].clone(), file: f.file.path.clone() })
+                .collect();
+            let n = new.len();
+            self.queue.extend(new);
+            self.say(format!("queued {n} from {name} ({queue} in queue)", queue = self.queue.len()));
+        }
+    }
+
+    /// Mark every file below `dir` watched, or unwatched if all of them are.
+    fn toggle_watched_folder(&mut self, dir: &Dir) {
+        let lib = Arc::clone(&self.lib);
+        let files = self.folders.countable_under(&lib, dir);
+        if files.is_empty() {
+            self.say(format!("nothing to mark in {name}", name = dir.name()));
+            return;
+        }
+        let watched = !files.iter().all(|f| crate::folders::file_state(&lib, f).0);
+        let mut by_series: BTreeMap<&str, Vec<ItemKey>> = BTreeMap::new();
+        for f in &files {
+            by_series.entry(f.series.as_str()).or_default().extend(f.items.iter().cloned());
+        }
+        let mut bodies = Vec::new();
+        for (key, items) in by_series {
+            if let Some(s) = lib.get(key) {
+                bodies.extend(crate::app::mark_events(s, &items, watched));
+            }
+        }
+        let state = if watched { "watched" } else { "unwatched" };
+        let said = format!("marked {n} episode(s) in {name} {state}", n = bodies.len(), name = dir.name());
+        let res = self.ctx.record(bodies);
+        let ok = res.is_ok();
+        self.after_write(res);
+        if ok {
+            self.say(said);
         }
     }
 
@@ -1552,6 +1848,20 @@ impl App {
                     self.quit = true;
                 }
             }
+            Popup::CatchUp { series, .. } => {
+                if matches!(key.code, KeyCode::Char('y') | KeyCode::Enter) {
+                    let mut entries = String::new();
+                    let res = crate::app::catch_up(&self.lib, &series).and_then(|plan| {
+                        entries = plan.entries.join(", ");
+                        self.ctx.catch_up(plan)
+                    });
+                    let ok = res.is_ok();
+                    self.after_write(res);
+                    if ok {
+                        self.say(format!("✓ caught up: {entries}"));
+                    }
+                }
+            }
             Popup::Status { series, mut idx } => {
                 let n = SeriesStatus::ALL.len();
                 let pick = match key.code {
@@ -1591,8 +1901,7 @@ impl App {
                         }
                         return;
                     }
-                    KeyCode::Down => picker.step(1),
-                    KeyCode::Up => picker.step(-1),
+                    code if let Some(delta) = cursor_delta(code) => picker.step(delta),
                     code => {
                         if edit_text(&mut picker.query, code) {
                             picker.refresh(self, None);
@@ -1601,18 +1910,35 @@ impl App {
                 }
                 self.popup = Some(Popup::Merge(picker));
             }
-            // The search applies as it is typed: Enter just closes the box.
-            Popup::Search => match key.code {
-                KeyCode::Esc => self.clear_search(),
-                KeyCode::Enter => {}
-                code => {
-                    if edit_text(&mut self.query, code) {
-                        self.series_state.select(Some(0));
-                        self.refresh_series_rows();
+            // A search is a filter that stays until Esc; ⏎ only closes the
+            // box. The arrows work as in the list, the box staying open
+            // while the view does (← → between folders, → with nothing to open).
+            Popup::Search => {
+                let (view, folders) = (self.view, self.view == View::Files);
+                match key.code {
+                    KeyCode::Esc if folders => self.end_tree_search(),
+                    KeyCode::Esc => self.clear_search(),
+                    KeyCode::Enter => {}
+                    code => {
+                        if let Some(delta) = cursor_delta(code) {
+                            self.move_cursor(delta);
+                        } else if matches!(code, KeyCode::Left | KeyCode::Right) {
+                            if folders { self.on_files_key(key) } else { self.on_series_key(key) }
+                        } else if folders {
+                            if edit_text(&mut self.tree_query, code) {
+                                self.tree_state.select(Some(0));
+                                self.refresh_tree_rows();
+                            }
+                        } else if edit_text(&mut self.query, code) {
+                            self.series_state.select(Some(0));
+                            self.refresh_series_rows();
+                        }
+                        if self.view == view {
+                            self.popup = Some(Popup::Search);
+                        }
                     }
-                    self.popup = Some(Popup::Search);
                 }
-            },
+            }
             Popup::Input { series, purpose, mut text } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_input(series, purpose, &text),
@@ -1758,7 +2084,7 @@ impl App {
     fn meta_summary(&self, request: &MetaRequest, res: &crate::meta::SyncResult) -> Option<String> {
         match request {
             MetaRequest::Auto { .. } => {
-                (!res.rows.is_empty()).then(|| format!("metadata: updated {} series", res.rows.len()))
+                (!res.rows.is_empty()).then(|| format!("metadata: updated {rows} series", rows = res.rows.len()))
             }
             MetaRequest::All => {
                 let (updated, unmatched) = (res.rows.len(), res.attempts.len());
@@ -1772,7 +2098,7 @@ impl App {
                         let (title, anime) = (&s.title, m.title.as_deref().unwrap_or("linked"));
                         format!("{title}: {anime} · {total} eps · {state}")
                     }
-                    None => format!("{}: no AniList match (link one with L)", s.title),
+                    None => format!("{title}: no AniList match (link one with L)", title = s.title),
                 })
             }
         }
@@ -1798,13 +2124,13 @@ fn scan_summary(out: &[crate::app::RootScan]) -> ScanSummary {
         .iter()
         .map(|r| {
             let changes = match &r.stats {
-                Ok(s) if s.new > 0 || s.gone > 0 => format!("+{} −{}", s.new, s.gone),
+                Ok(s) if s.new > 0 || s.gone > 0 => format!("+{new} −{gone}", new = s.new, gone = s.gone),
                 Ok(_) => "no changes".into(),
                 Err(e) => e.to_string(),
             };
             match r.errors.len() {
-                0 => format!("{}: {changes}", r.root),
-                n => format!("{}: {changes} ({n} unreadable dirs)", r.root),
+                0 => format!("{root}: {changes}", root = r.root),
+                n => format!("{root}: {changes} ({n} unreadable dirs)", root = r.root),
             }
         })
         .collect();
@@ -1882,6 +2208,31 @@ fn edit_text(text: &mut String, code: KeyCode) -> bool {
 fn step_cursor(state: &mut TableState, len: usize, delta: isize) {
     let cur = state.selected().unwrap_or(0);
     state.select(len.checked_sub(1).map(|last| cur.saturating_add_signed(delta).min(last)));
+}
+
+/// The cursor key a vi letter in a list stands for (`j` ↓, `k` ↑, `g` Home,
+/// `G` End); any other key is itself.
+fn vi_alias(code: KeyCode) -> KeyCode {
+    match code {
+        KeyCode::Char('j') => KeyCode::Down,
+        KeyCode::Char('k') => KeyCode::Up,
+        KeyCode::Char('g') => KeyCode::Home,
+        KeyCode::Char('G') => KeyCode::End,
+        code => code,
+    }
+}
+
+/// How far a cursor key moves the cursor in a list (`None`: not one).
+fn cursor_delta(code: KeyCode) -> Option<isize> {
+    Some(match code {
+        KeyCode::Down => 1,
+        KeyCode::Up => -1,
+        KeyCode::PageDown => isize::from(PAGE),
+        KeyCode::PageUp => -isize::from(PAGE),
+        KeyCode::Home => isize::MIN / 2,
+        KeyCode::End => isize::MAX / 2,
+        _ => return None,
+    })
 }
 
 /// `range` limited to a list of `len` rows, as a slice index.
@@ -2007,6 +2358,122 @@ mod tests {
         (dir, App::new(ctx).unwrap())
     }
 
+    /// The Files view's tree: drill down and up, queue and mark whole
+    /// folders, search by path, and back to the newest files.
+    #[test]
+    fn files_tree_browses_queues_and_marks_folders() {
+        let (_dir, mut app) = demo_app();
+        let names = |app: &App| -> Vec<String> {
+            app.tree_rows
+                .iter()
+                .map(|e| match e {
+                    Entry::Folder(dir) => dir.name(),
+                    Entry::File(i) => app.lib.files[*i].file.name(),
+                })
+                .collect()
+        };
+        let selected = |app: &App| app.selected_entry().and_then(Entry::dir).map(Dir::name);
+        // `4` on the Files view switches to folders, which open on the roots.
+        app.press("44");
+        assert_eq!(app.files_mode, FilesMode::Tree);
+        assert!(app.tree_at.is_top());
+        assert_eq!(names(&app), ["Downloads", "Anime"], "roots in config order");
+        app.press("\nh");
+        assert_eq!(selected(&app).as_deref(), Some("Downloads"), "back up on the folder it came from");
+        app.press("j\n");
+        let mono = names(&app).iter().position(|n| n == "Monogatari Series").unwrap();
+        app.tree_state.select(Some(mono));
+        app.press("\n");
+        assert_eq!(names(&app), ["01 - Bakemonogatari", "02 - Nisemonogatari", "03 - Nekomonogatari (Black)"]);
+
+        // Space on a folder queues its unwatched episodes in order; again, unqueues them.
+        app.press("j ");
+        let eps: Vec<String> =
+            app.queue.iter().map(|q| format!("{series} {item}", series = q.series, item = q.item.describe())).collect();
+        assert_eq!(eps.len(), 8);
+        assert_eq!((eps[0].as_str(), eps[7].as_str()), ("nisemonogatari 04", "nisemonogatari 11"));
+        app.press("k ");
+        assert!(app.queue.is_empty());
+
+        // `w` on a folder (the cursor moved on to the next) marks everything in it watched.
+        app.press("w");
+        assert_eq!(app.lib.get("nekomonogatari").unwrap().watched_count(), 4);
+        app.press("h");
+        assert_eq!(selected(&app).as_deref(), Some("Monogatari Series"));
+
+        // A search finds what is below the folder by path; ⏎ opens a hit and
+        // the search stays (it now covers what is below that), Esc ends it.
+        app.press("/mono nise\n");
+        assert!(app.tree_rows[0].dir().unwrap().display().ends_with("Monogatari Series/02 - Nisemonogatari"));
+        app.press("\n");
+        assert_eq!((app.tree_at.name().as_str(), app.tree_query.as_str()), ("02 - Nisemonogatari", "mono nise"));
+        app.press("\x1b");
+        assert_eq!(app.tree_query, "");
+        app.press("/nise\nt");
+        assert_eq!(app.files_mode, FilesMode::Recent);
+        // Back to folders: where you left them, the search over.
+        app.press("4");
+        assert_eq!((app.files_mode, app.tree_at.name().as_str()), (FilesMode::Tree, "02 - Nisemonogatari"));
+        assert_eq!(app.tree_query, "");
+    }
+
+    fn arrow(app: &mut App, code: KeyCode) {
+        app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// In the Series search box ↑/↓ move through the matches while typing, →
+    /// opens the one under the cursor (the query stays), ← does nothing.
+    #[test]
+    fn arrows_work_in_the_series_search() {
+        let (_dir, mut app) = demo_app();
+        app.press("3/mono");
+        arrow(&mut app, KeyCode::Down);
+        assert_eq!((app.popup.clone(), app.query.as_str()), (Some(Popup::Search), "mono"));
+        assert_eq!(app.series_state.selected(), Some(1));
+        arrow(&mut app, KeyCode::Left);
+        assert_eq!(app.popup, Some(Popup::Search));
+        let picked = app.selected_series().unwrap().key.clone();
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!((app.view, app.popup.clone()), (View::Detail, None));
+        assert_eq!(app.detail_key.as_deref(), Some(picked.as_str()));
+        app.press("\x1b");
+        assert_eq!((app.view, app.query.as_str()), (View::Series, "mono"), "the matches are still there");
+    }
+
+    /// In the folder search the arrows work as in the list, the box and the
+    /// query staying: ↑/↓ move, → goes into a folder (a file: its series),
+    /// ← goes up. Only Esc ends the search.
+    #[test]
+    fn arrows_work_in_the_folder_search() {
+        let (_dir, mut app) = demo_app();
+        app.press("44j\n/nise");
+        // Below Anime: the Nisemonogatari folder, then its files.
+        let nise = app.tree_rows[0].dir().cloned().unwrap();
+        assert_eq!(nise.relative(&app.tree_at), "Monogatari Series/02 - Nisemonogatari");
+        assert!(matches!(app.tree_rows[1], Entry::File(_)));
+        arrow(&mut app, KeyCode::Down);
+        arrow(&mut app, KeyCode::Up);
+        assert_eq!((app.popup.clone(), app.tree_state.selected()), (Some(Popup::Search), Some(0)));
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!((&app.tree_at, app.tree_query.as_str(), app.popup.clone()), (&nise, "nise", Some(Popup::Search)));
+        assert!(app.tree_rows.iter().all(|e| matches!(e, Entry::File(_))), "its episodes");
+        arrow(&mut app, KeyCode::Left);
+        assert_eq!((app.tree_at.name().as_str(), app.tree_query.as_str()), ("Monogatari Series", "nise"));
+        // ⏎ keeps the search; → on an episode opens its series, and back it is still there.
+        app.press("\n");
+        app.tree_state.select(Some(1));
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!(app.view, View::Detail);
+        app.press("\x1b");
+        assert_eq!((app.view, app.tree_query.as_str()), (View::Files, "nise"));
+        app.press("\x1b");
+        assert_eq!(app.tree_query, "");
+        // Nothing to open: the box stays open.
+        app.press("/zzzz");
+        arrow(&mut app, KeyCode::Right);
+        assert_eq!((app.popup.clone(), app.tree_query.as_str()), (Some(Popup::Search), "zzzz"));
+    }
+
     /// Ctrl-C, typed as `c` or (Caps Lock on) as `C`.
     fn ctrl_c(app: &mut App, letter: char) {
         app.on_key(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL));
@@ -2106,7 +2573,11 @@ mod tests {
             return; // Running as root: nothing is unreadable.
         }
         let mut app = App::new(ctx).unwrap();
-        assert!(app.current_message().is_some_and(|m| m.contains("laptop.jsonl")), "{:?}", app.current_message());
+        assert!(
+            app.current_message().is_some_and(|m| m.contains("laptop.jsonl")),
+            "{message:?}",
+            message = app.current_message()
+        );
         app.messages.clear();
         app.reload();
         assert_eq!(app.current_message(), None, "not again on a reload");
@@ -2177,20 +2648,56 @@ mod tests {
         assert_eq!(app.query, "fri");
         ctrl_c(&mut app, 'c');
         assert!(app.popup.is_none() && app.query.is_empty());
-        assert_eq!(app.series_ix.len(), app.lib.series.iter().filter(|s| app.filter.accepts(s)).count());
+        let accepted = app.lib.series.iter().enumerate().filter(|(_, s)| app.filter.accepts(s)).map(|(i, _)| i);
+        assert_eq!(app.series_ix, franchise_order(&app.lib, accepted, app.fold_franchises));
     }
 
-    /// A search lists every series, so `f` ends it first rather than change a
-    /// filter that does nothing while it lasts.
+    /// Folded, the Series view shows the franchise entry you're at; `F`
+    /// unfolds it into every entry, in watch order.
     #[test]
-    fn the_filter_key_ends_a_search_first() {
+    fn franchises_fold_to_the_entry_you_are_at() {
+        let (_dir, mut app) = demo_app();
+        app.press("3");
+        let keys = |app: &App| -> Vec<String> {
+            app.series_ix.iter().map(|&i| app.lib.series[i].key.clone()).filter(|k| k.contains("monogatari")).collect()
+        };
+        assert_eq!(keys(&app), ["nisemonogatari"]);
+        app.press("F");
+        assert_eq!(keys(&app), ["bakemonogatari", "nisemonogatari", "nekomonogatari"]);
+        // A search finds every entry by the franchise's name.
+        app.press("/monogatari series\n");
+        assert_eq!(keys(&app).len(), 3);
+        // Folded, another entry you follow shows too.
+        app.press("\x1bF");
+        let res = app.ctx.set_status(&app.lib, "nekomonogatari", SeriesStatus::Following, None);
+        app.after_write(res);
+        assert_eq!(keys(&app), ["nisemonogatari", "nekomonogatari"]);
+    }
+
+    /// The status filter and the search work together: `f` (or `3` on the
+    /// Series view) changes the filter and the search stays, until Esc.
+    #[test]
+    fn the_filter_and_the_search_work_together() {
         let (_dir, mut app) = demo_app();
         app.press("3/frieren\n");
-        let filter = app.filter;
+        let keys =
+            |app: &App| -> Vec<String> { app.series_ix.iter().map(|&i| app.lib.series[i].key.clone()).collect() };
+        assert!(keys(&app).contains(&"sousou no frieren".to_string()));
         app.press("f");
-        assert_eq!((app.query.as_str(), app.filter), ("", filter));
+        assert_eq!((app.query.as_str(), app.filter), ("frieren", SeriesFilter::Only(SeriesStatus::Following)));
+        assert!(keys(&app).iter().all(|k| app.lib.get(k).unwrap().status == SeriesStatus::Following));
         app.press("f");
-        assert_ne!(app.filter, filter);
+        assert_eq!(app.filter, SeriesFilter::Only(SeriesStatus::Paused));
+        assert!(keys(&app).is_empty(), "no paused series matches");
+        // `3` on the Series view does the same; in the search box it is a 3.
+        app.press("3");
+        assert_eq!((app.query.as_str(), app.filter), ("frieren", SeriesFilter::Only(SeriesStatus::Untracked)));
+        app.press("/3");
+        assert_eq!(app.query, "frieren3");
+        app.press("\x1b");
+        assert_eq!((app.query.as_str(), app.filter), ("", SeriesFilter::Only(SeriesStatus::Untracked)));
+        app.press("13");
+        assert_eq!(app.view, View::Series, "from another tab, 3 just switches");
     }
 
     /// Without a query, the merge picker lists similarly named series first,
@@ -2283,8 +2790,8 @@ mod tests {
         }
         assert!(
             app.current_message().is_some_and(|m| m.starts_with("could not send l to mpv")),
-            "{:?}",
-            app.current_message()
+            "{message:?}",
+            message = app.current_message()
         );
     }
 

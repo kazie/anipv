@@ -82,12 +82,12 @@ pub(super) fn run(ctx: &Ctx, a: MetaAction, out: &mut impl Write) -> Result<()> 
     match a {
         MetaAction::Update => {
             let urls = offline::source_urls(ctx.cfg.offline_db_url.as_deref());
-            writeln!(out, "downloading {} …", dim(&urls[0]))?;
+            writeln!(out, "downloading {urls} …", urls = dim(&urls[0]))?;
             let (db, notes) = OfflineDb::download(&ctx.paths.cache_dir, &urls)?;
             ctx.store_sync(&SyncResult { db_version: Some(db.version_key().to_string()), ..SyncResult::default() })?;
             writeln!(out, "{ok} {n} anime with AniList ids", ok = green("✓"), n = db.entries.len())?;
             print_warnings(out, &notes)?;
-            writeln!(out, "  next: {}", cyan("anipv meta match"))?;
+            writeln!(out, "  next: {cmd}", cmd = cyan("anipv meta match"))?;
             Ok(())
         }
         MetaAction::Match { dry_run, search } => {
@@ -103,7 +103,7 @@ pub(super) fn run(ctx: &Ctx, a: MetaAction, out: &mut impl Write) -> Result<()> 
         }
         MetaAction::Search { query } => {
             for e in OfflineDb::load(&ctx.paths.cache_dir)?.context(NO_DATABASE)?.search(&query, 15) {
-                writeln!(out, "  {}", e.describe())?;
+                writeln!(out, "  {error}", error = e.describe())?;
             }
             Ok(())
         }
@@ -150,15 +150,20 @@ fn match_series(ctx: &Ctx, lib: &Library, dry_run: bool, search: bool, out: &mut
         }
     }
     if rep.ambiguous().next().is_some() {
-        writeln!(out, "\n{} (link with {}):", bold("ambiguous"), cyan("anipv meta link <series> <anilist-id>"))?;
+        writeln!(
+            out,
+            "\n{label} (link with {cmd}):",
+            label = bold("ambiguous"),
+            cmd = cyan("anipv meta link <series> <anilist-id>")
+        )?;
         for u in rep.ambiguous().take(40) {
-            writeln!(out, "  {}", yellow(&u.series))?;
+            writeln!(out, "  {series}", series = yellow(&u.series))?;
             for x in u.candidates.iter().take(4) {
-                writeln!(out, "    {}", dim(x))?;
+                writeln!(out, "    {candidate}", candidate = dim(x))?;
             }
         }
     }
-    writeln!(out, "{} series without a match", rep.unmatched().count())?;
+    writeln!(out, "{unmatched} series without a match", unmatched = rep.unmatched().count())?;
     Ok(())
 }
 
@@ -209,7 +214,7 @@ fn refresh(
     };
     let planned = crate::meta::plan(lib, &ctx.cfg, &s.index.meta.anilist_checks, &request, now());
     let Some(opts) = planned.filter(SyncOptions::asks_anilist) else {
-        writeln!(out, "nothing to refresh (follow series, or use {})", cyan("--all"))?;
+        writeln!(out, "nothing to refresh (follow series, or use {cmd})", cmd = cyan("--all"))?;
         return Ok(());
     };
     // Only `--all` updates the offline database.
@@ -219,7 +224,7 @@ fn refresh(
     let http = Some(&anilist::Ureq as &dyn anilist::Http);
     let res = crate::meta::sync_with_progress(lib, &ctx.paths.cache_dir, http, &opts, now(), &mut |step| {
         if step == SyncStep::Downloading {
-            shown = writeln!(out, "downloading {} …", dim(first_url));
+            shown = writeln!(out, "downloading {first_url} …", first_url = dim(first_url));
         }
     });
     shown?;

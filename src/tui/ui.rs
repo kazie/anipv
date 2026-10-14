@@ -12,8 +12,9 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 
-use super::app::{App, MergePicker, NowPlaying, Popup, Severity, View};
+use super::app::{App, FilesMode, MergePicker, NowPlaying, Popup, Severity, View};
 use crate::fmt::{ago, ago_opt, clock};
+use crate::folders::Entry;
 use crate::library::Hint;
 use crate::library::{Item, Library, Series};
 use crate::model::{ItemKey, ItemKind, SeriesStatus, WatchState};
@@ -69,9 +70,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Some(Popup::Help { scroll, fits }) => draw_help(f, scroll, fits),
         Some(Popup::Status { series, idx }) => draw_status_popup(f, &app.lib, series, *idx),
         Some(Popup::Merge(picker)) => draw_merge(f, &app.lib, picker),
-        Some(Popup::Search) => draw_search(f, &app.query),
+        Some(Popup::Search) => draw_search(f, app.search_query()),
         Some(Popup::Input { purpose, text, .. }) => draw_input(f, &purpose.prompt(), text),
         Some(Popup::ConfirmQuit) => draw_confirm(f, app.playing.is_some()),
+        Some(Popup::CatchUp { prompt, .. }) => draw_catch_up(f, prompt),
         None => {}
     }
 }
@@ -110,7 +112,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         let names = app.offline_roots.join(",");
         right.push(Span::styled(format!("✗ {names} offline "), Style::new().fg(Color::Red)));
     }
-    right.push(Span::styled(format!("{} ", app.ctx.log.device()), Style::new().fg(Color::DarkGray)));
+    right.push(Span::styled(format!("{device} ", device = app.ctx.log.device()), Style::new().fg(Color::DarkGray)));
     f.render_widget(Line::from(right).alignment(Alignment::Right), area);
 }
 
@@ -202,13 +204,13 @@ fn score_span(s: &Series) -> Span<'static> {
 fn short_count(n: u32) -> String {
     match n {
         0..1_000 => n.to_string(),
-        1_000..999_500 => format!("{}k", (n + 500) / 1_000),
+        1_000..999_500 => format!("{k}k", k = (n + 500) / 1_000),
         _ => {
             let tenths = (n + 50_000) / 100_000;
             if tenths.is_multiple_of(10) {
-                format!("{}M", tenths / 10)
+                format!("{m}M", m = tenths / 10)
             } else {
-                format!("{}.{}M", tenths / 10, tenths % 10)
+                format!("{m}.{tenth}M", m = tenths / 10, tenth = tenths % 10)
             }
         }
     }
@@ -251,8 +253,9 @@ fn draw_upnext(f: &mut Frame, app: &mut App, area: Rect) {
                 ])),
             };
             let next_style = if next.is_some() { Style::new().bold() } else { Style::new().dark_gray() };
+            let title = titled(app, s, title_style);
             Row::new(vec![
-                Cell::from(s.title.clone()).style(title_style),
+                Cell::from(title),
                 Cell::from(format!("{next_txt}{started}")).style(next_style),
                 new_cell,
                 Cell::from(s.progress()),
@@ -351,8 +354,9 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|s| {
             let latest = s.latest_on_disk().map(|e| e.to_string()).unwrap_or_default();
             let disk_style = if s.present() { Style::new() } else { Style::new().dark_gray() };
+            let title = titled(app, s, Style::new());
             Row::new(vec![
-                Cell::from(s.title.clone()),
+                Cell::from(title),
                 Cell::from(s.status.as_str()).fg(status_color(s.status)),
                 Cell::from(score_span(s)),
                 Cell::from(s.progress()),
@@ -364,12 +368,15 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let mut title = vec![
-        // A search lists every series, whatever the filter.
-        Span::raw(format!(" Series · {} ", if app.query.is_empty() { app.filter.label() } else { "all" })),
+        Span::raw(format!(" Series · {filter} ", filter = app.filter.label())),
         Span::styled(format!("{len} "), Style::new().dark_gray()),
     ];
+    if app.query.is_empty() && !app.lib.franchises.is_empty() {
+        let folded = if app.fold_franchises { "franchises folded (F) " } else { "franchises unfolded (F) " };
+        title.push(Span::styled(folded, Style::new().dark_gray()));
+    }
     if !app.query.is_empty() {
-        title.push(Span::styled(format!("/{} ", app.query), Style::new().fg(Color::Yellow)));
+        title.push(Span::styled(format!("/{query} ", query = app.query), Style::new().fg(Color::Yellow)));
     }
     let widths = [
         Constraint::Fill(1),
@@ -386,6 +393,10 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_files(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.files_mode == FilesMode::Tree {
+        draw_tree(f, app, area);
+        return;
+    }
     let ts = app.now();
     let queued_set = queued_set(app);
     let window = Window::of_table(&app.files_state, app.rows_len(View::Files), area, true);
@@ -415,7 +426,10 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(10),
         Constraint::Fill(1),
     ];
-    let title = format!(" Files · newest first · {} ", app.rows_len(View::Files));
+    let title = Line::from(vec![
+        Span::raw(format!(" Files · newest first · {n} ", n = app.rows_len(View::Files))),
+        Span::styled("· t: folders ", Style::new().dark_gray()),
+    ]);
     let table = list_table(rows, widths, Some(["", "Add", "Series", "Item", "File"]), title);
     window.render(f, table, area, &mut app.files_state);
 }
@@ -431,7 +445,7 @@ fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
             let st = s.and_then(|s| s.item(&q.item)).map(|i| i.state).unwrap_or_default();
             let resume = st.percent().map(|p| format!("resume {p}")).unwrap_or_default();
             Row::new(vec![
-                Cell::from(format!("{}", i + 1)).dark_gray(),
+                Cell::from((i + 1).to_string()).dark_gray(),
                 Cell::from(app.lib.title_of(&q.series).to_string()),
                 Cell::from(q.item.describe()).bold(),
                 Cell::from(resume).yellow(),
@@ -481,9 +495,9 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw("  "),
         Span::styled(s.status.as_str(), Style::new().fg(status_color(s.status)).bold()),
         Span::raw("  "),
-        Span::styled(format!("watched {}", s.progress()), Style::new()),
+        Span::styled(format!("watched {progress}", progress = s.progress()), Style::new()),
         Span::raw("  "),
-        Span::styled(format!("on disk {}", s.on_disk_items()), Style::new().dark_gray()),
+        Span::styled(format!("on disk {disk}", disk = s.on_disk_items()), Style::new().dark_gray()),
         Span::raw("  "),
         airing_span(s, ts),
     ];
@@ -502,7 +516,7 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
             l1.extend([Span::raw("  ★ "), score_span(s)]);
         }
         if let Some(p) = m.popularity {
-            l1.push(Span::styled(format!(" · {} members", short_count(p)), Style::new().dark_gray()));
+            l1.push(Span::styled(format!(" · {members} members", members = short_count(p)), Style::new().dark_gray()));
         }
     }
     info.push(Line::from(l1));
@@ -511,14 +525,45 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         l2.push(Span::styled(format!("  anilist.co/anime/{id}"), Style::new().dark_gray()));
     }
     if !s.aliases.is_empty() {
-        l2.push(Span::styled(format!("  also: {}", s.aliases.join(", ")), Style::new().dark_gray()));
+        l2.push(Span::styled(format!("  also: {aliases}", aliases = s.aliases.join(", ")), Style::new().dark_gray()));
     }
     if let Some(n) = &s.note {
         l2.push(Span::styled(format!("  “{n}”"), Style::new().fg(Color::Yellow)));
     }
     info.push(Line::from(l2));
+    if let Some(at) = app.lib.index_of(&s.key)
+        && let Some((fr, _)) = app.lib.franchise_pos(at)
+        && let Some(place) = app.lib.franchise_place(&s.key)
+    {
+        let mut l3 = vec![Span::styled(format!("{place}: "), Style::new().dark_gray())];
+        // This series' stops in bold, the ones watched in green.
+        for (i, stop) in fr.stops.iter().enumerate() {
+            if i > 0 {
+                l3.push(Span::styled(" → ", Style::new().dark_gray()));
+            }
+            let mut style = if stop.watched { Style::new().green() } else { Style::new() };
+            if stop.series == at {
+                style = style.bold();
+            }
+            l3.push(Span::styled(app.lib.stop_label(stop).to_string(), style));
+        }
+        info.push(Line::from(l3));
+    }
+    // A few at most: the episode list below needs the room.
+    let shared = s.shared_dirs(&app.ctx.cfg);
+    for (dir, n) in shared.iter().take(2) {
+        let text = format!("! {n} episode(s) in {dir} are also in another folder (anipv split, if it's another anime)");
+        info.push(Line::from(Span::styled(text, Style::new().fg(Color::Yellow))));
+    }
+    if let Some(more) = shared.len().checked_sub(2).filter(|n| *n > 0) {
+        info.push(Line::from(Span::styled(
+            format!("! … {more} more such folders (anipv show)"),
+            Style::new().fg(Color::Yellow),
+        )));
+    }
 
-    let [top, list] = Layout::vertical([Constraint::Length(4), Constraint::Min(1)]).areas(area);
+    let height = u16::try_from(info.len()).unwrap_or(u16::MAX).saturating_add(2);
+    let [top, list] = Layout::vertical([Constraint::Length(height), Constraint::Min(1)]).areas(area);
     f.render_widget(Paragraph::new(info).block(block(" Series ")).wrap(Wrap { trim: true }), top);
 
     let queued_set = queued_set(app);
@@ -544,7 +589,7 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
             };
             // Extras attached to an episode are indented under it.
             let attached = it.key.kind == ItemKind::Extra && it.key.ep.is_some();
-            let label = if attached { format!("  {}", it.key.label) } else { it.key.describe() };
+            let label = if attached { format!("  {key}", key = it.key.label) } else { it.key.describe() };
             let style = if it.present() { Style::new() } else { Style::new().dark_gray() };
             Row::new(vec![
                 Cell::from(Line::from(mark_span(queued_set.contains(&(s.key.as_str(), &it.key)), &it.state))),
@@ -631,7 +676,15 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 ("M", "metadata"),
             ]
         }
-        View::Files => vec![("space", "queue"), ("w", "watched"), ("⏎", "series")],
+        View::Files if app.files_mode == FilesMode::Tree => vec![
+            ("⏎", "open"),
+            ("h", "up"),
+            ("space", "queue"),
+            ("w", "watched"),
+            ("/", "search"),
+            ("t", "newest files"),
+        ],
+        View::Files => vec![("space", "queue"), ("w", "watched"), ("⏎", "series"), ("t", "folders")],
         View::Queue => vec![("⏎/p", "play"), ("J/K", "move"), ("d", "remove"), ("c", "clear"), ("y", "copy cmd")],
         View::Detail => vec![
             ("space", "queue"),
@@ -662,7 +715,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Severity::Info => Color::Yellow,
             Severity::Error => Color::LightRed,
         };
-        f.render_widget(Line::from(Span::styled(format!(" {}", m.text), Style::new().fg(color))), area);
+        f.render_widget(Line::from(Span::styled(format!(" {text}", text = m.text), Style::new().fg(color))), area);
         return;
     }
     let mut spans = vec![Span::raw(" ")];
@@ -689,19 +742,19 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Everywhere",
         &[
-            ("1-5 / Tab", "switch view"),
+            ("1-5 / Tab", "switch view; again: other mode / next filter"),
             ("j/k ↑/↓", "move"),
             ("g/G", "top / bottom"),
-            ("p", "play queue (or the next episode under the cursor)"),
+            ("p", "play queue (or the next episode here)"),
             ("y", "copy mpv command for the queue"),
             ("v", "while mpv plays: remote mode, keys go to mpv"),
             ("s", "set series status (in the Inbox: skip)"),
             ("r", "rescan media folders"),
             ("M", "refresh metadata for the series under the cursor"),
             ("o", "open the series under the cursor on AniList"),
-            ("ctrl-r", "refresh all metadata now (updates the anime database if old)"),
+            ("ctrl-r", "refresh all metadata (and an old anime DB)"),
             ("?", "this help"),
-            ("q / ctrl-c", "quit (asks first: q, y or ⏎ confirms); ctrl-c closes an open popup first"),
+            ("q / ctrl-c", "quit (asks first); ctrl-c closes a popup first"),
         ],
     ),
     (
@@ -728,12 +781,14 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Series",
         &[
-            ("/", "fuzzy search"),
-            ("f", "cycle filter (on disk, following, paused, …); ends a search"),
+            ("/", "fuzzy search (⏎ keeps it, Esc clears)"),
+            ("f / 3", "next status filter (works with a search)"),
             ("m", "merge into another series"),
             ("U", "undo merges into this series"),
             ("R", "rename"),
             ("L", "link AniList id"),
+            ("F", "fold franchises to the entry you're at"),
+            ("C", "catch up: this and earlier entries watched"),
             ("⏎", "open series"),
         ],
     ),
@@ -744,10 +799,22 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("⏎", "play this episode"),
             ("w", "toggle watched"),
             ("W", "mark everything up to here watched"),
+            ("C", "catch up: this and earlier entries watched"),
             ("a", "queue all new"),
             ("x", "show / hide extras"),
             ("d", "show / hide episodes not on disk"),
             ("esc", "back"),
+        ],
+    ),
+    (
+        "Files",
+        &[
+            ("t / 4", "newest files ⇄ folders"),
+            ("space", "queue a file, or a folder's unwatched"),
+            ("w", "toggle watched (a folder: all of it)"),
+            ("⏎ / → / l", "open folder (a file: its series)"),
+            ("← / h / ⌫", "up a folder"),
+            ("/", "search below here (⏎ keeps it, Esc clears)"),
         ],
     ),
     ("Queue", &[("J/K", "move entry down / up"), ("d", "remove"), ("c", "clear"), ("⏎", "play")]),
@@ -863,6 +930,118 @@ fn draw_confirm(f: &mut Frame, playing: bool) {
         Paragraph::new(lines.map(Line::from).to_vec()).alignment(Alignment::Center).block(block(" Quit? ")),
         area,
     );
+}
+
+/// The Files view's folder tree: the folder shown (or the folders a search
+/// found), folders first with what is watched below them, then files.
+fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
+    let ts = app.now();
+    let queued_set = queued_set(app);
+    // The folders of the queued files (as tree folders).
+    let queued_dirs: Vec<crate::folders::Dir> = app
+        .queue
+        .iter()
+        .filter_map(|q| app.lib.file(&q.file))
+        .map(|f| crate::folders::Dir::of_file(&f.file.root, &f.file.rel))
+        .collect();
+    let len = app.rows_len(View::Files);
+    let window = Window::of_table(&app.tree_state, len, area, true);
+    let searching = !app.tree_query.is_empty();
+    let rows: Vec<Row> = app
+        .tree_rows_in(window.range.clone())
+        .iter()
+        .map(|e| match e {
+            Entry::Folder(dir) => {
+                let empty = crate::folders::Stats::default();
+                let stats = app.folders.stats(dir).unwrap_or(&empty);
+                // The folder as one item: all watched, partly, or not at all.
+                let state = if stats.videos > 0 && stats.watched == stats.videos {
+                    WatchState::Watched { at: stats.added }
+                } else if stats.watched > 0 || stats.started > 0 {
+                    WatchState::Started { pos: 0.0, dur: None, at: stats.added }
+                } else {
+                    WatchState::Unwatched
+                };
+                let mark = mark_span(queued_dirs.iter().any(|d| dir.contains(d)), &state);
+                // A search hit shows where it is, from the folder you're in.
+                let name = if searching { e.path_from(&app.tree_at, &app.lib) } else { dir.name() };
+                let series = match stats.series.len() {
+                    1 => stats
+                        .series
+                        .first()
+                        .and_then(|k| app.lib.get(k))
+                        .map_or_else(|| Cell::from(""), |s| Cell::from(s.title.clone()).fg(status_color(s.status))),
+                    n => Cell::from(format!("{n} series")).dark_gray(),
+                };
+                Row::new(vec![
+                    Cell::from(Line::from(mark)),
+                    Cell::from(format!("{name}/")).bold(),
+                    Cell::from(format!("{watched}/{videos}", watched = stats.watched, videos = stats.videos)),
+                    Cell::from(ago(stats.added, ts)).dark_gray(),
+                    series,
+                ])
+            }
+            Entry::File(i) => {
+                let fi = &app.lib.files[*i];
+                let series = app.lib.get(&fi.series);
+                let item: Option<&Item> = series.and_then(|s| fi.items.first().and_then(|k| s.item(k)));
+                let state = item.map(|i| i.state).unwrap_or_default();
+                let queued = fi.items.iter().any(|k| queued_set.contains(&(fi.series.as_str(), k)));
+                let items = fi.items.iter().map(ItemKey::describe).collect::<Vec<_>>().join(",");
+                let status = series.map(|s| s.status).unwrap_or_default();
+                Row::new(vec![
+                    Cell::from(Line::from(mark_span(queued, &state))),
+                    Cell::from(if searching { e.path_from(&app.tree_at, &app.lib) } else { fi.file.name() }),
+                    Cell::from(items),
+                    Cell::from(ago(fi.file.added(), ts)).dark_gray(),
+                    Cell::from(series.map(|s| s.title.clone()).unwrap_or_default())
+                        .fg(if status == SeriesStatus::Untracked { Color::Reset } else { status_color(status) }),
+                ])
+            }
+        })
+        .collect();
+    let at = if app.tree_at.is_top() { "all folders".to_string() } else { app.tree_at.display() };
+    let mut title =
+        vec![Span::raw(format!(" Files · {at} · ")), Span::styled(format!("{len} "), Style::new().dark_gray())];
+    if searching {
+        title
+            .push(Span::styled(format!("/{tree_query} ", tree_query = app.tree_query), Style::new().fg(Color::Yellow)));
+    }
+    let widths = [
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(9),
+        Constraint::Length(5),
+        Constraint::Percentage(30),
+    ];
+    let table = list_table(rows, widths, Some(["", "Name", "Watched", "Add", "Series"]), Line::from(title));
+    window.render(f, table, area, &mut app.tree_state);
+}
+
+fn draw_catch_up(f: &mut Frame, prompt: &str) {
+    let area = centered(f.area(), 64, 6);
+    f.render_widget(Clear, area);
+    let lines = vec![
+        Line::from("Seen all of it? Mark watched and completed:"),
+        Line::from(prompt.to_string()).bold(),
+        Line::from(Span::styled("y/Enter confirms, any other key cancels", Style::new().dark_gray())),
+    ];
+    let para = Paragraph::new(lines).alignment(Alignment::Center).wrap(Wrap { trim: true });
+    f.render_widget(para.block(block(" Catch up ")), area);
+}
+
+/// A series' title with its place in its franchise, dimmed:
+/// `Monogatari Series 9/12 · Owarimonogatari`, or `Yuru Camp S2 · 2/3`
+/// when the title names the franchise already.
+fn titled(app: &App, s: &Series, style: Style) -> Line<'static> {
+    let title = Span::styled(s.title.clone(), style);
+    let Some((f, pos)) = app.lib.franchise_of(&s.key) else { return Line::from(title) };
+    let place = format!("{at}/{stops}", at = pos + 1, stops = f.stops.len());
+    if s.title.to_lowercase().starts_with(&f.name.to_lowercase()) {
+        Line::from(vec![title, Span::styled(format!(" · {place}"), Style::new().dark_gray())])
+    } else {
+        Line::from(vec![Span::styled(format!("{name} {place} · ", name = f.name), Style::new().dark_gray()), title])
+    }
 }
 
 #[cfg(test)]

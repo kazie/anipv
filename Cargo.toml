@@ -2,7 +2,7 @@
 name = "anipv"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.99"
 description = "A TUI that keeps track of the anime you watch with mpv: what's new, what's next, what you dropped."
 authors = ["Petter Salminen"]
 publish = false
@@ -51,6 +51,7 @@ strip = true
 
 [lints.rust]
 unsafe_code = "forbid"
+unused_qualifications = "warn"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -67,6 +68,8 @@ dbg_macro = "warn"
 todo = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
+allow_attributes = "warn"                  # silence with `#[expect]`, which warns once it's no longer needed
+allow_attributes_without_reason = "warn"   # …and says why
 # pedantic lints that don't pay off for an application crate
 must_use_candidate = "allow"
 missing_errors_doc = "allow"

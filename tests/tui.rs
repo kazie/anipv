@@ -438,15 +438,15 @@ fn help_scrolls_when_taller_than_the_terminal() {
     let (_d, mut app) = app();
     app.press("?");
     let s = render(&mut app);
-    let total = anipv::tui::ui::HELP.iter().map(|(_, keys)| keys.len() + 2).sum::<usize>() - 1;
+    let total = ui::HELP.iter().map(|(_, keys)| keys.len() + 2).sum::<usize>() - 1;
     assert!(s.contains(&format!("Keys 1-24 of {total} · j/k scroll")), "{s}");
     assert!(!s.contains("Remote mode (while mpv plays)"), "the end is below:\n{s}");
     app.press(&"j".repeat(200));
     let s = render(&mut app);
     assert!(s.contains(&format!("of {total} ·")) && s.contains("Remote mode (while mpv plays)"), "{s}");
-    assert!(s.contains(&format!("Keys {}-{total} of", total - 23)), "scrolling stops at the end:\n{s}");
+    assert!(s.contains(&format!("Keys {first}-{total} of", first = total - 23)), "scrolling stops at the end:\n{s}");
     app.press("k");
-    assert!(render(&mut app).contains(&format!("Keys {}-{} of", total - 24, total - 1)));
+    assert!(render(&mut app).contains(&format!("Keys {first}-{last} of", first = total - 24, last = total - 1)));
     app.press("x");
     assert!(app.popup.is_none());
 }
@@ -508,7 +508,7 @@ fn enter_in_detail_plays_only_that_item() {
     app.detail_state.select(Some(idx));
     let before = app.queue.clone();
     app.press("\n");
-    assert!(app.playing.is_some(), "{:?}", app.current_message());
+    assert!(app.playing.is_some(), "{message:?}", message = app.current_message());
     assert_eq!(app.queue, before, "the queue is untouched");
     // Another Enter while mpv runs changes nothing either.
     app.press("\n");
@@ -611,7 +611,7 @@ fn merge_picker_filters_and_scrolls() {
         other => panic!("{other:?}"),
     };
     let all = picker(&app);
-    assert!(all.targets.len() > 3, "{:?}", all.targets);
+    assert!(all.targets.len() > 3, "{targets:?}", targets = all.targets);
     assert!(!all.targets.contains(&"kusuriya no hitorigoto s3".to_string()));
     assert_eq!(all.state.selected(), Some(0));
     // Arrows move the cursor without touching the list.
@@ -734,7 +734,7 @@ fn p_unqueues_when_the_player_fails_to_start() {
     assert!(app.queue.is_empty());
     app.press("p");
     assert!(app.playing.is_none());
-    assert!(app.queue.is_empty(), "{:?}", app.queue);
+    assert!(app.queue.is_empty(), "{queue:?}", queue = app.queue);
     // An existing queue is left alone.
     app.press(" ");
     let queued = app.queue.clone();
@@ -861,4 +861,22 @@ fn queue_fills_the_view_after_it_shrinks() {
     app.queue.truncate(3);
     let s = render(&mut app);
     assert!(s.contains("show 1 ") && s.contains("show 3"), "{s}");
+}
+
+/// The Files view's folder tree: a franchise folder, its entry folders'
+/// watch marks and counts, and a folder queued with space.
+#[test]
+fn files_tree_shows_folders_with_what_is_watched() {
+    let (_d, mut app) = app();
+    // 4 again: the roots → Anime → Monogatari Series.
+    app.press("44");
+    app.press("j\n");
+    app.press("jjj\n");
+    app.press("j ");
+    let s = render(&mut app);
+    assert!(s.contains("Files · Anime/Monogatari Series · 3"), "{s}");
+    assert!(s.contains("✓ 01 - Bakemonogatari/") && s.contains("15/15"), "{s}");
+    assert!(s.contains("▶ 02 - Nisemonogatari/") && s.contains("3/11"), "{s}");
+    assert!(s.contains("queued 8 from 02 - Nisemonogatari"), "{s}");
+    insta::assert_snapshot!("files_tree", s);
 }

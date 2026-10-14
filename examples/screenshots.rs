@@ -76,10 +76,10 @@ fn svg(buf: &Buffer, title: &str) -> String {
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0}" height="{height:.0}" viewBox="0 0 {width:.0} {height:.0}" font-family="'JetBrains Mono','Cascadia Code','Fira Code',Menlo,Consolas,monospace" font-size="14">
 <rect width="100%" height="100%" rx="10" fill="#1e1e2e"/>
 <circle cx="20" cy="17" r="6" fill="#f38ba8"/><circle cx="40" cy="17" r="6" fill="#f9e2af"/><circle cx="60" cy="17" r="6" fill="#a6e3a1"/>
-<text x="{:.0}" y="22" fill="#6c7086" text-anchor="middle" font-size="12">{}</text>
+<text x="{center:.0}" y="22" fill="#6c7086" text-anchor="middle" font-size="12">{title}</text>
 "##,
-        width / 2.0,
-        esc(title)
+        center = width / 2.0,
+        title = esc(title)
     );
     for y in 0..buf.area.height {
         let mut x = 0;
@@ -104,15 +104,15 @@ fn svg(buf: &Buffer, title: &str) -> String {
             if let Some(b) = hex(bg, false) {
                 let _ = writeln!(
                     out,
-                    r#"<rect x="{px:.1}" y="{:.1}" width="{:.1}" height="{lh}" fill="{b}"/>"#,
-                    py - 1.0,
-                    n * cw
+                    r#"<rect x="{px:.1}" y="{y:.1}" width="{w:.1}" height="{lh}" fill="{b}"/>"#,
+                    y = py - 1.0,
+                    w = n * cw
                 );
             }
             if text.trim().is_empty() {
                 continue;
             }
-            let mut attrs = format!(r#"fill="{}""#, hex(fg, true).unwrap_or("#cdd6f4"));
+            let mut attrs = format!(r#"fill="{fill}""#, fill = hex(fg, true).unwrap_or("#cdd6f4"));
             if style.2.contains(Modifier::BOLD) {
                 attrs.push_str(r#" font-weight="bold""#);
             }
@@ -124,10 +124,10 @@ fn svg(buf: &Buffer, title: &str) -> String {
             }
             let _ = writeln!(
                 out,
-                r#"<text x="{px:.1}" y="{:.1}" {attrs} xml:space="preserve" textLength="{:.1}" lengthAdjust="spacingAndGlyphs">{}</text>"#,
-                py + 13.0,
-                n * cw,
-                esc(&text)
+                r#"<text x="{px:.1}" y="{y:.1}" {attrs} xml:space="preserve" textLength="{w:.1}" lengthAdjust="spacingAndGlyphs">{text}</text>"#,
+                y = py + 13.0,
+                w = n * cw,
+                text = esc(&text)
             );
         }
     }
@@ -233,6 +233,16 @@ fn main() -> anyhow::Result<()> {
 
     app.press("s");
     write("status.svg", &shot(&mut app, 21), "anipv — set status")?;
+
+    // Files as folders: a franchise folder, what is watched in each entry,
+    // and one entry queued (4 again: the roots → Anime → Monogatari Series).
+    let home3 = tempfile::tempdir()?;
+    let mut app = fresh(home3.path())?;
+    app.press("44");
+    app.press("j\n");
+    app.press("jjj\n");
+    app.press("j ");
+    write("files-tree.svg", &shot(&mut app, 10), "anipv — files as folders")?;
 
     // Colored --help, like rich-click.
     let bin = env!("CARGO_MANIFEST_DIR").to_string() + "/target/debug/anipv";

@@ -52,11 +52,11 @@ pub fn ago(ts: i64, now: i64) -> String {
     let d = now.saturating_sub(ts).max(0);
     match d {
         0..60 => "now".into(),
-        60..3_600 => format!("{}m", d / 60),
-        3_600..86_400 => format!("{}h", d / 3_600),
-        86_400..1_209_600 => format!("{}d", d / 86_400),
-        1_209_600..31_536_000 => format!("{}w", d / 604_800),
-        _ => format!("{}y", d / 31_536_000),
+        60..3_600 => format!("{m}m", m = d / 60),
+        3_600..86_400 => format!("{h}h", h = d / 3_600),
+        86_400..1_209_600 => format!("{days}d", days = d / 86_400),
+        1_209_600..31_536_000 => format!("{w}w", w = d / 604_800),
+        _ => format!("{y}y", y = d / 31_536_000),
     }
 }
 
@@ -73,7 +73,7 @@ pub fn until(ts: i64, now: i64) -> String {
     }
     let (days, hours, mins) = (d / 86_400, (d % 86_400) / 3_600, (d % 3_600) / 60);
     match (days, hours) {
-        (0, 0) => format!("in {}m", mins.max(1)),
+        (0, 0) => format!("in {m}m", m = mins.max(1)),
         (0, h) => format!("in {h}h"),
         (dd, 0) => format!("in {dd}d"),
         (dd, h) => format!("in {dd}d {h}h"),
@@ -131,7 +131,7 @@ fn trunc(s: &str, width: usize) -> String {
     } else {
         end = s[..end].char_indices().rev().map(|(i, _)| i).find(|&i| fits(i)).unwrap_or(0);
     }
-    format!("{}…", &s[..end])
+    format!("{cut}…", cut = &s[..end])
 }
 
 /// Pad (or truncate) to exactly `width` display columns.
@@ -139,7 +139,7 @@ pub fn pad(s: &str, width: usize) -> String {
     use unicode_width::UnicodeWidthStr;
     let t = trunc(s, width);
     let w = t.width();
-    format!("{t}{}", " ".repeat(width.saturating_sub(w)))
+    format!("{t}{fill}", fill = " ".repeat(width.saturating_sub(w)))
 }
 
 #[cfg(test)]

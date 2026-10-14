@@ -32,7 +32,7 @@ fn corpus_matches_golden_file() {
     let actual: Vec<String> = names.iter().map(|n| row(n)).collect();
     if std::env::var_os("UPDATE_FIXTURES").is_some() {
         let header = text.lines().take_while(|l| l.starts_with('#')).collect::<Vec<_>>().join("\n");
-        std::fs::write(PATH, format!("{header}\n{}\n", actual.join("\n"))).unwrap();
+        std::fs::write(PATH, format!("{header}\n{actual}\n", actual = actual.join("\n"))).unwrap();
         return;
     }
     let expected: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
@@ -44,10 +44,10 @@ fn corpus_matches_golden_file() {
     }
     assert!(
         failures.is_empty(),
-        "{} of {} names parse differently:\n{}",
-        failures.len(),
-        names.len(),
-        failures.join("\n")
+        "{n} of {names} names parse differently:\n{list}",
+        n = failures.len(),
+        names = names.len(),
+        list = failures.join("\n")
     );
 }
 

@@ -66,6 +66,28 @@ Each root has a `name` (shown in the UI and stored in the index), a `path`
   clashing episode numbers. The file name's marker wins over the folder's, and
   a folder that already says `Show S2` is not given a second `S2`.
 
+  A series folder of numbered entry folders holds a whole franchise, in watch
+  order:
+
+  ```
+  Monogatari Series (BD 1080p)/
+    01 - Bakemonogatari/[GroupA] Bakemonogatari - 01.mkv
+    05 - Nekomonogatari (White)/[GroupA] Monogatari Series Second Season - 01.mkv
+    06 - Kabukimonogatari/[GroupA] Monogatari Series Second Season - 06.mkv
+    13 - Owarimonogatari S1/[GroupA] Owarimonogatari S1 - 01.mkv
+  ```
+
+  Each file in a `NN - Name` folder (spaces around the dash) is named by its
+  own title, as in an ongoing root, or by the folder's name when it has none.
+  One anime spread over several folders (*Second Season* above) stays one
+  series, but the franchise's watch order follows the folders: 05, 06, then
+  whatever is in 07, then 08. Finishing the part of *Second Season* in 06
+  follows the anime in 07 next, and `anipv catch-up Kabukimonogatari` (an
+  entry folder's name) marks everything up to that folder watched. Another anime kept in a series folder without such a number
+  (`Show/Show Mini Series/…`) is split off by hand: `anipv split show "Mini
+  Series"`. `anipv show` points such folders out when their episode numbers
+  clash with the show's.
+
 Roots must not overlap: a root inside another one (`~/Anime` and
 `~/Anime/Done`) is rejected, since its files would be indexed twice. Use
 `ignore_dirs` to leave a sub-folder out instead.

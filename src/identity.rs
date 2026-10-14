@@ -175,16 +175,35 @@ fn name_key(title: &str, season: Option<u32>, key_of: fn(&str) -> String) -> (St
 pub fn base_key(key: &str) -> &str {
     let mut base = key;
     loop {
+        if let Some((head, _)) = season_suffix(base) {
+            base = head;
+            continue;
+        }
         let Some((head, last)) = base.rsplit_once(' ') else { return base };
-        let season = last.strip_prefix('s').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
         let year = last.len() == 4
             && (last.starts_with("19") || last.starts_with("20"))
             && last.bytes().all(|b| b.is_ascii_digit());
-        if !(season || year) {
+        if !year {
             return base;
         }
         base = head;
     }
+}
+
+/// A key's trailing season marker, with what comes before it.
+///
+/// ```
+/// use anipv::identity::season_suffix;
+/// assert_eq!(season_suffix("yuru camp s2"), Some(("yuru camp", 2)));
+/// assert_eq!(season_suffix("ranma 1 2 2024 s3"), Some(("ranma 1 2 2024", 3)));
+/// assert_eq!(season_suffix("one piece"), None);
+/// assert_eq!(season_suffix("s2"), None);
+/// assert_eq!(season_suffix("show season"), None);
+/// ```
+pub fn season_suffix(key: &str) -> Option<(&str, u32)> {
+    let (head, last) = key.rsplit_once(' ')?;
+    let n = last.strip_prefix('s').filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))?;
+    Some((head, n.parse().ok()?)).filter(|(head, _)| !head.is_empty())
 }
 
 #[cfg(test)]

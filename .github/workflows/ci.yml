@@ -43,9 +43,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, "1.89"]
+        toolchain: [stable, "1.99"]
     env:
-      # Overrides rust-toolchain.toml so the MSRV job really builds with 1.89.
+      # Overrides rust-toolchain.toml so the MSRV job really builds with 1.99.
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
       - uses: actions/checkout@v7

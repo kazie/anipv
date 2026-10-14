@@ -1,9 +1,8 @@
 ---
 source: tests/tui.rs
-assertion_line: 112
 expression: s
 ---
- anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
+ anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                          desktop
 ╭ Series ────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │Meitantei Precure!  following  watched 1/48  on disk 3  ep 4 in 4d (TV)                                     │
 │meitantei precure  anilist.co/anime/195000                                                                  │

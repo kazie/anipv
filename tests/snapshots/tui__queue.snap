@@ -2,7 +2,7 @@
 source: tests/tui.rs
 expression: s
 ---
- anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                       desktop
+ anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                       desktop
 ╭ Queue · plays in this order ───────────────────────────────────────────────────────────────────────────────╮
 │ #   Series                           Item                   File                                           │
 │▌1   Dandadan S2                      06                     [GroupA] Dandadan S2 - 06v2 (1080p) [DDDE0006].│

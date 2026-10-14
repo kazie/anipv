@@ -137,7 +137,7 @@ pub fn search_unmatched(series: &[&Series], http: &dyn anilist::Http, ts: i64) -
             Ok(found) => found,
             Err(e) => {
                 rep.unlinked.push(unlinked(MatchResult::SearchFailed, Vec::new()));
-                rep.outcome.stopped = Some(format!("title search stopped at {:?}: {e:#}", s.title));
+                rep.outcome.stopped = Some(format!("title search stopped at {title:?}: {e:#}", title = s.title));
                 break;
             }
         };
@@ -531,7 +531,7 @@ mod tests {
         let http = Search::new(&[(title(&l, "zzz").as_str(), vec![found(500, "Zzz", &[])])]);
         let empty = tempfile::tempdir().unwrap();
         let res = sync(&l, empty.path(), Some(&http), &searching(), 9);
-        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
         assert_eq!(*http.asked.borrow(), [title(&l, "zzz")], "not the database's ambiguous one");
         assert!(res.rows.iter().any(|r| r.series == "zzz" && r.anilist == Some(500) && r.search_linked));
         assert!(res.db_version.is_none(), "the database's version is left as it was");
@@ -588,8 +588,8 @@ mod tests {
     fn a_failed_search_is_a_note_and_asked_again_later() {
         let l = lib(&[], &[]);
         let res = sync_at(&l, &Search::failing(&title(&l, "zzz")), searching(), 9);
-        assert!(res.errors.is_empty(), "{:?}", res.errors);
-        assert!(res.notes.iter().any(|n| n.contains("rate limit")), "{:?}", res.notes);
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
+        assert!(res.notes.iter().any(|n| n.contains("rate limit")), "{notes:?}", notes = res.notes);
         let failed = res.attempts.iter().find(|a| a.series == "zzz").unwrap().clone();
         assert_eq!(failed.result, MatchResult::SearchFailed);
         let zzz = lib_with(&[], &[], &[failed]).get("zzz").cloned().unwrap();
@@ -604,7 +604,7 @@ mod tests {
         let http = Search::new(&[(title(&l, "zzz").as_str(), vec![found(500, "Zzz", &[])])]);
         let empty = tempfile::tempdir().unwrap();
         let res = sync(&l, empty.path(), Some(&http), &SyncOptions { rematch: true, ..searching() }, 9);
-        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
         assert!(http.asked.borrow().contains(&title(&l, "zzz")));
         assert!(res.rows.iter().any(|r| r.series == "zzz" && r.anilist == Some(500) && r.search_linked));
         // An update of one series searches only that one.
@@ -629,8 +629,12 @@ mod tests {
         for earlier in [MatchResult::SearchAmbiguous, MatchResult::SearchNone] {
             let l = lib_with(&[], &[], &[attempt("zzz", earlier, 9)]);
             let res = sync_at(&l, &Search::failing(&title(&l, "zzz")), searching(), 9 + SEARCH_RETRY);
-            assert!(res.notes.iter().any(|n| n.contains("rate limit")), "{:?}", res.notes);
-            assert!(res.attempts.iter().all(|a| a.series != "zzz" || a.result == earlier), "{:?}", res.attempts);
+            assert!(res.notes.iter().any(|n| n.contains("rate limit")), "{notes:?}", notes = res.notes);
+            assert!(
+                res.attempts.iter().all(|a| a.series != "zzz" || a.result == earlier),
+                "{attempts:?}",
+                attempts = res.attempts
+            );
         }
     }
 
@@ -752,6 +756,6 @@ mod tests {
         let http = Search::new(&[(title(&l, "zzz").as_str(), vec![found(500, "Zzz", &[])])]);
         let res = sync_at(&l, &http, SyncOptions { network: true, search: true, ..SyncOptions::requested(None) }, 9);
         assert!(res.rows.iter().any(|r| r.series == "zzz" && r.anilist == Some(500)));
-        assert!(http.ids.borrow().contains(&500), "asked about by id too: {:?}", http.ids.borrow());
+        assert!(http.ids.borrow().contains(&500), "asked about by id too: {ids:?}", ids = http.ids.borrow());
     }
 }

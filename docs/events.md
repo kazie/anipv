@@ -34,9 +34,11 @@ name `dev`, and an event kind `e`:
 | `watched` | `series`, `item`, `file?` | Item finished. |
 | `progress` | `series`, `item`, `pos`, `dur?`, `file?` | Stopped part-way. Ignored if the item is already watched (re-watching doesn't un-watch). |
 | `unwatched` | `series`, `item`, `file?` | Reset an item. |
-| `series_status` | `series`, `status`, `note?`, `auto?`, `keep?` | `following`, `paused`, `dropped`, `completed`, `skipped` (never started, not interested) or `untracked`. A status a reader doesn't know (written by a newer version) reads as `untracked`. `auto: true` marks a change anipv made itself: a followed series is completed once it has finished airing and every episode is watched. That happens at most once per series, so setting it back to following sticks. `keep: true` marks a status the user chose for a series that was already finished and fully watched; anipv doesn't complete it automatically until the status changes again. Readers that don't know `keep` ignore it. |
+| `series_status` | `series`, `status`, `note?`, `auto?`, `keep?` | `following`, `paused`, `dropped`, `completed`, `skipped` (never started, not interested) or `untracked`. A status a reader doesn't know (written by a newer version) reads as `untracked`. `auto: true` marks a change anipv made itself: a followed series is completed once it has finished airing and every episode is watched, and the entry after the last completed one of a franchise is followed when it is on disk and untracked (*roll-on*). Each happens at most once per series, so setting it back to following (or untracked) sticks. `keep: true` marks a status the user chose for a series that was already finished and fully watched; anipv doesn't complete it automatically until the status changes again. Readers that don't know `keep` ignore it. |
 | `alias` | `from`, `to` | Treat series key `from` as part of `to` (e.g. English vs. romaji names). |
 | `unalias` | `from` | Undo an alias. |
+| `split` | `root`, `dir` | Make the files in folder `dir` (relative to the root named `root`, `/`-separated) a series of their own, named by their files: another anime kept inside a series folder. |
+| `unsplit` | `root`, `dir` | Undo a split. |
 | `title` | `series`, `title` | Display title override. |
 | `meta` | `series`, `anilist?`, `episodes?` | Link to an AniList id and/or set the episode total (whichever is present). |
 | `unlink` | `series` | Remove the AniList link and stop matching the series automatically. |
@@ -73,6 +75,14 @@ automatically, making that permanent with one ordinary `alias` event from the
 old key to the new one, written once (not again when the log already has an
 `alias` or `unalias` from the old key). If that merges a different show, undo
 it with `anipv unmerge` (or `U` in the TUI).
+
+A file can also land in another series when the way files are grouped
+changes: numbered entry folders in an archive series folder became series of
+their own, and `split` makes a folder one. History recorded under the key the
+file had before (its series folder's) then counts for the series the file is
+in now, found by the `file` name the event kept. Nothing is rewritten: the
+log keeps the old key, and replaying it maps the event again. Events without a
+file name stay where they are.
 
 ### Items
 

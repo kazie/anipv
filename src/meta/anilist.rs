@@ -196,24 +196,36 @@ const RELATIONS_QUERY: &str = "query ($ids: [Int]) {
   }
 }";
 
-/// The direct prequels (anime only) of each id, for spotting new seasons.
-/// Every requested id that `AniList` knows is returned, with an empty list
-/// when it has no prequel.
-pub fn fetch_prequels(http: &dyn Http, ids: &[u64]) -> Batched<(u64, Vec<u64>)> {
+/// The direct prequels and sequels (anime only) of an id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relations {
+    /// `AniList` id.
+    pub id: u64,
+    /// Its prequels' ids.
+    pub prequels: Vec<u64>,
+    /// Its sequels' ids.
+    pub sequels: Vec<u64>,
+}
+
+/// The direct prequels and sequels (anime only) of each id, for spotting new
+/// seasons and grouping franchises. Every requested id that `AniList` knows
+/// is returned, with empty lists when it has none.
+pub fn fetch_relations(http: &dyn Http, ids: &[u64]) -> Batched<Relations> {
     query_media(http, RELATIONS_QUERY, ids, |media| {
         let mut out = Vec::new();
         for m in media.as_array().into_iter().flatten() {
             let Some(id) = m.get("id").and_then(Value::as_u64) else { continue };
-            let prequels = m
-                .pointer("/relations/edges")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter(|e| e.get("relationType").and_then(Value::as_str) == Some("PREQUEL"))
-                .filter(|e| e.pointer("/node/type").and_then(Value::as_str) == Some("ANIME"))
-                .filter_map(|e| e.pointer("/node/id").and_then(Value::as_u64))
-                .collect();
-            out.push((id, prequels));
+            let related = |kind: &str| -> Vec<u64> {
+                m.pointer("/relations/edges")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|e| e.get("relationType").and_then(Value::as_str) == Some(kind))
+                    .filter(|e| e.pointer("/node/type").and_then(Value::as_str) == Some("ANIME"))
+                    .filter_map(|e| e.pointer("/node/id").and_then(Value::as_u64))
+                    .collect()
+            };
+            out.push(Relations { id, prequels: related("PREQUEL"), sequels: related("SEQUEL") });
         }
         Ok(out)
     })
@@ -430,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn prequels_are_parsed() {
+    fn relations_are_parsed() {
         let reply = json!({"data": {"Page": {"media": [
             {"id": 199_111, "relations": {"edges": [
                 {"relationType": "PREQUEL", "node": {"id": 182_309, "type": "ANIME"}},
@@ -440,8 +452,9 @@ mod tests {
             {"id": 100_922, "relations": {"edges": []}}
         ]}}});
         let fake = Fake { calls: RefCell::new(vec![]), reply };
-        let got = fetch_prequels(&fake, &[199_111, 100_922]).items;
-        assert_eq!(got, vec![(199_111, vec![182_309]), (100_922, vec![])]);
+        let got = fetch_relations(&fake, &[199_111, 100_922]).items;
+        let rel = |id, prequels, sequels| Relations { id, prequels, sequels };
+        assert_eq!(got, vec![rel(199_111, vec![182_309], vec![5]), rel(100_922, vec![], vec![])]);
     }
 
     /// Regression: a failing batch no longer discards the batches that succeeded.
@@ -453,9 +466,9 @@ mod tests {
         let expect: Vec<u64> = (1..=50).chain(101..=120).collect();
         assert_eq!(res.items.iter().map(|m| m.id).collect::<Vec<_>>(), expect);
         assert_eq!(res.answered, expect);
-        let res = fetch_prequels(&Echo::failing(2), &ids);
+        let res = fetch_relations(&Echo::failing(2), &ids);
         assert_eq!(res.errors.len(), 1);
-        assert_eq!(res.items.iter().map(|p| p.0).collect::<Vec<_>>(), expect);
+        assert_eq!(res.items.iter().map(|r| r.id).collect::<Vec<_>>(), expect);
         assert_eq!(res.answered, expect);
     }
 }

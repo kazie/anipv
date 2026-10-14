@@ -16,7 +16,7 @@ use super::scan::ScannedFile;
 
 /// Bump on any schema change; older caches are dropped and rebuilt (unless
 /// listed in `UPGRADABLE`).
-pub const SCHEMA_VERSION: i32 = 7;
+pub const SCHEMA_VERSION: i32 = 8;
 
 /// Older schema versions brought up to date in place rather than rebuilt:
 /// [`SCHEMA`] only adds to them (`CREATE … IF NOT EXISTS`), and [`upgrade`]
@@ -25,7 +25,8 @@ pub const SCHEMA_VERSION: i32 = 7;
 /// * 4 → 5: the `anilist_checks` table, seeded from `prequels`.
 /// * 5 → 6: `series_meta.search_linked`.
 /// * 6 → 7: `series_meta.score` and `series_meta.popularity`.
-const UPGRADABLE: [i32; 3] = [4, 5, 6];
+/// * 7 → 8: the `sequels` table (filled as series are asked about again).
+const UPGRADABLE: [i32; 4] = [4, 5, 6, 7];
 
 /// `kv` key prefix (followed by the root name) remembering whether the root
 /// directory was a mount point at its last non-empty scan, and which
@@ -54,7 +55,7 @@ pub fn trust_empty_scan(was: Option<bool>, now: Option<bool>) -> bool {
 
 /// How a root's mount state at a scan of `base` is recorded (see [`recorded_mount`]).
 fn mount_record(mounted: bool, base: &Path) -> String {
-    format!("{}:{}", u8::from(mounted), base.to_string_lossy())
+    format!("{from}:{base}", from = u8::from(mounted), base = base.to_string_lossy())
 }
 
 /// The mount state recorded for a root, if it was recorded for `base`.
@@ -68,7 +69,8 @@ fn recorded_mount(value: &str, base: &Path) -> Option<bool> {
 /// `kv` key holding the version of the downloaded offline database.
 pub const OFFLINE_DB_VERSION: &str = "offline_db_version";
 
-const TABLES: [&str; 7] = ["files", "scans", "kv", "series_meta", "match_attempts", "prequels", "anilist_checks"];
+const TABLES: [&str; 8] =
+    ["files", "scans", "kv", "series_meta", "match_attempts", "prequels", "sequels", "anilist_checks"];
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS scans(
@@ -97,6 +99,11 @@ CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS prequels(
     anilist    INTEGER PRIMARY KEY,
     prequels   TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sequels(
+    anilist    INTEGER PRIMARY KEY,
+    sequels    TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS anilist_checks(
@@ -334,7 +341,7 @@ impl Db {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let conn = Connection::open(path).with_context(|| format!("opening {path}", path = path.display()))?;
         Self::init(conn)
     }
 
@@ -537,7 +544,7 @@ impl Db {
     /// does.
     #[cfg(test)]
     pub fn put_match_results(&self, rows: &[SeriesMeta], attempts: &[MatchAttempt]) -> Result<()> {
-        self.store_sync(rows, attempts, None, &[], &[], 0)
+        self.store_sync(rows, attempts, None, &[], &[], &[], 0)
     }
 
     /// Store everything a metadata sync produced (links, "no match" attempts,
@@ -548,12 +555,14 @@ impl Db {
     ///
     /// A row replaces its series' attempt; an attempt drops its series' row
     /// ("nothing to link").
+    #[expect(clippy::too_many_arguments, reason = "all a sync produced, written in one transaction")]
     pub fn store_sync(
         &self,
         rows: &[SeriesMeta],
         attempts: &[MatchAttempt],
         db_version: Option<&str>,
         prequels: &[(u64, Vec<u64>)],
+        sequels: &[(u64, Vec<u64>)],
         checks: &[(u64, bool)],
         ts: i64,
     ) -> Result<()> {
@@ -575,7 +584,8 @@ impl Db {
             }
         }
         write_metas(&tx, rows)?;
-        write_prequels(&tx, prequels, ts)?;
+        write_relations(&tx, "prequels", prequels, ts)?;
+        write_relations(&tx, "sequels", sequels, ts)?;
         {
             let mut put = tx.prepare_cached(
                 "INSERT OR REPLACE INTO anilist_checks(anilist, checked_at, found) VALUES (?1, ?2, ?3)",
@@ -596,6 +606,16 @@ impl Db {
         let mut st = self.conn.prepare_cached("SELECT anilist, prequels FROM prequels")?;
         let rows = st.query_map([], |r| {
             Ok((from_sql(r.get(0)?), serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default()))
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// All known sequel lists, by `AniList` id, with when they were fetched.
+    pub fn sequels(&self) -> Result<std::collections::HashMap<u64, (Vec<u64>, i64)>> {
+        let mut st = self.conn.prepare_cached("SELECT anilist, sequels, fetched_at FROM sequels")?;
+        let rows = st.query_map([], |r| {
+            let ids = serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default();
+            Ok((from_sql(r.get(0)?), (ids, r.get(2)?)))
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
@@ -801,9 +821,11 @@ fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
     Ok(())
 }
 
-fn write_prequels(conn: &Connection, rows: &[(u64, Vec<u64>)], ts: i64) -> Result<()> {
-    let mut put =
-        conn.prepare_cached("INSERT OR REPLACE INTO prequels(anilist, prequels, fetched_at) VALUES (?1, ?2, ?3)")?;
+/// Write `AniList` relation lists into `table` (`prequels` or `sequels`,
+/// whose list column has the table's name).
+fn write_relations(conn: &Connection, table: &str, rows: &[(u64, Vec<u64>)], ts: i64) -> Result<()> {
+    let mut put = conn
+        .prepare_cached(&format!("INSERT OR REPLACE INTO {table}(anilist, {table}, fetched_at) VALUES (?1, ?2, ?3)"))?;
     for (id, pre) in rows {
         put.execute(params![to_sql(*id), serde_json::to_string(pre)?, ts])?;
     }
@@ -1019,7 +1041,7 @@ mod tests {
         {
             let mut db = Db::open(&path).unwrap();
             db.apply_scan("dl", &[f("a.mkv")], 10, true, m(), None).unwrap();
-            db.store_sync(&[], &[], None, &[(7, vec![3])], &[], 42).unwrap();
+            db.store_sync(&[], &[], None, &[(7, vec![3])], &[(7, vec![9])], &[], 42).unwrap();
             db.conn.execute_batch("DROP TABLE anilist_checks;").unwrap();
             db.conn.pragma_update(None, "user_version", 4).unwrap();
         }
@@ -1027,6 +1049,7 @@ mod tests {
         assert!(!db.was_rebuilt());
         assert_eq!(db.files().unwrap()[0].first_seen, 10);
         assert_eq!(db.prequels().unwrap()[&7], vec![3]);
+        assert_eq!(db.sequels().unwrap()[&7], (vec![9], 42));
         assert_eq!(db.anilist_checks().unwrap()[&7], AnilistCheck { checked_at: 42, found: true });
         assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
     }
@@ -1034,8 +1057,8 @@ mod tests {
     #[test]
     fn anilist_checks_roundtrip() {
         let db = Db::open_in_memory().unwrap();
-        db.store_sync(&[], &[], None, &[(1, vec![])], &[(1, true), (2, false)], 9).unwrap();
-        db.store_sync(&[], &[], None, &[], &[(2, true)], 11).unwrap();
+        db.store_sync(&[], &[], None, &[(1, vec![])], &[], &[(1, true), (2, false)], 9).unwrap();
+        db.store_sync(&[], &[], None, &[], &[], &[(2, true)], 11).unwrap();
         let checks = db.anilist_checks().unwrap();
         assert_eq!(checks[&1], AnilistCheck { checked_at: 9, found: true });
         assert_eq!(checks[&2], AnilistCheck { checked_at: 11, found: true });
