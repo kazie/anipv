@@ -721,7 +721,7 @@ pub fn sync_with_progress(
     };
     if let Some(mut rep) = report {
         if let Some(http) = searching {
-            out.notes.extend(add_title_search(&mut rep, lib, http, ts, false).stopped);
+            http.optional(&mut || out.notes.extend(add_title_search(&mut rep, lib, http, ts, false).stopped));
         }
         fresh.extend(rep.rows.into_iter().map(|r| (r.series.clone(), r)));
         out.attempts = rep.attempts;
@@ -1365,6 +1365,20 @@ mod tests {
         let (l, checked) = inbox_lib(checks(&res, 100), &[]);
         assert!(inbox_lookups(&l, &cfg(), &checked, 100 + NOT_FOUND_RETRY - 1).is_empty());
         assert_eq!(inbox_lookups(&l, &cfg(), &checked, 100 + NOT_FOUND_RETRY).len(), 1);
+    }
+
+    /// docs/anilist.md R13: Once the client gives up during the airing refresh, the relations
+    /// aren't asked for: the inbox id gets no check record (so it is asked
+    /// again), and the outage is reported once.
+    #[test]
+    fn a_given_up_client_skips_the_relations() {
+        let (l, _) = inbox_lib(Checks::new(), &[]);
+        let opts = SyncOptions { inbox: vec![("zzz".into(), 5)], ..auto(&l, Checks::new(), 100, 0) };
+        let fake = Echo::giving_up(1);
+        let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&fake), &opts, 100);
+        assert_eq!(res.errors, vec!["connection reset".to_string()]);
+        assert!(res.checked.is_empty() && res.prequels.is_empty() && res.sequels.is_empty());
+        assert!(fake.asked.borrow().is_empty());
     }
 
     /// A found inbox id (with its prequels stored) is asked again only after

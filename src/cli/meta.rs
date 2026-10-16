@@ -68,14 +68,14 @@ const OFFLINE_DB_TRIED: &str = "offline_db_tried";
 /// The `AniList` client for a command someone waits for (see
 /// [`crate::meta::anilist::INTERACTIVE_WAIT`]).
 fn interactive() -> anilist::Ureq<'static> {
-    anilist::Ureq { on_wait: &tell_wait, ..anilist::Ureq::default() }
+    anilist::Ureq::new(anilist::INTERACTIVE_WAIT, &tell_wait)
 }
 
 /// Say why a command pauses: `AniList`'s rate limit (on stderr, which
 /// `anipv update` under systemd sends to the journal too).
 #[expect(clippy::print_stderr, reason = "a note while the command runs, not its output")]
 fn tell_wait(d: std::time::Duration) {
-    eprintln!("{warn} AniList rate limit: waiting {s} s", warn = yellow("!"), s = d.as_secs());
+    eprintln!("{warn} AniList rate limit: waiting {s} s", warn = yellow("!"), s = crate::fmt::secs_up(d));
 }
 
 /// Why a command that needs the network doesn't run.
@@ -240,7 +240,7 @@ pub(super) fn background(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
     }
     let mut shown = Ok(());
     let first_url = opts.offline_urls.first().map_or("", String::as_str);
-    let ureq = anilist::Ureq { max_wait: anilist::BACKGROUND_WAIT, on_wait: &tell_wait };
+    let ureq = anilist::Ureq::new(anilist::BACKGROUND_WAIT, &tell_wait);
     let http = Some(&ureq as &dyn anilist::Http);
     let res = crate::meta::sync_with_progress(&s.lib, &ctx.paths.cache_dir, http, &opts, now(), &mut |step| {
         if step == SyncStep::Downloading {

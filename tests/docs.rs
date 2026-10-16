@@ -57,3 +57,37 @@ fn config_doc_mentions_every_key() {
         assert!(doc.contains(&format!("`{key}`")), "docs/config.md does not document `{key}`");
     }
 }
+
+/// docs/anilist.md lists the rules for talking to AniList, each with the
+/// tests that hold it: every rule has one, and every test named exists.
+#[test]
+fn anilist_rules_name_real_tests() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let doc = std::fs::read_to_string(format!("{root}/docs/anilist.md")).unwrap();
+    let mut code = String::new();
+    let mut dirs = vec![std::path::PathBuf::from(format!("{root}/src")), format!("{root}/tests").into()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                code.push_str(&std::fs::read_to_string(path).unwrap());
+            }
+        }
+    }
+    let is_rule = |l: &&str| l.strip_prefix("| R").is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+    let rules: Vec<&str> = doc.lines().filter(is_rule).collect();
+    assert!(rules.len() >= 18, "docs/anilist.md: only {n} rules found", n = rules.len());
+    for (i, row) in rules.iter().enumerate() {
+        let id = format!("R{n}", n = i + 1);
+        assert!(row.starts_with(&format!("| {id} |")), "docs/anilist.md: expected {id} next: {row}");
+        let tests: Vec<&str> =
+            row.trim_end_matches('|').rsplit('|').next().unwrap().split('`').skip(1).step_by(2).collect();
+        assert!(!tests.is_empty(), "docs/anilist.md: {id} names no test");
+        for test in tests {
+            let defined = ["#[test]\n    fn", "#[test]\nfn"].iter().any(|t| code.contains(&format!("{t} {test}()")));
+            assert!(defined, "docs/anilist.md: {id} names `{test}`, which isn't a test");
+        }
+    }
+}

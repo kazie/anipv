@@ -80,6 +80,12 @@ pub fn until(ts: i64, now: i64) -> String {
     }
 }
 
+/// Whole seconds of `d`, rounded up: a wait of 59.99 s is 60 s, and the last
+/// fraction of one is 1 s, not 0 s.
+pub fn secs_up(d: std::time::Duration) -> u64 {
+    d.as_secs() + u64::from(d.subsec_nanos() > 0)
+}
+
 /// Seconds as `m:ss` or `h:mm:ss`.
 #[expect(
     clippy::cast_possible_truncation,
@@ -145,6 +151,13 @@ pub fn pad(s: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// docs/anilist.md R18: the last fraction of a second shows as 1 s.
+    #[test]
+    fn secs_round_up() {
+        let ms = std::time::Duration::from_millis;
+        assert_eq!([ms(0), ms(1), ms(999), ms(1000), ms(59_999)].map(secs_up), [0, 1, 1, 1, 60]);
+    }
 
     #[test]
     fn an_empty_no_color_keeps_colors() {

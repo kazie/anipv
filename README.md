@@ -207,7 +207,7 @@ than fail.
 Pressing `o` opens an AniList page in your browser; that request is yours,
 made only when you ask.
 
-More: [configuration](docs/config.md) · [architecture](docs/architecture.md) · [event log](docs/events.md) · [keys](docs/keybindings.md)
+More: [configuration](docs/config.md) · [architecture](docs/architecture.md) · [AniList and rate limits](docs/anilist.md) · [event log](docs/events.md) · [keys](docs/keybindings.md)
 
 ## Development
 

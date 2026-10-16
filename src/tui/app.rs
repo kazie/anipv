@@ -335,6 +335,23 @@ pub struct ScanSummary {
     pub failed: bool,
 }
 
+/// The metadata update running now.
+#[derive(Debug)]
+struct MetaRun {
+    /// What it was asked to update.
+    request: MetaRequest,
+    /// What it is doing, for the header.
+    doing: &'static str,
+    /// Until when it waits for `AniList`'s rate limit.
+    wait_until: Option<Instant>,
+}
+
+impl MetaRun {
+    fn new(request: MetaRequest) -> Self {
+        Self { request, doing: "metadata", wait_until: None }
+    }
+}
+
 /// Opens a URL; fails if no opener could be started.
 pub type Opener = Box<dyn FnMut(&str) -> Result<()>>;
 
@@ -399,10 +416,8 @@ pub struct App {
     meta_epoch: u64,
     /// Series whose link changed by hand, with the epoch of the change.
     relinked: HashMap<String, u64>,
-    /// The metadata update running now, with what it is doing (for the header).
-    meta_running: Option<(MetaRequest, &'static str)>,
-    /// Until when the running metadata update waits for `AniList`'s rate limit.
-    anilist_wait: Option<Instant>,
+    /// The metadata update running now.
+    meta_running: Option<MetaRun>,
     /// A metadata update requested while one ran: it starts when that ends.
     meta_pending: Option<MetaRequest>,
     /// Playback state while mpv runs.
@@ -490,7 +505,6 @@ impl App {
             meta_epoch: 0,
             relinked: HashMap::new(),
             meta_running: None,
-            anilist_wait: None,
             meta_pending: None,
             playing: None,
             quit: false,
@@ -916,18 +930,18 @@ impl App {
         self.detail_ix = self.detail_series().map(|s| s.ordered_indices(extras, missing)).unwrap_or_default();
     }
 
-    /// What a running metadata update is doing, for the header.
-    pub fn meta_busy(&self) -> Option<&'static str> {
-        self.meta_running.as_ref().map(|(_, doing)| *doing)
+    /// Whether a metadata update is running.
+    pub fn meta_busy(&self) -> bool {
+        self.meta_running.is_some()
     }
 
-    /// [`App::meta_busy`] for the header, with the seconds left while it
-    /// waits for `AniList`'s rate limit.
+    /// What a running metadata update is doing, for the header, with the
+    /// seconds left while it waits for `AniList`'s rate limit.
     pub fn meta_status(&self) -> Option<String> {
-        let doing = self.meta_busy()?;
-        let left = self.anilist_wait.and_then(|t| t.checked_duration_since(Instant::now())).filter(|d| !d.is_zero());
+        let MetaRun { doing, wait_until, .. } = self.meta_running.as_ref()?;
+        let left = wait_until.and_then(|t| t.checked_duration_since(Instant::now())).filter(|d| !d.is_zero());
         Some(match left {
-            Some(d) => format!("{doing} · AniList rate limit {s}s", s = d.as_secs() + 1),
+            Some(d) => format!("{doing} · AniList rate limit {s}s", s = crate::fmt::secs_up(d)),
             None => doing.to_string(),
         })
     }
@@ -1009,7 +1023,7 @@ impl App {
             Some(Popup::Merge(picker)) => resolve(&mut picker.from),
             Some(Popup::Help { .. } | Popup::ConfirmQuit | Popup::Search) | None => {}
         }
-        let running = self.meta_running.as_mut().map(|(r, _)| r);
+        let running = self.meta_running.as_mut().map(|run| &mut run.request);
         for request in running.into_iter().chain(&mut self.meta_pending) {
             if let MetaRequest::Series(key) = request {
                 resolve(key);
@@ -1291,14 +1305,17 @@ impl App {
             }
             Msg::Player(ev) => self.on_player(ev),
             Msg::MetaProgress(what) => {
-                if let Some((_, doing)) = &mut self.meta_running {
-                    *doing = what;
+                if let Some(run) = &mut self.meta_running {
+                    run.doing = what;
                 }
             }
-            Msg::AniListWait(until) => self.anilist_wait = Some(until),
+            Msg::AniListWait(until) => {
+                if let Some(run) = &mut self.meta_running {
+                    run.wait_until = Some(until);
+                }
+            }
             Msg::Meta(mut res, epoch) => {
-                let request = self.meta_running.take().map_or(STARTUP, |(r, _)| r);
-                self.anilist_wait = None;
+                let request = self.meta_running.take().map_or(STARTUP, |run| run.request);
                 // Keep everything except what this sync found for series
                 // relinked while it ran; their own refresh is queued.
                 let stale = |series: &String| self.relinked.get(series).is_some_and(|&at| at > epoch);
@@ -1428,10 +1445,10 @@ impl App {
     #[doc(hidden)]
     pub fn wait_for_meta(&mut self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
-        while self.meta_busy().is_some() && Instant::now() < deadline {
+        while self.meta_busy() && Instant::now() < deadline {
             self.wait_msg(Duration::from_millis(50));
         }
-        self.meta_busy().is_none()
+        !self.meta_busy()
     }
 
     // ---- input ------------------------------------------------------------
@@ -2162,7 +2179,7 @@ impl App {
         let checks = &self.index.meta.anilist_checks;
         let Some(opts) = crate::meta::plan(&self.lib, &self.ctx.cfg, checks, &request, now()) else { return };
         let opts = crate::meta::SyncOptions { offline: Arc::clone(&self.offline), ..opts };
-        self.meta_running = Some((request, "metadata"));
+        self.meta_running = Some(MetaRun::new(request));
         let (lib, cache, tx, epoch) =
             (Arc::clone(&self.lib), self.ctx.paths.cache_dir.clone(), self.tx.clone(), self.meta_epoch);
         spawn_meta(&self.tx, epoch, move || {
@@ -2171,7 +2188,7 @@ impl App {
             let on_wait = move |d: Duration| {
                 let _ = waiting.send(Msg::AniListWait(Instant::now() + d));
             };
-            let ureq = crate::meta::anilist::Ureq { on_wait: &on_wait, ..Default::default() };
+            let ureq = crate::meta::anilist::Ureq::new(crate::meta::anilist::INTERACTIVE_WAIT, &on_wait);
             let http = Some(&ureq as &dyn crate::meta::anilist::Http);
             crate::meta::sync_with_progress(&lib, &cache, http, &opts, now(), &mut |step| {
                 let _ = tx.send(Msg::MetaProgress(match step {
@@ -2955,17 +2972,20 @@ mod tests {
         assert_eq!(app.current_message(), Some("mpv exited before playing anything"));
     }
 
-    /// While a metadata update waits for AniList's rate limit, the header
+    /// docs/anilist.md R18: While a metadata update waits for AniList's rate limit, the header
     /// says so, with the seconds left; once it is over, it doesn't.
     #[test]
     fn rate_limit_waits_show_in_the_header() {
         let (_dir, mut app) = demo_app();
         assert_eq!(app.meta_status(), None);
-        app.meta_running = Some((STARTUP, "metadata"));
+        app.meta_running = Some(MetaRun::new(STARTUP));
         app.on_msg(Msg::AniListWait(Instant::now() + Duration::from_secs(41)));
         let shown = app.meta_status().unwrap();
-        assert!(shown.starts_with("metadata · AniList rate limit ") && shown.ends_with('s'), "{shown}");
-        app.anilist_wait = Some(Instant::now());
+        assert!(
+            ["metadata · AniList rate limit 41s", "metadata · AniList rate limit 40s"].contains(&shown.as_str()),
+            "{shown}"
+        );
+        app.meta_running.as_mut().unwrap().wait_until = Some(Instant::now());
         assert_eq!(app.meta_status().as_deref(), Some("metadata"));
     }
 
@@ -3080,7 +3100,7 @@ mod tests {
     #[test]
     fn a_panicking_metadata_update_still_clears_busy() {
         let (_dir, mut app) = demo_app();
-        app.meta_running = Some((STARTUP, "metadata"));
+        app.meta_running = Some(MetaRun::new(STARTUP));
         spawn_meta(&app.tx, 0, || panic!("kaboom"));
         assert!(app.wait_for_meta(Duration::from_secs(10)), "still busy");
         let msg = app.current_message().unwrap_or_default();

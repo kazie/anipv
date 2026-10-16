@@ -4,14 +4,21 @@
 //! Only public anime data is requested. No account or token is used; nothing
 //! about the user is sent, except the titles of series a title search looks
 //! up (only with `anilist_search`, or `meta match --search`).
+//!
+//! What happens when `AniList` can't be asked, and why, is in
+//! `docs/anilist.md`, each rule with the tests that hold it.
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+#[cfg(test)]
+use std::cell::RefCell;
+use std::cell::{Cell, OnceCell};
+use std::sync::Mutex;
 use std::time::Duration;
 
-use super::ratelimit::{Limiter, RateHeaders, RealClock, Reply, paced};
+use super::ratelimit::{Clock, Limiter, RateHeaders, RealClock, Reply, StillLimited, paced};
 use crate::index::db::SeriesMeta;
 
 /// GraphQL endpoint.
@@ -45,36 +52,155 @@ pub fn parse_ref(s: &str) -> Option<u64> {
 
 /// Minimal HTTP abstraction so tests can run offline.
 pub trait Http {
-    /// POST a JSON body and return the JSON response.
+    /// POST a JSON body and return the JSON response. Fails with
+    /// [`Unavailable`] when `AniList` couldn't be asked.
     fn post_json(&self, url: &str, body: &Value) -> Result<Value>;
-}
 
-/// The real HTTP client, keeping to `AniList`'s rate limits (see
-/// [`super::ratelimit`]): it waits as long as they ask, up to `max_wait` in
-/// all per request, telling `on_wait` about each wait worth mentioning.
-pub struct Ureq<'a> {
-    /// The most a request may spend waiting before it fails.
-    pub max_wait: Duration,
-    /// Told how long a wait will be, before it starts.
-    pub on_wait: &'a dyn Fn(Duration),
-}
-
-/// How long a request may wait on the rate limit while someone watches (the
-/// TUI, a command).
-pub const INTERACTIVE_WAIT: Duration = Duration::from_secs(120);
-
-/// How long a request may wait on the rate limit in `anipv update`, which
-/// runs unattended.
-pub const BACKGROUND_WAIT: Duration = Duration::from_secs(600);
-
-impl Default for Ureq<'_> {
-    fn default() -> Self {
-        Self { max_wait: INTERACTIVE_WAIT, on_wait: &|_| {} }
+    /// Run `f`, whose requests are optional (title searches): they may use
+    /// only half of what is left of the wait budget, so the requests that
+    /// follow still have some.
+    fn optional(&self, f: &mut dyn FnMut()) {
+        f();
     }
 }
 
+/// `AniList` couldn't be asked: offline, timed out, failing (5xx), or still
+/// refusing for its rate limit.
+#[derive(Debug)]
+pub struct Unavailable {
+    cause: anyhow::Error,
+    /// Whether the client gave up, and when.
+    pub outage: Outage,
+}
+
+/// How far an [`Unavailable`] goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outage {
+    /// This request failed; the next one may not.
+    Once,
+    /// The client gave up with this request: later ones fail at once.
+    GaveUp,
+    /// The client gave up before; this request wasn't sent, and its error
+    /// was said already.
+    GaveUpBefore,
+}
+
+impl Outage {
+    /// The outage of `e`, if it is an [`Unavailable`].
+    pub fn of(e: &anyhow::Error) -> Option<Self> {
+        e.downcast_ref::<Unavailable>().map(|u| u.outage)
+    }
+
+    /// Whether later requests fail too: stop sending.
+    pub fn stops(self) -> bool {
+        self != Self::Once
+    }
+}
+
+impl Unavailable {
+    /// Whether `e` is `AniList` still refusing for its rate limit (rather than
+    /// being down): it says nothing about what was asked.
+    pub fn rate_limited(e: &anyhow::Error) -> bool {
+        e.downcast_ref::<Self>().is_some_and(|u| u.cause.is::<StillLimited>())
+    }
+}
+
+#[cfg(test)]
+impl Unavailable {
+    /// One for tests: `cause`, with `outage`.
+    pub(crate) fn test(cause: &str, outage: Outage) -> Self {
+        Self { cause: anyhow::anyhow!("{cause}"), outage }
+    }
+
+    /// One for tests: still rate limited, with `outage`.
+    pub(crate) fn limited(outage: Outage) -> Self {
+        Self { cause: StillLimited::test(Duration::from_secs(70)).into(), outage }
+    }
+}
+
+/// It reads as its cause, whose own causes are its sources.
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{cause}", cause = self.cause)
+    }
+}
+
+impl std::error::Error for Unavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.chain().nth(1)
+    }
+}
+
+/// The real HTTP client, keeping to `AniList`'s rate limits (see
+/// [`super::ratelimit`]): it waits out 429s for up to `max_wait` in all over
+/// its requests, telling `on_wait` about each wait worth mentioning.
+///
+/// It gives up on `AniList` (and fails every later request at once) when a
+/// 429 outlasts the budget, or when two requests in a row fail (each sent
+/// twice): no answer, a server error, or one that isn't JSON (a proxy or
+/// captive portal answering instead). One slow batch isn't an outage.
+/// Optional requests never give up, nor count towards it. Make one per sync or command, so
+/// each gets the whole budget and a fresh start.
+pub struct Ureq<'a> {
+    /// What its requests may spend waiting out 429s, together.
+    max_wait: Duration,
+    /// Inside [`Http::optional`]: the budget of its requests, which don't
+    /// give up when it runs out.
+    share: Cell<Option<Duration>>,
+    /// Told how long a wait will be, before it starts.
+    on_wait: &'a dyn Fn(Duration),
+    /// What its requests have waited out so far.
+    waited: Cell<Duration>,
+    /// The last request failed.
+    failed: Cell<bool>,
+    /// Why it gave up, once it did.
+    gave_up: OnceCell<String>,
+    /// Sends a request: [`send_with_agent`], but for tests.
+    send: &'a dyn Fn(&str, &Value) -> Result<Reply>,
+    /// The process-wide limiter, but for tests.
+    limiter: &'a Mutex<Limiter>,
+    /// [`RealClock`], but for tests.
+    clock: &'a dyn Clock,
+}
+
+impl<'a> Ureq<'a> {
+    /// A client whose requests may wait out 429s for `max_wait` in all.
+    pub fn new(max_wait: Duration, on_wait: &'a dyn Fn(Duration)) -> Self {
+        Self {
+            max_wait,
+            share: Cell::new(None),
+            on_wait,
+            waited: Cell::default(),
+            failed: Cell::new(false),
+            gave_up: OnceCell::new(),
+            send: &send_with_agent,
+            limiter: &LIMITER,
+            clock: &RealClock,
+        }
+    }
+
+    /// `cause` as the [`Unavailable`] it is, giving up when it's time to.
+    /// Optional requests never do, nor count towards it.
+    fn unavailable(&self, cause: anyhow::Error) -> Unavailable {
+        let given_up =
+            if self.share.get().is_some() { false } else { cause.is::<StillLimited>() || self.failed.replace(true) };
+        if given_up {
+            let _ = self.gave_up.set(format!("{cause:#}"));
+        }
+        Unavailable { cause, outage: if given_up { Outage::GaveUp } else { Outage::Once } }
+    }
+}
+
+/// How long a sync or command may wait out `AniList`'s rate limit while
+/// someone watches (the TUI, a command), in all over its requests.
+pub const INTERACTIVE_WAIT: Duration = Duration::from_secs(120);
+
+/// How long `anipv update`, which runs unattended, may wait out `AniList`'s
+/// rate limit, in all over its requests.
+pub const BACKGROUND_WAIT: Duration = Duration::from_secs(600);
+
 /// What this process knows about the rate limit, shared by every request.
-static LIMITER: std::sync::LazyLock<std::sync::Mutex<Limiter>> = std::sync::LazyLock::new(Default::default);
+static LIMITER: std::sync::LazyLock<Mutex<Limiter>> = std::sync::LazyLock::new(Default::default);
 
 /// One agent for the whole process, so a sync's batches reuse the connection.
 static AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
@@ -85,37 +211,66 @@ static AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
         .into()
 });
 
+/// POST `body` to `url` with [`AGENT`], once.
+fn send_with_agent(url: &str, body: &Value) -> Result<Reply> {
+    let mut resp = AGENT
+        .post(url)
+        .header("Accept", "application/json")
+        .header("User-Agent", concat!("anipv/", env!("CARGO_PKG_VERSION")))
+        .send_json(body)
+        .context("contacting AniList")?;
+    let headers = RateHeaders::parse(|name| resp.headers().get(name).and_then(|v| v.to_str().ok()));
+    let status = resp.status().as_u16();
+    let body = resp.body_mut().read_to_string().context("reading AniList response")?;
+    Ok(Reply { status, headers, body })
+}
+
 impl Http for Ureq<'_> {
     fn post_json(&self, url: &str, body: &Value) -> Result<Value> {
-        let reply = paced(&LIMITER, &RealClock, self.max_wait, self.on_wait, &mut || {
-            let mut resp = AGENT
-                .post(url)
-                .header("Accept", "application/json")
-                .header("User-Agent", concat!("anipv/", env!("CARGO_PKG_VERSION")))
-                .send_json(body)
-                .context("contacting AniList")?;
-            let headers = RateHeaders::parse(|name| resp.headers().get(name).and_then(|v| v.to_str().ok()));
-            let status = resp.status().as_u16();
-            let body = resp.body_mut().read_to_string().context("reading AniList response")?;
-            Ok(Reply { status, headers, body })
-        })?;
-        // Errors (rate limits, proxies, outages) often come as HTML or plain
-        // text, so check the status before expecting JSON.
-        check_status(reply.status, &reply.body)?;
-        serde_json::from_str(&reply.body).context("AniList sent a response that isn't JSON")
+        if let Some(why) = self.gave_up.get() {
+            return Err(Unavailable { cause: anyhow::anyhow!("{why}"), outage: Outage::GaveUpBefore }.into());
+        }
+        let budget = self.share.get().unwrap_or(self.max_wait);
+        let mut waited = self.waited.get();
+        let reply = paced(self.limiter, self.clock, budget, &mut waited, self.on_wait, &mut || (self.send)(url, body));
+        self.waited.set(waited);
+        // A server error is as down as no answer (both were sent twice).
+        let reply = match reply {
+            Ok(reply) if reply.status < 500 => reply,
+            Ok(reply) => return Err(self.unavailable(status_error(reply.status, &reply.body)).into()),
+            Err(e) => return Err(self.unavailable(e).into()),
+        };
+        // Not JSON: something else answered (a proxy, a captive portal).
+        let ok = (200..300).contains(&reply.status);
+        let Ok(json) = serde_json::from_str::<Value>(&reply.body) else {
+            let cause = if ok {
+                anyhow::anyhow!("AniList sent a response that isn't JSON")
+            } else {
+                status_error(reply.status, &reply.body)
+            };
+            return Err(self.unavailable(cause).into());
+        };
+        self.failed.set(false);
+        // An error AniList answered (a bad request) is about this request.
+        if !ok {
+            return Err(status_error(reply.status, &reply.body));
+        }
+        Ok(json)
+    }
+
+    fn optional(&self, f: &mut dyn FnMut()) {
+        let waited = self.waited.get();
+        self.share.set(Some(waited + self.max_wait.saturating_sub(waited) / 2));
+        f();
+        self.share.set(None);
     }
 }
 
-/// Turn a non-success HTTP status into an error, with the start of the body.
-fn check_status(status: u16, body: &str) -> Result<()> {
-    if status == 429 {
-        bail!("AniList rate limit hit; try again in a minute");
-    }
-    if !(200..300).contains(&status) {
-        let excerpt: String = body.trim().chars().take(200).collect();
-        bail!("AniList returned HTTP {status}: {excerpt}");
-    }
-    Ok(())
+/// A non-success HTTP status as an error, with the start of the body.
+/// (A 429 never gets here: [`paced`] waits it out or fails itself.)
+fn status_error(status: u16, body: &str) -> anyhow::Error {
+    let excerpt: String = body.trim().chars().take(200).collect();
+    anyhow::anyhow!("AniList returned HTTP {status}: {excerpt}")
 }
 
 /// Fields fetched per anime.
@@ -201,7 +356,7 @@ impl Media {
     }
 }
 
-/// The outcome of a query sent in batches of 50: one failing batch doesn't
+/// The outcome of a query sent in batches of 50: a failing batch doesn't
 /// discard the others.
 #[derive(Debug)]
 pub struct Batched<T> {
@@ -209,7 +364,8 @@ pub struct Batched<T> {
     pub items: Vec<T>,
     /// Every id sent in a batch that succeeded, whether `AniList` returned it or not.
     pub answered: Vec<u64>,
-    /// Why each failed batch failed. Its ids are in neither list above.
+    /// Why batches failed (an [`Unavailable`] only the first time it's said).
+    /// Ids not answered are in neither list above.
     pub errors: Vec<anyhow::Error>,
 }
 
@@ -263,8 +419,9 @@ pub fn fetch_relations(http: &dyn Http, ids: &[u64]) -> Batched<Relations> {
 }
 
 /// Run `query` for `ids` in batches of 50, turning each page's `media` array
-/// into items with `parse`. A batch whose request or `parse` fails is reported
-/// in [`Batched::errors`] and the other batches are kept.
+/// into items with `parse`. A batch whose answer or `parse` fails is reported
+/// in [`Batched::errors`] and the other batches are kept. Once the client
+/// gives up ([`Outage::stops`]) the rest aren't sent.
 fn query_media<T>(
     http: &dyn Http,
     query: &str,
@@ -278,7 +435,15 @@ fn query_media<T>(
                 out.items.append(&mut items);
                 out.answered.extend_from_slice(chunk);
             }
-            Err(e) => out.errors.push(e),
+            Err(e) => {
+                let outage = Outage::of(&e);
+                if outage != Some(Outage::GaveUpBefore) {
+                    out.errors.push(e);
+                }
+                if outage.is_some_and(Outage::stops) {
+                    break;
+                }
+            }
         }
     }
     out
@@ -314,15 +479,17 @@ pub fn search(http: &dyn Http, title: &str) -> Result<Vec<Media>> {
 /// A fake `AniList` for tests: answers every query with the requested ids as
 /// finished 10-episode shows (or, `unknown`, with nothing, as for ids it does
 /// not know), records which ids were asked for, and fails request number
-/// `fail_on` (counting from 1).
+/// `fail_on` (counting from 1), as [`Ureq`] does: once, or (`gives_up`) for
+/// good, failing every later request unsent.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Echo {
     /// Every id asked for, in order.
-    pub asked: std::cell::RefCell<Vec<u64>>,
+    pub asked: RefCell<Vec<u64>>,
     fail_on: Option<usize>,
+    gives_up: bool,
     unknown: bool,
-    calls: std::cell::Cell<usize>,
+    calls: Cell<usize>,
 }
 
 #[cfg(test)]
@@ -332,9 +499,14 @@ impl Echo {
         Self { unknown: true, ..Self::default() }
     }
 
-    /// An `AniList` whose request number `n` fails.
+    /// An `AniList` whose request number `n` fails, once.
     pub fn failing(n: usize) -> Self {
         Self { fail_on: Some(n), ..Self::default() }
+    }
+
+    /// An `AniList` the client gives up on at request number `n`.
+    pub fn giving_up(n: usize) -> Self {
+        Self { fail_on: Some(n), gives_up: true, ..Self::default() }
     }
 }
 
@@ -343,8 +515,14 @@ impl Http for Echo {
     fn post_json(&self, url: &str, body: &Value) -> Result<Value> {
         assert_eq!(url, ENDPOINT);
         self.calls.set(self.calls.get() + 1);
-        if self.fail_on == Some(self.calls.get()) {
-            bail!("connection reset");
+        let outage = match self.fail_on.map(|n| self.calls.get().cmp(&n)) {
+            Some(std::cmp::Ordering::Equal) if self.gives_up => Some(Outage::GaveUp),
+            Some(std::cmp::Ordering::Equal) => Some(Outage::Once),
+            Some(std::cmp::Ordering::Greater) if self.gives_up => Some(Outage::GaveUpBefore),
+            _ => None,
+        };
+        if let Some(outage) = outage {
+            return Err(Unavailable::test("connection reset", outage).into());
         }
         let ids: Vec<u64> = serde_json::from_value(body["variables"]["ids"].clone()).unwrap_or_default();
         self.asked.borrow_mut().extend(&ids);
@@ -428,14 +606,11 @@ mod tests {
     }
 
     #[test]
-    fn errors_are_checked_before_parsing() {
-        let err = check_status(429, "<html>Too Many Requests</html>").unwrap_err().to_string();
-        assert!(err.contains("rate limit"), "{err}");
-        let err = check_status(502, "<html>Bad Gateway</html>\n").unwrap_err().to_string();
+    fn status_errors_show_the_body() {
+        let err = status_error(502, "<html>Bad Gateway</html>\n").to_string();
         assert_eq!(err, "AniList returned HTTP 502: <html>Bad Gateway</html>");
-        let err = check_status(500, &"x".repeat(1000)).unwrap_err().to_string();
+        let err = status_error(500, &"x".repeat(1000)).to_string();
         assert!(err.ends_with(&format!(": {x}", x = "x".repeat(200))), "long bodies are cut to 200 chars");
-        check_status(200, "{}").unwrap();
     }
 
     #[test]
@@ -488,7 +663,9 @@ mod tests {
         assert_eq!(got, vec![rel(199_111, vec![182_309], vec![5]), rel(100_922, vec![], vec![])]);
     }
 
-    /// Regression: a failing batch no longer discards the batches that succeeded.
+    /// docs/anilist.md R14: Regression: a failing batch no longer discards the batches that
+    /// succeeded, before or after it. Once the client gives up, the rest
+    /// aren't sent.
     #[test]
     fn a_failed_batch_keeps_the_others() {
         let ids: Vec<u64> = (1..=120).collect();
@@ -501,5 +678,154 @@ mod tests {
         assert_eq!(res.errors.len(), 1);
         assert_eq!(res.items.iter().map(|r| r.id).collect::<Vec<_>>(), expect);
         assert_eq!(res.answered, expect);
+
+        let fake = Echo::giving_up(2);
+        let res = fetch(&fake, &ids);
+        assert_eq!(res.errors.len(), 1);
+        assert_eq!(res.answered, (1..=50).collect::<Vec<_>>());
+        assert_eq!(fake.asked.borrow().len(), 50, "the third batch isn't sent");
+    }
+
+    /// docs/anilist.md R15: An error `AniList` answers for one batch, as a GraphQL error or an
+    /// HTTP status, doesn't stop the others; neither does an [`Unavailable`]
+    /// the client didn't give up on. One said already isn't said again.
+    #[test]
+    fn an_answered_error_keeps_going() {
+        let fake = Fake { calls: RefCell::new(vec![]), reply: json!({"errors": [{"message": "boom"}], "data": null}) };
+        let ids: Vec<u64> = (1..=120).collect();
+        let res = fetch(&fake, &ids);
+        assert_eq!((res.errors.len(), fake.calls.borrow().len()), (3, 3));
+        let failing = |error| {
+            let http = Failing { calls: Cell::new(0), error };
+            let res = fetch(&http, &ids);
+            (res.errors.len(), http.calls.get())
+        };
+        assert_eq!(failing(|| status_error(404, "Not Found")), (3, 3));
+        assert_eq!(failing(|| Unavailable::test("down", Outage::Once).into()), (3, 3));
+        assert_eq!(failing(|| Unavailable::test("down", Outage::GaveUp).into()), (1, 1));
+        assert_eq!(failing(|| Unavailable::test("down", Outage::GaveUpBefore).into()), (0, 1));
+    }
+
+    /// Fails every request with `error`, and counts them.
+    struct Failing {
+        calls: Cell<usize>,
+        error: fn() -> anyhow::Error,
+    }
+
+    impl Http for Failing {
+        fn post_json(&self, _url: &str, _body: &Value) -> Result<Value> {
+            self.calls.set(self.calls.get() + 1);
+            Err((self.error)())
+        }
+    }
+
+    /// A [`Ureq`] on a fake clock and a limiter of its own, answering every
+    /// request with `send`; what it slept is in the clock.
+    fn ureq_test<'a>(
+        clock: &'a crate::meta::ratelimit::tests::Fake,
+        limiter: &'a Mutex<Limiter>,
+        send: &'a dyn Fn(&str, &Value) -> Result<Reply>,
+    ) -> Ureq<'a> {
+        Ureq { send, limiter, clock, ..Ureq::new(INTERACTIVE_WAIT, &|_| {}) }
+    }
+
+    /// docs/anilist.md R10, R13: One failed request (sent twice) isn't an outage; two in a row are,
+    /// whether no answer or a server error: the client gives up, and later
+    /// requests fail at once, without being sent.
+    #[test]
+    fn the_client_gives_up_after_two_failures() {
+        let refused = |_: &str, _: &Value| -> Result<Reply> { bail!("contacting AniList: connection refused") };
+        let down = |_: &str, _: &Value| Ok(Reply { status: 503, headers: RateHeaders::default(), body: "down".into() });
+        for send in [&refused as &dyn Fn(&str, &Value) -> Result<Reply>, &down] {
+            let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
+            let ureq = ureq_test(&clock, &limiter, send);
+            let ask = || ureq.post_json(ENDPOINT, &json!({})).unwrap_err();
+            let first = ask();
+            assert_eq!(Outage::of(&first), Some(Outage::Once), "{first:#}");
+            let second = ask();
+            assert_eq!(Outage::of(&second), Some(Outage::GaveUp));
+            let slept = clock.slept.borrow().len();
+            let third = ask();
+            assert_eq!(Outage::of(&third), Some(Outage::GaveUpBefore));
+            assert_eq!(third.to_string(), format!("{second:#}"));
+            assert_eq!(clock.slept.borrow().len(), slept, "not sent, so no waiting");
+        }
+    }
+
+    /// docs/anilist.md R10: An answer that isn't JSON is something else answering (a proxy, a
+    /// captive portal): it counts towards giving up, as no answer does. A
+    /// JSON error is `AniList` answering, and resets the count.
+    #[test]
+    fn answers_that_arent_json_give_up() {
+        let reply = |status, body: &str| Ok(Reply { status, headers: RateHeaders::default(), body: body.into() });
+        let portal = |_: &str, _: &Value| reply(200, "<html>Log in to the Wi-Fi</html>");
+        let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
+        let ureq = ureq_test(&clock, &limiter, &portal);
+        let outage = || Outage::of(&ureq.post_json(ENDPOINT, &json!({})).unwrap_err());
+        assert_eq!((outage(), outage()), (Some(Outage::Once), Some(Outage::GaveUp)));
+
+        let calls = Cell::new(0);
+        let alternating = |_: &str, _: &Value| {
+            calls.set(calls.get() + 1);
+            if calls.get() % 2 == 1 { reply(403, "<html>Forbidden</html>") } else { reply(404, r#"{"errors":[]}"#) }
+        };
+        let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
+        let ureq = ureq_test(&clock, &limiter, &alternating);
+        let outages: Vec<_> = (0..4).map(|_| Outage::of(&ureq.post_json(ENDPOINT, &json!({})).unwrap_err())).collect();
+        assert_eq!(outages, [Some(Outage::Once), None, Some(Outage::Once), None]);
+    }
+
+    /// docs/anilist.md R12: Optional requests don't count towards giving up: a failed title search
+    /// and then one failed airing batch is one failure, not two.
+    #[test]
+    fn optional_failures_dont_count() {
+        let refused = |_: &str, _: &Value| -> Result<Reply> { bail!("contacting AniList: connection refused") };
+        let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
+        let ureq = ureq_test(&clock, &limiter, &refused);
+        let outage = || Outage::of(&ureq.post_json(ENDPOINT, &json!({})).unwrap_err());
+        let mut optional = Vec::new();
+        ureq.optional(&mut || optional.extend([outage(), outage()]));
+        assert_eq!(optional, [Some(Outage::Once), Some(Outage::Once)]);
+        assert_eq!((outage(), outage()), (Some(Outage::Once), Some(Outage::GaveUp)));
+    }
+
+    /// docs/anilist.md R8: optional requests may wait out only half of what
+    /// is left: a 70 s timeout is too long for a title search's 60 s, but
+    /// the airing refresh after it waits it out.
+    #[test]
+    fn title_searches_get_half_the_budget() {
+        let calls = Cell::new(0);
+        let send = |_: &str, _: &Value| {
+            calls.set(calls.get() + 1);
+            let (status, retry_after, body) =
+                if calls.get() == 1 { (429, Some(70), "") } else { (200, None, r#"{"data":{}}"#) };
+            Ok(Reply { status, headers: RateHeaders { retry_after, ..RateHeaders::default() }, body: body.into() })
+        };
+        let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
+        let ureq = ureq_test(&clock, &limiter, &send);
+        let mut searched = None;
+        ureq.optional(&mut || searched = Some(ureq.post_json(ENDPOINT, &json!({}))));
+        let e = searched.unwrap().unwrap_err();
+        assert!(Unavailable::rate_limited(&e) && Outage::of(&e) == Some(Outage::Once), "{e:#}");
+        assert_eq!(ureq.post_json(ENDPOINT, &json!({})).unwrap(), json!({"data": {}}));
+        assert_eq!((calls.get(), clock.slept.take()), (2, vec![Duration::from_secs(70)]));
+    }
+
+    /// docs/anilist.md R11, R12: A 429 outlasting the budget gives up, except for optional requests,
+    /// which only had a share of it.
+    #[test]
+    fn a_long_rate_limit_gives_up_unless_optional() {
+        let limited = |_: &str, _: &Value| {
+            let headers = RateHeaders { retry_after: Some(300), ..RateHeaders::default() };
+            Ok(Reply { status: 429, headers, body: String::new() })
+        };
+        let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
+        let ureq = ureq_test(&clock, &limiter, &limited);
+        let mut optional = None;
+        ureq.optional(&mut || optional = Outage::of(&ureq.post_json(ENDPOINT, &json!({})).unwrap_err()));
+        assert_eq!(optional, Some(Outage::Once));
+        let e = ureq.post_json(ENDPOINT, &json!({})).unwrap_err();
+        assert_eq!(Outage::of(&e), Some(Outage::GaveUp));
+        assert!(e.to_string().starts_with("AniList rate limit: try again in "), "{e}");
     }
 }

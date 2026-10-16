@@ -20,9 +20,15 @@ project uses [Semantic Versioning](https://semver.org/).
 - AniList rate limits are kept to: requests are paced by AniList's own
   count of what is left (other clients on your connection included) with a
   small gap against its burst limiter, and a "too many requests" answer is
-  waited out and asked again instead of failing (up to 2 minutes while you
-  watch, with a countdown in the TUI header; 10 minutes in `anipv update`).
-  A server error or failed request is retried once.
+  waited out and asked again instead of failing (up to 2 minutes in all per
+  update while you watch, with a countdown in the TUI header; 10 minutes in
+  `anipv update`; title searches may use half of it). Pacing only makes a big
+  update slower, never failed. A timeout longer than what is left fails at
+  once, and so do the requests after it until it ends. A server error or
+  failed request is retried once; when two requests in a row fail, or the
+  rate limit outlasts the wait, the update stops asking instead of failing
+  the same way for every batch. The rules, with their reasons, are in
+  [docs/anilist.md](docs/anilist.md).
 - The TUI skips its scan on start when every folder was looked at within
   `scan_fresh_for` minutes (30 by default), and picks up what another
   process (the timer) stored while it is open.

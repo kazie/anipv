@@ -31,7 +31,7 @@ calls `cli::main()`.
 | `franchise` | Groups series into franchises (franchise folder, season markers, AniList prequel/sequel links) and orders them for watching. `Ctx::auto_complete` rolls on to the next entry; `app::catch_up` marks everything up to an entry watched. |
 | `mpv` | Builds command lines, spawns mpv with `--input-ipc-server`, follows `path`/`time-pos`/`duration`/`pause` and `end-file` (including the file mpv is already on when anipv connects), and hands out a `Remote` that sends `keypress` commands over the same socket. |
 | `import_fish` | Parses fish history, extracts `mpv` file arguments, plans watched events (full path first, then a unique base name; ambiguous names are skipped). |
-| `meta` | Offline anime DB matching; anonymous AniList airing queries. `meta::ratelimit` keeps every request of the process within [AniList's rate limits](https://docs.anilist.co/guide/rate-limiting): its own count per minute, the `X-RateLimit-Remaining` AniList reports (other clients included) and a small gap against the burst limiter; a 429 is waited out as `Retry-After` says and sent again, a 5xx or failed request is retried once, within a wait budget (2 min while someone watches, 10 min in `anipv update`). |
+| `meta` | Offline anime DB matching; anonymous AniList airing queries. `meta::ratelimit` and `meta::anilist` keep to [AniList's rate limits](https://docs.anilist.co/guide/rate-limiting) and decide when to give up on AniList; the rules, with their reasons and tests, are in [anilist.md](anilist.md). |
 | `tui` | ratatui front-end: `app.rs` (state, keys, background work), `ui.rs` (rendering). |
 | `cli` | clap commands. |
 | `demo` | Generates a fake library for tests and screenshots. |

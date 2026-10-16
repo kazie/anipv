@@ -10,13 +10,18 @@
 //! requests over the last minute, slows down when `AniList`'s own count (which
 //! includes other processes, such as `anipv update` while the TUI is open)
 //! runs low, and keeps a small gap between requests. A 429 is the fallback:
-//! [`paced`] waits as told and sends the request again, within a budget.
+//! [`paced`] waits as told and sends the request again, within a budget that
+//! the caller spreads over all its requests. Only those waits count against
+//! it: pacing makes a big sync slower, never failed.
+//!
+//! The rules (what happens, and why) are in `docs/anilist.md`, each with the
+//! tests that hold it. Change a rule there first.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 /// The window `AniList` counts requests in.
 const WINDOW: Duration = Duration::from_secs(60);
@@ -34,11 +39,16 @@ const LOW: u32 = 5;
 /// Always this long between two requests, against the burst limiter.
 const BURST_GAP: Duration = Duration::from_millis(300);
 
-/// A 429 without a usable wait means the documented one-minute timeout.
+/// A 429 without a usable wait (none, 0, or a reset time already past) means
+/// the documented one-minute timeout.
 const DEFAULT_TIMEOUT: u64 = 60;
 
-/// The longest wait a 429 is believed for (a broken header asks for days).
-const MAX_TIMEOUT: u64 = 120;
+/// The longest a 429 is believed for: a header asking for more is broken (a
+/// reset in milliseconds, say), and the documented minute is used instead.
+/// Longer than any budget, so a long timeout fails the next request at once
+/// too, instead of it being sent while `AniList` still refuses.
+const MAX_TIMEOUT: u64 = 900;
+const _: () = assert!(MAX_TIMEOUT > super::anilist::BACKGROUND_WAIT.as_secs());
 
 /// How long to pause before the one retry of a server error or failed request.
 const TRANSIENT_PAUSE: Duration = Duration::from_secs(5);
@@ -138,17 +148,53 @@ impl Limiter {
         if let Some(limit) = h.limit.filter(|&l| l > 0) {
             self.limit = limit;
         }
-        if let Some(left) = h.remaining {
+        // A 429's count is always 0; its own timeout says how long to wait.
+        if let Some(left) = h.remaining.filter(|_| status != 429) {
             self.remaining = Some((left, now));
         }
         if status == 429 {
+            let believable = |s: &u64| (1..=MAX_TIMEOUT).contains(s);
             let secs = h
                 .retry_after
-                .or_else(|| h.reset.map(|t| u64::try_from(t.saturating_sub(unix)).unwrap_or(0)))
-                .unwrap_or(DEFAULT_TIMEOUT)
-                .clamp(1, MAX_TIMEOUT);
+                .filter(believable)
+                .or_else(|| h.reset.and_then(|t| u64::try_from(t.saturating_sub(unix)).ok()).filter(believable))
+                .unwrap_or(DEFAULT_TIMEOUT);
             self.blocked_until = Some(now + Duration::from_secs(secs));
         }
+    }
+
+    /// How much longer a 429's timeout holds at `now`.
+    fn blocked_for(&self, now: Instant) -> Duration {
+        self.blocked_until.map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
+    }
+}
+
+/// [`paced`] gave up: `AniList` still refuses requests, for `left` more.
+#[derive(Debug)]
+pub struct StillLimited {
+    /// How long the rate limit has been waited out already, in all.
+    waited: Duration,
+    /// How long until requests are allowed again.
+    left: Duration,
+}
+
+impl std::fmt::Display for StillLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AniList rate limit: try again in {left} s", left = crate::fmt::secs_up(self.left))?;
+        if !self.waited.is_zero() {
+            write!(f, " (already waited {waited} s)", waited = self.waited.as_secs())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for StillLimited {}
+
+#[cfg(test)]
+impl StillLimited {
+    /// One for tests: `left` more to wait.
+    pub(in crate::meta) fn test(left: Duration) -> Self {
+        Self { waited: Duration::ZERO, left }
     }
 }
 
@@ -189,33 +235,22 @@ pub struct Reply {
 }
 
 /// Send a request with `send` when `limiter` allows it, telling `on_wait`
-/// about every wait worth mentioning. A 429 is waited out and sent again; a
-/// server error (5xx) or a failed request is sent again once, after a short
-/// pause. Fails when the waiting would go past `budget` in total.
+/// about every wait worth mentioning. A 429 is waited out and sent again.
+/// Fails with [`StillLimited`], before waiting, when waiting out a 429's
+/// timeout would take `waited` (what earlier requests waited, added to) past
+/// `budget`. Only the timeout is counted, not pacing.
+///
+/// A server error (5xx) or a failed request is sent again once, after a short
+/// pause that is not a rate limit wait: it is neither told nor counted.
 pub fn paced(
     limiter: &Mutex<Limiter>,
     clock: &dyn Clock,
     budget: Duration,
+    waited: &mut Duration,
     on_wait: &dyn Fn(Duration),
     send: &mut dyn FnMut() -> Result<Reply>,
 ) -> Result<Reply> {
-    let mut waited = Duration::ZERO;
     let mut retried_transient = false;
-    let wait = |d: Duration, waited: &mut Duration| -> Result<()> {
-        if *waited + d > budget {
-            bail!(
-                "AniList rate limit: still limited after waiting {waited} s; try again in {left} s",
-                waited = waited.as_secs(),
-                left = d.as_secs().max(1)
-            );
-        }
-        if d >= NOTEWORTHY {
-            on_wait(d);
-        }
-        clock.sleep(d);
-        *waited += d;
-        Ok(())
-    };
     loop {
         // Checked and recorded under one lock, so threads don't both go.
         loop {
@@ -226,8 +261,17 @@ pub fn paced(
                 l.sent(now);
                 break;
             }
+            // A 429's timeout counts against the budget; pacing doesn't.
+            let blocked = l.blocked_for(now);
+            if *waited + blocked > budget {
+                return Err(StillLimited { waited: *waited, left: blocked }.into());
+            }
+            *waited += blocked;
             drop(l);
-            wait(d, &mut waited)?;
+            if d >= NOTEWORTHY {
+                on_wait(d);
+            }
+            clock.sleep(d);
         }
         match send() {
             Ok(reply) => {
@@ -235,21 +279,20 @@ pub fn paced(
                 l.on_response(clock.now(), clock.unix(), reply.status, &reply.headers);
                 drop(l);
                 match reply.status {
-                    // Waited out by the limiter on the next round.
+                    // Waited out by the limiter on the next round, or failed
+                    // there when too long.
                     429 => {}
                     500..=599 if !retried_transient => {
                         retried_transient = true;
-                        wait(TRANSIENT_PAUSE, &mut waited)?;
+                        clock.sleep(TRANSIENT_PAUSE);
                     }
                     _ => return Ok(reply),
                 }
             }
-            Err(e) if !retried_transient => {
+            // A request that fails twice is reported as itself.
+            Err(_) if !retried_transient => {
                 retried_transient = true;
-                // A request that fails twice is reported as itself.
-                if wait(TRANSIENT_PAUSE, &mut waited).is_err() {
-                    return Err(e);
-                }
+                clock.sleep(TRANSIENT_PAUSE);
             }
             Err(e) => return Err(e),
         }
@@ -257,7 +300,7 @@ pub fn paced(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
 
@@ -277,7 +320,7 @@ mod tests {
         assert_eq!(RateHeaders::parse(garbage), RateHeaders::default());
     }
 
-    /// With plenty left, only the burst gap applies; our own count never
+    /// docs/anilist.md R1: With plenty left, only the burst gap applies; our own count never
     /// goes past the limit less the margin within a minute.
     #[test]
     fn own_requests_stay_under_the_limit() {
@@ -296,7 +339,7 @@ mod tests {
         assert_eq!(l.wait_before(t0 + S(60)), Duration::ZERO);
     }
 
-    /// AniList's count (other clients included): spread out when low, wait
+    /// docs/anilist.md R2: AniList's count (other clients included): spread out when low, wait
     /// for the window when used up, and forget it once it is a minute old.
     #[test]
     fn anilists_count_slows_down() {
@@ -306,10 +349,11 @@ mod tests {
         l.on_response(t0, 0, 200, &headers(30, 4));
         assert_eq!(l.wait_before(t0), S(2), "60 s / 30");
         l.on_response(t0, 0, 200, &headers(30, 1));
-        assert_eq!(l.wait_before(t0 + S(1)), S(59));
+        assert_eq!(l.wait_before(t0 + S(1)), S(59), "the last one is left to other clients");
         assert_eq!(l.wait_before(t0 + S(60)), Duration::ZERO, "a minute later it says nothing");
     }
 
+    /// docs/anilist.md R3.
     #[test]
     fn a_429_blocks_as_long_as_it_says() {
         let t0 = Instant::now();
@@ -321,19 +365,26 @@ mod tests {
         assert_eq!(blocked(RateHeaders { retry_after: Some(30), ..RateHeaders::default() }), S(30));
         assert_eq!(blocked(RateHeaders { reset: Some(1042), ..RateHeaders::default() }), S(42));
         assert_eq!(blocked(RateHeaders::default()), S(60), "the documented minute");
-        assert_eq!(blocked(RateHeaders { retry_after: Some(86_400), ..RateHeaders::default() }), S(120));
-        assert_eq!(blocked(RateHeaders { retry_after: Some(0), ..RateHeaders::default() }), S(1));
+        // Broken or unusable: the documented minute.
+        assert_eq!(blocked(RateHeaders { retry_after: Some(86_400), ..RateHeaders::default() }), S(60));
+        assert_eq!(blocked(RateHeaders { reset: Some(1_000_000), ..RateHeaders::default() }), S(60), "milliseconds");
+        assert_eq!(blocked(RateHeaders { retry_after: Some(0), ..RateHeaders::default() }), S(60), "not 1 s");
+        assert_eq!(blocked(RateHeaders { reset: Some(990), ..RateHeaders::default() }), S(60), "a reset already past");
+        assert_eq!(blocked(RateHeaders { retry_after: Some(0), reset: Some(1005), ..RateHeaders::default() }), S(5));
+        // Its count of 0 doesn't make a shorter timeout a minute.
+        assert_eq!(blocked(RateHeaders { retry_after: Some(30), remaining: Some(0), ..headers(90, 0) }), S(30));
     }
 
     /// A clock that only moves when slept on.
-    struct Fake {
+    pub(in crate::meta) struct Fake {
         start: Instant,
         offset: Cell<Duration>,
-        slept: RefCell<Vec<Duration>>,
+        /// Every wait, in order.
+        pub(in crate::meta) slept: RefCell<Vec<Duration>>,
     }
 
     impl Fake {
-        fn new() -> Self {
+        pub(in crate::meta) fn new() -> Self {
             Self { start: Instant::now(), offset: Cell::new(Duration::ZERO), slept: RefCell::default() }
         }
     }
@@ -356,44 +407,120 @@ mod tests {
         Ok(Reply { status, headers: h, body: String::new() })
     }
 
-    fn run(budget: u64, replies: Vec<Result<Reply>>) -> (Result<Reply>, Vec<Duration>, Vec<Duration>, usize) {
+    /// Send one request through [`paced`] on a fake clock, after others that
+    /// `waited` already, answering with `replies`: what it returned, slept,
+    /// told, and how often it sent.
+    fn run(
+        waited: u64,
+        budget: u64,
+        replies: Vec<Result<Reply>>,
+    ) -> (Result<Reply>, Vec<Duration>, Vec<Duration>, usize) {
         let clock = Fake::new();
         let limiter = Mutex::new(Limiter::default());
         let told = RefCell::new(Vec::new());
         let mut replies = replies.into_iter();
         let mut sent = 0;
-        let res = paced(&limiter, &clock, S(budget), &|d| told.borrow_mut().push(d), &mut || {
+        let res = paced(&limiter, &clock, S(budget), &mut S(waited), &|d| told.borrow_mut().push(d), &mut || {
             sent += 1;
             replies.next().expect("no more replies")
         });
         (res, clock.slept.take(), told.take(), sent)
     }
 
+    /// docs/anilist.md R4.
     #[test]
     fn a_429_is_waited_out_and_sent_again() {
         let limited = RateHeaders { retry_after: Some(30), ..RateHeaders::default() };
-        let (res, slept, told, sent) = run(600, vec![reply(429, limited), reply(200, headers(30, 28))]);
+        let (res, slept, told, sent) = run(0, 600, vec![reply(429, limited), reply(200, headers(30, 28))]);
         assert_eq!(res.unwrap().status, 200);
         assert_eq!((slept, told, sent), (vec![S(30)], vec![S(30)], 2));
     }
 
+    /// docs/anilist.md R5.
     #[test]
     fn waiting_stops_at_the_budget() {
         let limited = || reply(429, RateHeaders { retry_after: Some(60), ..RateHeaders::default() });
-        let (res, slept, _, sent) = run(120, vec![limited(), limited(), limited()]);
+        let (res, slept, _, sent) = run(0, 120, vec![limited(), limited(), limited()]);
         let err = res.unwrap_err().to_string();
-        assert!(err.contains("still limited after waiting 120 s; try again in 60 s"), "{err}");
+        assert_eq!(err, "AniList rate limit: try again in 60 s (already waited 120 s)");
         assert_eq!((slept, sent), (vec![S(60), S(60)], 3));
     }
 
+    /// docs/anilist.md R5: The budget is shared by a sync's requests: one after others that
+    /// waited 100 s of 120 has 20 s left.
+    #[test]
+    fn the_budget_is_shared() {
+        let limited = reply(429, RateHeaders { retry_after: Some(30), ..RateHeaders::default() });
+        let (res, slept, _, sent) = run(100, 120, vec![limited]);
+        let err = res.unwrap_err().to_string();
+        assert_eq!(err, "AniList rate limit: try again in 30 s (already waited 100 s)");
+        assert_eq!((slept, sent), (vec![], 1));
+    }
+
+    /// docs/anilist.md R7: A timeout longer than the budget fails at once, and so does the next
+    /// request: it isn't sent while `AniList` still refuses. A bigger budget
+    /// waits it out.
+    #[test]
+    fn a_long_timeout_fails_at_once() {
+        let clock = Fake::new();
+        let limiter = Mutex::new(Limiter::default());
+        let mut sent = 0;
+        let mut send = |status| {
+            sent += 1;
+            reply(status, RateHeaders { retry_after: Some(300), ..RateHeaders::default() })
+        };
+        let res = paced(&limiter, &clock, S(120), &mut S(0), &|_| {}, &mut || send(429));
+        assert_eq!(res.unwrap_err().to_string(), "AniList rate limit: try again in 300 s");
+        clock.sleep(S(100));
+        let res = paced(&limiter, &clock, S(120), &mut S(0), &|_| {}, &mut || send(429));
+        assert_eq!(res.unwrap_err().to_string(), "AniList rate limit: try again in 200 s");
+        let res = paced(&limiter, &clock, S(600), &mut S(0), &|_| {}, &mut || send(200));
+        assert_eq!(res.unwrap().status, 200);
+        assert_eq!((clock.slept.take(), sent), (vec![S(100), S(200)], 2));
+    }
+
+    /// docs/anilist.md R6: Only the 429's timeout counts, not the pacing that keeps the request
+    /// waiting after it ends.
+    #[test]
+    fn pacing_past_a_timeout_is_not_counted() {
+        let clock = Fake::new();
+        let limiter = Mutex::new(Limiter::default());
+        let mut l = limiter.lock().unwrap();
+        l.on_response(clock.now(), 1000, 200, &headers(30, 0));
+        l.on_response(clock.now(), 1000, 429, &RateHeaders { retry_after: Some(10), ..RateHeaders::default() });
+        drop(l);
+        let mut waited = Duration::ZERO;
+        let res = paced(&limiter, &clock, S(30), &mut waited, &|_| {}, &mut || reply(200, headers(30, 29)));
+        assert_eq!(res.unwrap().status, 200);
+        assert_eq!((clock.slept.take(), waited), (vec![S(60)], S(10)));
+    }
+
+    /// docs/anilist.md R6: Pacing makes a request wait, but doesn't use the budget: with none
+    /// left, a request that only has to wait for the window still goes.
+    #[test]
+    fn pacing_is_not_counted() {
+        let clock = Fake::new();
+        let limiter = Mutex::new(Limiter::default());
+        limiter.lock().unwrap().on_response(clock.now(), 1000, 200, &headers(30, 0));
+        let mut waited = S(120);
+        let res = paced(&limiter, &clock, S(120), &mut waited, &|_| {}, &mut || reply(200, headers(30, 29)));
+        assert_eq!(res.unwrap().status, 200);
+        assert_eq!((clock.slept.take(), waited), (vec![S(60)], S(120)));
+    }
+
+    /// docs/anilist.md R9.
     #[test]
     fn server_errors_and_failures_are_retried_once() {
-        let (res, slept, told, _) = run(600, vec![reply(502, RateHeaders::default()), reply(200, headers(30, 28))]);
+        let (res, slept, told, _) = run(0, 600, vec![reply(502, RateHeaders::default()), reply(200, headers(30, 28))]);
         assert_eq!(res.unwrap().status, 200);
-        assert_eq!((slept, told), (vec![TRANSIENT_PAUSE], vec![TRANSIENT_PAUSE]));
-        let (res, _, _, sent) = run(600, vec![reply(503, RateHeaders::default()), reply(503, RateHeaders::default())]);
+        assert_eq!((slept, told), (vec![TRANSIENT_PAUSE], vec![]), "not a rate limit wait");
+        // Nor does it count against the budget: the 502 is still the answer.
+        let (res, _, _, _) = run(0, 0, vec![reply(502, RateHeaders::default()), reply(502, RateHeaders::default())]);
+        assert_eq!(res.unwrap().status, 502);
+        let (res, _, _, sent) =
+            run(0, 600, vec![reply(503, RateHeaders::default()), reply(503, RateHeaders::default())]);
         assert_eq!((res.unwrap().status, sent), (503, 2), "the second is the answer");
-        let (res, _, _, sent) = run(600, vec![Err(anyhow::anyhow!("timed out")), Err(anyhow::anyhow!("refused"))]);
+        let (res, _, _, sent) = run(0, 600, vec![Err(anyhow::anyhow!("timed out")), Err(anyhow::anyhow!("refused"))]);
         assert_eq!((res.unwrap_err().to_string(), sent), ("refused".to_string(), 2));
     }
 }

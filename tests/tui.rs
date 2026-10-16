@@ -341,7 +341,7 @@ fn wait_for_meta(app: &mut App) {
 fn m_refreshes_metadata_for_the_focused_series() {
     let (_d, mut app) = app();
     app.press("3/yuru\nM");
-    assert!(app.meta_busy().is_some());
+    assert!(app.meta_busy());
     wait_for_meta(&mut app);
     let msg = app.current_message().unwrap_or_default().to_string();
     assert!(msg.starts_with("Yuru Camp:") && msg.contains("12 eps"), "{msg}");
@@ -386,7 +386,7 @@ fn ctrl_r_refreshes_everything_and_queues_while_busy() {
     let (_d, mut app) = app();
     let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
     app.on_key(ctrl_r);
-    assert!(app.meta_busy().is_some());
+    assert!(app.meta_busy());
     app.on_key(ctrl_r);
     assert!(app.current_message().unwrap_or_default().contains("queued"));
     wait_for_meta(&mut app);
