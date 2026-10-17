@@ -323,6 +323,14 @@ enum RowId {
     Item(ItemKey),
     /// A folder in the Files view's tree.
     Dir(Dir),
+    /// A season link in Detail: the series it opens, and which of the two
+    /// (both can open the same one: a series split around this one).
+    Season {
+        /// Series key.
+        key: String,
+        /// The `▼` link, not the `▲` one.
+        next: bool,
+    },
 }
 
 /// Live playback info.
@@ -842,7 +850,9 @@ impl App {
             View::Queue => RowId::File(self.queue.get(i)?.file.clone()),
             View::Detail => match *self.detail_ix.get(i)? {
                 DetailAt::Item(n) => RowId::Item(self.detail_series()?.items.get(n)?.key.clone()),
-                DetailAt::Season { series, .. } => RowId::Series(self.lib.series.get(series)?.key.clone()),
+                DetailAt::Season { series, next } => {
+                    RowId::Season { key: self.lib.series.get(series)?.key.clone(), next }
+                }
             },
         })
     }
@@ -1031,9 +1041,10 @@ impl App {
                     .iter()
                     .position(|r| matches!(*r, DetailAt::Item(n) if s.items.get(n).is_some_and(|it| it.key == *k)))
             }
-            RowId::Series(k) => {
-                let at = self.lib.index_of(k)?;
-                self.detail_ix.iter().position(|r| matches!(*r, DetailAt::Season { series, .. } if series == at))
+            RowId::Season { key, next } => {
+                let at = self.lib.index_of(key)?;
+                let link = DetailAt::Season { series: at, next: *next };
+                self.detail_ix.iter().position(|r| *r == link)
             }
             _ => None,
         }
@@ -2126,9 +2137,11 @@ impl App {
                     self.quit = true;
                 }
             }
-            Popup::Unmerge { series, .. } => {
-                // The names merged into it now (a reload may have changed them).
-                let names = self.lib.get(&series).map(|s| s.aliases.clone()).unwrap_or_default();
+            Popup::Unmerge { series, names } => {
+                // The names you were shown that are still merged into it (a
+                // reload may have changed them): never one you weren't shown.
+                let now = self.lib.get(&series).map(|s| s.aliases.clone()).unwrap_or_default();
+                let names: Vec<String> = names.into_iter().filter(|n| now.contains(n)).collect();
                 if is_yes(key.code) && !names.is_empty() {
                     self.say(format!("split off {n} merged name(s)", n = names.len()));
                     let res = self.ctx.unmerge(&self.lib, names.iter().map(String::as_str));
@@ -2956,6 +2969,19 @@ mod tests {
     /// link listed (no episodes shown), `[` still says there's nothing
     /// before, and a link whose series went away (a merge) leaves the cursor
     /// on an episode.
+    #[test]
+    fn season_links_are_told_apart() {
+        let (_dir, mut app) = demo_app();
+        app.press("3/frieren\n\n");
+        // As for a series split around this one: both links open it.
+        let s2 = app.lib.index_of("sousou no frieren s2").unwrap();
+        app.detail_ix.insert(0, DetailAt::Season { series: s2, next: false });
+        let last = app.detail_ix.len() - 1;
+        app.detail_state.select(Some(last));
+        let id = app.selected_id(View::Detail).unwrap();
+        assert_eq!(app.detail_row_of(&id), Some(last), "the ▼ link, not the ▲ one");
+    }
+
     #[test]
     fn season_keys_follow_the_franchise_not_the_rows() {
         let (_dir, mut app) = demo_app();

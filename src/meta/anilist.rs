@@ -244,13 +244,17 @@ impl Http for Ureq<'_> {
         let ok = (200..300).contains(&reply.status);
         let Ok(json) = serde_json::from_str::<Value>(&reply.body) else {
             let cause = if ok {
-                anyhow::anyhow!("AniList sent a response that isn't JSON")
+                anyhow::anyhow!("AniList sent a response that isn't JSON: {start}", start = excerpt(&reply.body))
             } else {
                 status_error(reply.status, &reply.body)
             };
             return Err(self.unavailable(cause).into());
         };
-        self.failed.set(false);
+        // An answer ends a run of failures; an optional request's doesn't
+        // count either way (docs/anilist.md R12).
+        if self.share.get().is_none() {
+            self.failed.set(false);
+        }
         // An error AniList answered (a bad request) is about this request.
         if !ok {
             return Err(status_error(reply.status, &reply.body));
@@ -269,8 +273,12 @@ impl Http for Ureq<'_> {
 /// A non-success HTTP status as an error, with the start of the body.
 /// (A 429 never gets here: [`paced`] waits it out or fails itself.)
 fn status_error(status: u16, body: &str) -> anyhow::Error {
-    let excerpt: String = body.trim().chars().take(200).collect();
-    anyhow::anyhow!("AniList returned HTTP {status}: {excerpt}")
+    anyhow::anyhow!("AniList returned HTTP {status}: {start}", start = excerpt(body))
+}
+
+/// The start of a response body, to say what answered.
+fn excerpt(body: &str) -> String {
+    body.trim().chars().take(200).collect()
 }
 
 /// Fields fetched per anime.
@@ -761,8 +769,13 @@ mod tests {
         let portal = |_: &str, _: &Value| reply(200, "<html>Log in to the Wi-Fi</html>");
         let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
         let ureq = ureq_test(&clock, &limiter, &portal);
+        let first = ureq.post_json(ENDPOINT, &json!({})).unwrap_err();
+        assert!(
+            first.to_string().ends_with("isn't JSON: <html>Log in to the Wi-Fi</html>"),
+            "says what answered: {first}"
+        );
         let outage = || Outage::of(&ureq.post_json(ENDPOINT, &json!({})).unwrap_err());
-        assert_eq!((outage(), outage()), (Some(Outage::Once), Some(Outage::GaveUp)));
+        assert_eq!(outage(), Some(Outage::GaveUp));
 
         let calls = Cell::new(0);
         let alternating = |_: &str, _: &Value| {
@@ -787,6 +800,22 @@ mod tests {
         ureq.optional(&mut || optional.extend([outage(), outage()]));
         assert_eq!(optional, [Some(Outage::Once), Some(Outage::Once)]);
         assert_eq!((outage(), outage()), (Some(Outage::Once), Some(Outage::GaveUp)));
+
+        // Nor does an optional request's answer end a run of failures.
+        let calls = Cell::new(0);
+        let flaky = |_: &str, _: &Value| -> Result<Reply> {
+            calls.set(calls.get() + 1);
+            if calls.get() == 3 {
+                return Ok(Reply { status: 200, headers: RateHeaders::default(), body: "{}".into() });
+            }
+            bail!("contacting AniList: connection refused")
+        };
+        let (clock, limiter) = (crate::meta::ratelimit::tests::Fake::new(), Mutex::default());
+        let ureq = ureq_test(&clock, &limiter, &flaky);
+        let outage = || Outage::of(&ureq.post_json(ENDPOINT, &json!({})).unwrap_err());
+        assert_eq!(outage(), Some(Outage::Once), "sent twice: calls 1 and 2");
+        ureq.optional(&mut || assert!(ureq.post_json(ENDPOINT, &json!({})).is_ok()));
+        assert_eq!(outage(), Some(Outage::GaveUp), "the second failure in a row, the search between them aside");
     }
 
     /// docs/anilist.md R8: optional requests may wait out only half of what

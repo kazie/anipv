@@ -173,39 +173,39 @@ fn detail_links_the_seasons_around_it() {
     assert_eq!(app.view, View::Series);
 }
 
-/// A status taken from the fish shell's history shows as a little fish in
-/// the header's border, not as its note; a note of yours is quoted, at the
-/// right; one anipv wrote itself isn't shown.
+/// A status imported from fish history (`via`) shows as a little fish in
+/// the header's border; a note of yours is quoted, at the end of line 2,
+/// whatever it says; one anipv wrote itself isn't shown.
 #[test]
 fn header_notes_fish_and_yours_only() {
-    use anipv::events::EventBody;
+    use anipv::events::{EventBody, StatusVia};
     use anipv::model::SeriesStatus;
+    let status = |note: Option<&str>, auto, via| EventBody::SeriesStatus {
+        series: "meitantei precure".into(),
+        status: SeriesStatus::Following,
+        note: note.map(str::to_string),
+        auto,
+        keep: false,
+        via,
+    };
     let (_d, mut app) = app();
-    let note = Some(anipv::import_fish::FISH_NOTE.to_string());
-    app.ctx.set_status(&app.lib, "meitantei precure", SeriesStatus::Following, note).unwrap();
+    app.ctx.record([status(None, false, Some(StatusVia::FishImport))]).unwrap();
     app.reload();
     app.press("3/meitantei\n\n");
     let s = render(&mut app);
     assert!(s.lines().nth(1).is_some_and(|l| l.ends_with("ϵ( 'Θ' )϶ ─╮")), "{s}");
-    assert!(!s.contains(anipv::import_fish::FISH_NOTE), "{s}");
 
-    app.ctx.set_status(&app.lib, "meitantei precure", SeriesStatus::Following, Some("cute".into())).unwrap();
-    app.reload();
-    let s = render(&mut app);
-    let line2 = s.lines().nth(3).unwrap();
-    assert!(line2.starts_with("│1/48 · 2 new · TV  “cute”"), "your note ends line 2:\n{s}");
+    // Your note, even one reading like what anipv used to write.
+    for note in ["cute", "caught up", "from fish history"] {
+        app.ctx.record([status(Some(note), false, None)]).unwrap();
+        app.reload();
+        let s = render(&mut app);
+        let line2 = s.lines().nth(3).unwrap();
+        assert!(line2.starts_with(&format!("│1/48 · 2 new · TV  “{note}”")), "your note ends line 2:\n{s}");
+        assert!(!s.contains("ϵ("), "{s}");
+    }
 
-    // Nor does a catch-up's.
-    let note = Some(anipv::app::CAUGHT_UP_NOTE.to_string());
-    app.ctx.set_status(&app.lib, "meitantei precure", SeriesStatus::Following, note).unwrap();
-    app.reload();
-    let s = render(&mut app);
-    assert!(!s.contains(anipv::app::CAUGHT_UP_NOTE), "{s}");
-
-    let series = "meitantei precure".to_string();
-    let note = Some("all 48 episodes watched".to_string());
-    let auto = EventBody::SeriesStatus { series, status: SeriesStatus::Completed, note, auto: true, keep: false };
-    app.ctx.record([auto]).unwrap();
+    app.ctx.record([status(Some("all 48 episodes watched"), true, None)]).unwrap();
     app.reload();
     let s = render(&mut app);
     assert!(!s.contains("episodes watched") && !s.contains("ϵ("), "{s}");
@@ -218,24 +218,39 @@ fn header_notes_fish_and_yours_only() {
 fn header_total_counts_what_is_on_disk() {
     use anipv::events::EventBody;
     use anipv::index::db::SeriesMeta;
-    let (_d, mut app) = app();
-    let fewer = SeriesMeta {
-        series: "meitantei precure".into(),
-        anilist: Some(195_000),
-        episodes: Some(2),
-        ..SeriesMeta::default()
+    // Meitantei with AniList counting `episodes`, and `extra` files added.
+    let app_with = |episodes, extra: &[&str]| {
+        let (d, mut app) = app();
+        let dl = d.path().join("media/Downloads");
+        for f in extra {
+            std::fs::write(dl.join(f), b"").unwrap();
+        }
+        app.ctx.scan(None, &|_, _| {}).unwrap();
+        let meta = SeriesMeta {
+            series: "meitantei precure".into(),
+            anilist: Some(195_000),
+            episodes: Some(episodes),
+            ..SeriesMeta::default()
+        };
+        app.ctx.store_sync(&anipv::meta::SyncResult { rows: vec![meta], ..Default::default() }).unwrap();
+        app.reload_index();
+        app.press("3/meitantei\n\n");
+        (d, app)
     };
-    app.ctx.store_sync(&anipv::meta::SyncResult { rows: vec![fewer], ..Default::default() }).unwrap();
-    app.reload_index();
-    app.press("3/meitantei\n\n");
-    let s = render(&mut app);
-    assert!(s.lines().nth(3).is_some_and(|l| l.starts_with("│1/3 (ⓐ2 eps) · 2 new")), "{s}");
+    let line2 = |app: &mut App| render(app).lines().nth(3).unwrap().to_string();
 
+    let (_d, mut app) = app_with(2, &[]);
+    assert!(line2(&mut app).starts_with("│1/3 (ⓐ2 eps) · 2 new"), "{l}", l = line2(&mut app));
+    // A total you set yourself stays.
     let yours = EventBody::Meta { series: "meitantei precure".into(), anilist: Some(195_000), episodes: Some(2) };
     app.ctx.record([yours]).unwrap();
     app.reload();
-    let s = render(&mut app);
-    assert!(s.lines().nth(3).is_some_and(|l| l.starts_with("│1/2 · 2 new")), "{s}");
+    assert!(line2(&mut app).starts_with("│1/2 · 2 new"), "{l}", l = line2(&mut app));
+
+    // An episode 00 and a .5 recap don't count: 01–03 on disk, AniList's 3.
+    let extra = ["[GroupB] Meitantei Precure! - 00 (1080p).mkv", "[GroupB] Meitantei Precure! - 02.5 (1080p).mkv"];
+    let (_d, mut app) = app_with(3, &extra);
+    assert!(line2(&mut app).starts_with("│1/3 · "), "{l}", l = line2(&mut app));
 }
 
 /// Names merged into a series show as a count; `U` lists them and asks
@@ -253,8 +268,13 @@ fn merged_names_are_counted_and_listed_before_unmerging() {
     assert!(s.contains("kusuriya no hitorigoto s3") && s.contains("y/Enter splits them off"), "{s}");
     app.press("n");
     assert_eq!(app.lib.get("sousou no frieren").unwrap().aliases.len(), 1, "any other key cancels");
-    app.press("Uy");
-    assert!(app.lib.get("sousou no frieren").unwrap().aliases.is_empty());
+    // A name merged in while it asks isn't split off with the listed ones.
+    app.press("U");
+    let merge = anipv::events::EventBody::Alias { from: "dungeon meshi".into(), to: "sousou no frieren".into() };
+    app.ctx.record([merge]).unwrap();
+    app.reload();
+    app.press("y");
+    assert_eq!(app.lib.get("sousou no frieren").unwrap().aliases, ["dungeon meshi"]);
 }
 
 /// Space queues and moves down, but not past the last episode onto the

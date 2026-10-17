@@ -393,7 +393,7 @@ impl Ctx {
         note: Option<String>,
     ) -> Result<Recorded> {
         let keep = status != SeriesStatus::Completed && lib.get(series).is_some_and(Series::is_done);
-        self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep }])
+        self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep, via: None }])
     }
 
     /// Mark followed series that are finished and fully watched as completed,
@@ -424,7 +424,7 @@ impl Ctx {
                         (status[i], by[i]) = (SeriesStatus::Completed, SetBy::Anipv);
                         done.completed.push(s.title.clone());
                         let note = format!("all {n} episodes watched", n = s.whole_watched_count());
-                        bodies.push(status_event(s, SeriesStatus::Completed, note, true));
+                        bodies.push(status_event(s, SeriesStatus::Completed, note));
                         changed = true;
                     }
                 }
@@ -444,7 +444,7 @@ impl Ctx {
                     if undecided && !s.auto_followed && s.present() {
                         (status[next], by[next]) = (SeriesStatus::Following, SetBy::Anipv);
                         let after = lib.stop_label(&f.stops[last]).to_string();
-                        bodies.push(status_event(s, SeriesStatus::Following, format!("next after {after}"), true));
+                        bodies.push(status_event(s, SeriesStatus::Following, format!("next after {after}")));
                         done.followed.push((s.title.clone(), after));
                         changed = true;
                     }
@@ -555,21 +555,17 @@ pub fn catch_up_to(lib: &Library, f: &crate::franchise::Franchise, pos: usize) -
             (false, _) => Some(SeriesStatus::Following),
         };
         if let Some(status) = status {
-            events.push(status_event(s, status, CAUGHT_UP_NOTE.into(), false));
+            events.push(EventBody::status_via(s.key.clone(), status, crate::events::StatusVia::CatchUp));
         }
     }
     let entries = upto.iter().map(|stop| lib.stop_label(stop).to_string()).collect();
     CatchUp { entries, episodes, events }
 }
 
-/// A status change of `s`, made by anipv (`auto`) or for the user.
-fn status_event(s: &Series, status: SeriesStatus, note: String, auto: bool) -> EventBody {
-    EventBody::SeriesStatus { series: s.key.clone(), status, note: Some(note), auto, keep: false }
+/// A status change of `s` anipv makes on its own (`auto`), saying why.
+fn status_event(s: &Series, status: SeriesStatus, note: String) -> EventBody {
+    EventBody::SeriesStatus { series: s.key.clone(), status, note: Some(note), auto: true, keep: false, via: None }
 }
-
-/// The note on the statuses a catch-up sets (see [`catch_up`]). It is stored
-/// in the event log, and the TUI doesn't show it as yours: never reword it.
-pub const CAUGHT_UP_NOTE: &str = "caught up";
 
 /// Everything that counts toward a series' total: its items that do, and
 /// episodes up to the total when it is known.

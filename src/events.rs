@@ -91,7 +91,12 @@ impl EventBody {
 
     /// A status change made by the user.
     pub fn status(series: impl Into<String>, status: SeriesStatus, note: Option<String>) -> Self {
-        Self::SeriesStatus { series: series.into(), status, note, auto: false, keep: false }
+        Self::SeriesStatus { series: series.into(), status, note, auto: false, keep: false, via: None }
+    }
+
+    /// A status the user set `via` something other than by hand (no note).
+    pub fn status_via(series: impl Into<String>, status: SeriesStatus, via: StatusVia) -> Self {
+        Self::SeriesStatus { series: series.into(), status, note: None, auto: false, keep: false, via: Some(via) }
     }
 
     /// `watched` for an item, without a file name.
@@ -156,6 +161,9 @@ pub enum EventBody {
         /// watched: anipv must not complete it automatically afterwards.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep: bool,
+        /// How the user set it, when not by hand: imported, or caught up.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<StatusVia>,
     },
     /// Treat series `from` as part of series `to` (merging two names).
     Alias {
@@ -626,8 +634,34 @@ pub struct SeriesState {
     pub kept: bool,
     /// Who set the current status.
     pub status_by: SetBy,
+    /// How the user set it, when not by hand (see [`StatusVia`]).
+    pub status_via: Option<StatusVia>,
     /// Manual episode total.
     pub episodes: Option<u32>,
+}
+
+/// How the user set a status, when not by hand: the status event's `via`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusVia {
+    /// Imported from `mpv` commands in fish history (`anipv import-fish`).
+    FishImport,
+    /// A catch-up: this and the entries before it seen (`anipv catch-up`).
+    CatchUp,
+    /// A way from a newer version.
+    #[serde(other)]
+    Unknown,
+}
+
+impl StatusVia {
+    /// How it reads in `anipv show` (nothing for one from a newer version).
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::FishImport => Some("from fish history"),
+            Self::CatchUp => Some("caught up"),
+            Self::Unknown => None,
+        }
+    }
 }
 
 /// Who set a series' current status.
@@ -786,7 +820,7 @@ impl State {
                     let item = item_now(&key, item);
                     state.items.entry(key).or_default().insert(item, WatchState::Unwatched);
                 }
-                EventBody::SeriesStatus { status, note, auto, keep, .. } => {
+                EventBody::SeriesStatus { status, note, auto, keep, via, .. } => {
                     let s = state.series.entry(key).or_default();
                     s.status = *status;
                     s.note.clone_from(note);
@@ -794,6 +828,7 @@ impl State {
                     s.auto_followed |= *auto && *status == SeriesStatus::Following;
                     s.kept = *keep;
                     s.status_by = if *auto { SetBy::Anipv } else { SetBy::User };
+                    s.status_via = *via;
                 }
                 EventBody::Title { title, .. } => {
                     state.series.entry(key).or_default().title = Some(title.clone());
@@ -921,6 +956,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(e.body, watched("s", 1));
+    }
+
+    /// A status's `via` is written only when there is one, and one from a
+    /// newer version reads as `Unknown` instead of failing the line.
+    #[test]
+    fn status_via_round_trips() {
+        let body = |via| EventBody::SeriesStatus {
+            series: "s".into(),
+            status: SeriesStatus::Following,
+            note: None,
+            auto: false,
+            keep: false,
+            via,
+        };
+        let e = Event { ts: 1, dev: "x".into(), body: body(Some(StatusVia::FishImport)) };
+        let j = serde_json::to_string(&e).unwrap();
+        assert_eq!(
+            j,
+            r#"{"ts":1,"dev":"x","e":"series_status","series":"s","status":"following","via":"fish_import"}"#
+        );
+        assert_eq!(serde_json::from_str::<Event>(&j).unwrap(), e);
+        let plain = serde_json::to_string(&Event { body: body(None), ..e }).unwrap();
+        assert!(!plain.contains("via"), "{plain}");
+        let future: Event = serde_json::from_str(
+            r#"{"ts":1,"dev":"x","e":"series_status","series":"s","status":"following","via":"telepathy"}"#,
+        )
+        .unwrap();
+        assert_eq!(future.body, body(Some(StatusVia::Unknown)));
     }
 
     /// An item kind from a newer version doesn't fail its line: the event is

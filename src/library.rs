@@ -137,6 +137,8 @@ pub struct Series {
     pub auto_followed: bool,
     /// Who set the current status.
     pub status_by: SetBy,
+    /// How the user set it, when not by hand (imported, caught up).
+    pub status_via: Option<crate::events::StatusVia>,
     /// The user's latest status was chosen once the series was finished.
     pub kept: bool,
     /// `AniList` ids of this anime's prequels (`None` until fetched).
@@ -976,6 +978,7 @@ impl<'a> Lookups<'a> {
             auto_completed: st.auto_completed,
             auto_followed: st.auto_followed,
             status_by: st.status_by,
+            status_via: st.status_via,
             kept: st.kept,
             prequels: None,
             sequels: None,

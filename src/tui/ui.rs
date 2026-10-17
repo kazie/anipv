@@ -513,7 +513,7 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let title = vec![Span::styled(s.title.clone(), title_style.bold())];
     let alt = s.meta.as_ref().and_then(|m| m.title.as_ref()).filter(|t| {
         let key = crate::identity::series_key(t);
-        key != s.key && !s.aliases.contains(&key)
+        !t.eq_ignore_ascii_case(&s.title) && key != s.key && !s.aliases.contains(&key)
     });
     let alt = alt.map(|t| vec![Span::styled(format!("{ANILIST_MARK} {t}"), dim)]);
     // (rank, spans): the lowest rank goes first when the line is too narrow.
@@ -551,7 +551,7 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let mut facts = join_spans(facts, " · ");
     let chain = franchise.map(|(fr, at)| franchise_chain(fr, at));
-    let chain_w = chain.as_ref().map_or(0, |(stops, _)| spans_width(&join_spans(stops.clone(), " → ")));
+    let chain_w = chain.as_ref().map_or(0, |(stops, _)| chain_width(stops));
     let chain_inline = chain.is_some() && spans_width(&facts) + 3 + chain_w <= width;
     let room = if chain_inline { width - chain_w - 3 } else { width };
     if let Some(note) = user_note(s) {
@@ -576,22 +576,21 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
     }
     // A few at most: the episode list below needs the room.
     let shared = s.shared_dirs(&app.ctx.cfg);
+    let warn = |text: String| Line::from(cut_spans(vec![Span::styled(text, Style::new().fg(Color::Yellow))], width));
     for (dir, n) in shared.iter().take(2) {
-        let text = format!("! {n} episode(s) in {dir} are also in another folder (anipv split, if it's another anime)");
-        info.push(Line::from(Span::styled(text, Style::new().fg(Color::Yellow))));
+        info.push(warn(format!(
+            "! {n} episode(s) in {dir} are also in another folder (anipv split, if it's another anime)"
+        )));
     }
     if let Some(more) = shared.len().checked_sub(2).filter(|n| *n > 0) {
-        info.push(Line::from(Span::styled(
-            format!("! … {more} more such folders (anipv show)"),
-            Style::new().fg(Color::Yellow),
-        )));
+        info.push(warn(format!("! … {more} more such folders (anipv show)")));
     }
 
     // The border: the franchise's name, the fish (statuses from fish history),
     // and when the next episode airs.
     let name = franchise.map_or_else(|| " Series ".to_string(), |(fr, _)| format!(" {name} ", name = fr.name));
     let mut header = block(name);
-    if s.note.as_deref() == Some(crate::import_fish::FISH_NOTE) {
+    if s.status_via == Some(crate::events::StatusVia::FishImport) {
         let fish = Span::styled(" ϵ( 'Θ' )϶ ", Style::new().fg(Color::Cyan));
         header = header.title_top(Line::from(vec![fish, Span::styled("─", Style::new().dark_gray())]).right_aligned());
     }
@@ -669,11 +668,12 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
 /// season numbered on from the last (13–24 of 12), nor a total you set.
 fn progress_spans(s: &Series) -> Vec<Span<'static>> {
     let watched = s.whole_watched_count();
-    let on_disk = s.episodes().filter(|i| i.present()).count();
+    // Only what counts toward the total (no 00, no .5 recaps).
+    let on_disk = s.items.iter().filter(|i| i.counts_toward_total() && i.present()).count();
     let latest = s.latest_on_disk().map(crate::model::EpNo::whole);
     let from_anilist = s.episodes_override.is_none();
     let (mut spans, total) = match (s.total(), latest) {
-        (Some(total), Some(latest)) if from_anilist && on_disk > total as usize => (
+        (Some(total), Some(latest)) if from_anilist && on_disk > total as usize && latest > total => (
             vec![
                 Span::raw(format!("{watched}/{latest}")),
                 Span::styled(format!(" ({ANILIST_MARK}{total} eps)"), Style::new().dark_gray()),
@@ -688,11 +688,10 @@ fn progress_spans(s: &Series) -> Vec<Span<'static>> {
     spans
 }
 
-/// A note you wrote on the series' status: not one anipv wrote (an
-/// automatic status's, a catch-up's), nor fish history's (the fish).
+/// A note you wrote on the series' status (an automatic status's says
+/// nothing new).
 fn user_note(s: &Series) -> Option<&str> {
-    let anipvs = [crate::import_fish::FISH_NOTE, crate::app::CAUGHT_UP_NOTE];
-    s.note.as_deref().filter(|n| s.status_by == crate::events::SetBy::User && !anipvs.contains(n))
+    s.note.as_deref().filter(|_| s.status_by == crate::events::SetBy::User)
 }
 
 /// The franchise's entries for the Detail header, one span group per stop:
@@ -725,9 +724,7 @@ fn franchise_chain(fr: &crate::franchise::Franchise, at: usize) -> (Vec<Vec<Span
 /// as many whole stops as fit on either side, `…` where some are left out.
 fn chain_window(stops: &[Vec<Span<'static>>], current: usize, width: usize) -> Vec<Span<'static>> {
     let joined = |r: Range<usize>| join_spans(stops[r].to_vec(), " → ");
-    // A stretch of stops is as wide as they are, plus ` → ` between them.
-    let widths: Vec<usize> = stops.iter().map(|stop| spans_width(stop)).collect();
-    let w = |r: Range<usize>| widths[r.clone()].iter().sum::<usize>() + 3 * r.len().saturating_sub(1);
+    let w = |r: Range<usize>| chain_width(&stops[r]);
     if w(0..stops.len()) <= width {
         return joined(0..stops.len());
     }
@@ -774,6 +771,11 @@ fn cut_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
         }
     }
     out
+}
+
+/// How wide `stops` are, joined by ` → `.
+fn chain_width(stops: &[Vec<Span<'static>>]) -> usize {
+    stops.iter().map(|stop| spans_width(stop)).sum::<usize>() + 3 * stops.len().saturating_sub(1)
 }
 
 /// How many columns `spans` take.

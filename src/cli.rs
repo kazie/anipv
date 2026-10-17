@@ -793,7 +793,7 @@ fn show(ctx: &Ctx, query: &str, all: bool, out: &mut impl Write) -> Result<()> {
         status = status_label(s.status),
         key = dim(&s.key)
     )?;
-    if let Some(n) = &s.note {
+    for n in s.status_via.and_then(crate::events::StatusVia::label).into_iter().chain(s.note.as_deref()) {
         writeln!(out, "  {note}", note = dim(n))?;
     }
     if !s.aliases.is_empty() {
@@ -971,10 +971,11 @@ fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) 
     let written = ctx.log.append_events(&events)?;
     s.add(ctx, Recorded { events, written });
     if a.apply_status {
-        let recorded =
-            ctx.record(p.proposals.iter().map(|pr| {
-                EventBody::status(pr.series.clone(), pr.status, Some(crate::import_fish::FISH_NOTE.into()))
-            }))?;
+        let recorded = ctx.record(
+            p.proposals
+                .iter()
+                .map(|pr| EventBody::status_via(pr.series.clone(), pr.status, crate::events::StatusVia::FishImport)),
+        )?;
         s.add(ctx, recorded);
     }
     let also = if a.apply_status { " and applied statuses" } else { "" };
@@ -1080,6 +1081,8 @@ fn export(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
                 "title": s.title,
                 "status": s.status,
                 "note": s.note,
+                // `null` for a way from a newer version (not a made-up name).
+                "via": s.status_via.filter(|v| *v != crate::events::StatusVia::Unknown),
                 "aliases": s.aliases,
                 "anilist": s.anilist_id(),
                 "total": s.total(),

@@ -83,6 +83,13 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- How you set a status, when not by hand, is recorded on the event (`via`:
+  `fish_import`, `catch_up`) instead of in its note, so a note is always
+  yours and shows as such, whatever it says. A log written before this
+  keeps such statuses as notes ("from fish history", "caught up"), which now
+  show as yours: rewrite those lines once to `"via":"fish_import"` /
+  `"via":"catch_up"` without the note (see docs/events.md).
+
 - The series header is calmer. The franchise's name is in its border, the
   title is coloured by status (no status word), and the small facts (★,
   members, the AniList id as `ⓐ12345`, `+2 names` merged into it) sit at the
