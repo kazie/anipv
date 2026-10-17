@@ -2027,33 +2027,642 @@
  Meitantei Precure! → paused
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
-╭ Files · newest first · 25 · t: folders ──────────────────────────────────────────────────────────────────────────────────╮
-│   Add  Series                               Item       File                                                              │
-│▌· now  Laid-Back Camp The Movie (2022)      laid back  Laid-Back Camp The Movie (2022) (BD Remux 1080p AVC TrueHD) [ABCD2│
-│ ◐ now  Ranma 1-2 2024 S3                    01         Ranma.1-2.2024.S03E01.1080p.WEB.DUAL.AAC2.0.H.264-GRP.mkv         │
-│ · now  Ranma 1-2 2024 S3                    02         Ranma.1-2.2024.S03E02.1080p.WEB.DUAL.AAC2.0.H.264-GRP.mkv         │
-│ ✓ now  Dandadan S2                          05         [GroupA] Dandadan S2 - 05 (1080p) [DDDD0005].mkv                  │
-│ · now  Dandadan S2                          06         [GroupA] Dandadan S2 - 06 (1080p) [DDDD0006].mkv                  │
-│ · now  Dandadan S2                          06         [GroupA] Dandadan S2 - 06v2 (1080p) [DDDE0006].mkv                │
-│ · now  Dandadan S2                          07         [GroupA] Dandadan S2 - 07 (1080p) [DDDD0007].mkv                  │
-│ · now  Dandadan S2                          08         [GroupA] Dandadan S2 - 08 (1080p) [DDDD0008].mkv                  │
-│ · now  One Piece Fan Letter                 one piece  [GroupA] One Piece Fan Letter (1080p) [ABD00001].mkv              │
-│ ✓ now  Sousou no Frieren                    27         [GroupA] Sousou no Frieren - 27 (1080p) [ABCD0027].mkv            │
-│ ✓ now  Sousou no Frieren                    28         [GroupA] Sousou no Frieren - 28 (1080p) [ABCD0028].mkv            │
-│ · now  Sousou no Frieren                    29         [GroupA] Sousou no Frieren - 29 (1080p) [ABCD0029].mkv            │
-│ · now  Sousou no Frieren                    30         [GroupA] Sousou no Frieren - 30 (1080p) [ABCD0030].mkv            │
-│ · now  Sousou no Frieren                    31         [GroupA] Sousou no Frieren - 31 (1080p) [ABCD0031].mkv            │
-│ · now  Sousou no Frieren S2                 01         [GroupA] Sousou no Frieren S2 - 01 (1080p) [ABCE0001].mkv         │
-│ · now  Dungeon Meshi                        01         [GroupB] Dungeon Meshi - 01 (1080p) [ABCF0001].mkv                │
-│ · now  Dungeon Meshi                        02         [GroupB] Dungeon Meshi - 02 (1080p) [ABCF0002].mkv                │
-│ · now  Dungeon Meshi                        03         [GroupB] Dungeon Meshi - 03 (1080p) [ABCF0003].mkv                │
-│ ✓ now  Meitantei Precure!                   01         [GroupB] Meitantei Precure! - 01 (1080p).mkv                      │
-│ · now  Meitantei Precure!                   01 · fanar [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv        │
-│ ◐ now  Meitantei Precure!                   02         [GroupB] Meitantei Precure! - 02 (1080p).mkv                      │
-│ · now  Meitantei Precure!                   02 · fanar [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv        │
-│ · now  Meitantei Precure!                   03         [GroupB] Meitantei Precure! - 03 (1080p).mkv                      │
+╭ Series · on disk 13 franchises folded (F) ───────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
+│ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
+│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
+│ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
+│ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
+│ Meitantei Precure!                                      paused     –     1/48       3     3      now   ep 4 in 3d 23h    │
+│ Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│ One Piece                                               following  88    11/?       13    1182   10d   ep 1183 in 5d 1h  │
+│ One Piece Fan Letter                                    untracked  –     0/?        1                                    │
+│ Ranma 1-2 2024 S3                                       following  74    0/12       2     2      2d    ep 3 in 5d 23h    │
+│ Sousou no Frieren · 1/2                                 following  90    28/38      5     31     12d   ep 32 in 3d 4h    │
+│ Yuru Camp                                               untracked  83    0/12       12    12           finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  Meitantei Precure! → paused
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 13 franchises folded (F) ───────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
+│ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
+│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
+│ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
+│ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
+│ Meitantei Precure!                                      paused     –     1/48       3     3      now   ep 4 in 3d 23h    │
+│ Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│ One Piece                                               following  88    11/?       13    1182   10d   ep 1183 in 5d 1h  │
+│ One Piece Fan Letter                                    untracked  –     0/?        1                                    │
+│ Ranma 1-2 2024 S3                                       following  74    0/12       2     2      2d    ep 3 in 5d 23h    │
+│ Sousou no Frieren · 1/2                                 following  90    28/38      5     31     12d   ep 32 in 3d 4h    │
+│ Yuru Camp                                               untracked  83    0/12       12    12           finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Meitantei Precure! → paused
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ / nisemonogatari▏
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ / nisemonogatari▏
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Meitantei Precure! → paused
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Meitantei Precure! → paused
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│ ✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│▌▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Meitantei Precure! → paused
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│ ✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│▌▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│▌✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│ ▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│▌✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│ ▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│▌  ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│ ✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│ ▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│▌  ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│ ✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│ ▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Bakemonogatari                                                                                                       ⓐ5081│
+│15/15 ✓ · TV                                                  ▸Bakemonogatari◂ ✓ → Nisemonogatari → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│▌✓ 01                             15w           [GroupG] Bakemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             15w           [GroupG] Bakemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             15w           [GroupG] Bakemonogatari - 03 [BD 1080p].mkv                               │
+│ ✓ 04                             15w           [GroupG] Bakemonogatari - 04 [BD 1080p].mkv                               │
+│ ✓ 05                             15w           [GroupG] Bakemonogatari - 05 [BD 1080p].mkv                               │
+│ ✓ 06                             14w           [GroupG] Bakemonogatari - 06 [BD 1080p].mkv                               │
+│ ✓ 07                             14w           [GroupG] Bakemonogatari - 07 [BD 1080p].mkv                               │
+│ ✓ 08                             14w           [GroupG] Bakemonogatari - 08 [BD 1080p].mkv                               │
+│ ✓ 09                             14w           [GroupG] Bakemonogatari - 09 [BD 1080p].mkv                               │
+│ ✓ 10                             14w           [GroupG] Bakemonogatari - 10 [BD 1080p].mkv                               │
+│ ✓ 11                             14w           [GroupG] Bakemonogatari - 11 [BD 1080p].mkv                               │
+│ ✓ 12                             14w           [GroupG] Bakemonogatari - 12 [BD 1080p].mkv                               │
+│ ✓ 13                             13w           [GroupG] Bakemonogatari - 13 [BD 1080p].mkv                               │
+│ ✓ 14                             13w           [GroupG] Bakemonogatari - 14 [BD 1080p].mkv                               │
+│ ✓ 15                             13w           [GroupG] Bakemonogatari - 15 [BD 1080p].mkv                               │
+│   ▼ Nisemonogatari                             after this · watched 3/11 · ⏎ or ]                                        │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Bakemonogatari                                                                                                       ⓐ5081│
+│15/15 ✓ · TV                                                  ▸Bakemonogatari◂ ✓ → Nisemonogatari → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│▌✓ 01                             15w           [GroupG] Bakemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             15w           [GroupG] Bakemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             15w           [GroupG] Bakemonogatari - 03 [BD 1080p].mkv                               │
+│ ✓ 04                             15w           [GroupG] Bakemonogatari - 04 [BD 1080p].mkv                               │
+│ ✓ 05                             15w           [GroupG] Bakemonogatari - 05 [BD 1080p].mkv                               │
+│ ✓ 06                             14w           [GroupG] Bakemonogatari - 06 [BD 1080p].mkv                               │
+│ ✓ 07                             14w           [GroupG] Bakemonogatari - 07 [BD 1080p].mkv                               │
+│ ✓ 08                             14w           [GroupG] Bakemonogatari - 08 [BD 1080p].mkv                               │
+│ ✓ 09                             14w           [GroupG] Bakemonogatari - 09 [BD 1080p].mkv                               │
+│ ✓ 10                             14w           [GroupG] Bakemonogatari - 10 [BD 1080p].mkv                               │
+│ ✓ 11                             14w           [GroupG] Bakemonogatari - 11 [BD 1080p].mkv                               │
+│ ✓ 12                             14w           [GroupG] Bakemonogatari - 12 [BD 1080p].mkv                               │
+│ ✓ 13                             13w           [GroupG] Bakemonogatari - 13 [BD 1080p].mkv                               │
+│ ✓ 14                             13w           [GroupG] Bakemonogatari - 14 [BD 1080p].mkv                               │
+│ ✓ 15                             13w           [GroupG] Bakemonogatari - 15 [BD 1080p].mkv                               │
+│   ▼ Nisemonogatari                             after this · watched 3/11 · ⏎ or ]                                        │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│ ✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│▌▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nisemonogatari                                                                                                      ⓐ11597│
+│3/11 · 8 new · TV                                             Bakemonogatari ✓ → ▸Nisemonogatari◂ → Nekomonogatari (Black)│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Bakemonogatari                             before this · watched 15/15 · ⏎ or [                                      │
+│ ✓ 01                             3w            [GroupG] Nisemonogatari - 01 [BD 1080p].mkv                               │
+│ ✓ 02                             3w            [GroupG] Nisemonogatari - 02 [BD 1080p].mkv                               │
+│ ✓ 03                             3w            [GroupG] Nisemonogatari - 03 [BD 1080p].mkv                               │
+│▌▶ 04                                           [GroupG] Nisemonogatari - 04 [BD 1080p].mkv                               │
+│ · 05                                           [GroupG] Nisemonogatari - 05 [BD 1080p].mkv                               │
+│ · 06                                           [GroupG] Nisemonogatari - 06 [BD 1080p].mkv                               │
+│ · 07                                           [GroupG] Nisemonogatari - 07 [BD 1080p].mkv                               │
+│ · 08                                           [GroupG] Nisemonogatari - 08 [BD 1080p].mkv                               │
+│ · 09                                           [GroupG] Nisemonogatari - 09 [BD 1080p].mkv                               │
+│ · 10                                           [GroupG] Nisemonogatari - 10 [BD 1080p].mkv                               │
+│ · 11                                           [GroupG] Nisemonogatari - 11 [BD 1080p].mkv                               │
+│   ▼ Nekomonogatari (Bla…                       after this · watched 0/4 · ⏎ or ]                                         │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nekomonogatari                                                                                                      ⓐ15689│
+│0/4 · 4 new · TV                                              Bakemonogatari ✓ → Nisemonogatari → ▸Nekomonogatari (Black)◂│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Nisemonogatari                             before this · watched 3/11 · ⏎ or [                                       │
+│▌· 01                                           [GroupG] Nekomonogatari (Black) - 01 [BD 1080p].mkv                       │
+│ · 02                                           [GroupG] Nekomonogatari (Black) - 02 [BD 1080p].mkv                       │
+│ · 03                                           [GroupG] Nekomonogatari (Black) - 03 [BD 1080p].mkv                       │
+│ · 04                                           [GroupG] Nekomonogatari (Black) - 04 [BD 1080p].mkv                       │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Monogatari Series ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Nekomonogatari                                                                                                      ⓐ15689│
+│0/4 · 4 new · TV                                              Bakemonogatari ✓ → Nisemonogatari → ▸Nekomonogatari (Black)◂│
+╰──────────────────────────────────────────────────────── finished ────────────────────────────────────────────────────────╯
+╭ Episodes ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ▲ Nisemonogatari                             before this · watched 3/11 · ⏎ or [                                       │
+│▌· 01                                           [GroupG] Nekomonogatari (Black) - 01 [BD 1080p].mkv                       │
+│ · 02                                           [GroupG] Nekomonogatari (Black) - 02 [BD 1080p].mkv                       │
+│ · 03                                           [GroupG] Nekomonogatari (Black) - 03 [BD 1080p].mkv                       │
+│ · 04                                           [GroupG] Nekomonogatari (Black) - 04 [BD 1080p].mkv                       │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  ⏎ play  w seen  W up to here  [ ] season  x extras  d missing  esc back  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  ⏎ open  / search  f filter  s status  o AniList  m merge  M metadata  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  ⏎ open  / search  f filter  s status  o AniList  m merge  M metadata  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 13 franchises folded (F) ───────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
+│ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
+│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
+│ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
+│ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
+│ Meitantei Precure!                                      paused     –     1/48       3     3      now   ep 4 in 3d 23h    │
+│ Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│ One Piece                                               following  88    11/?       13    1182   10d   ep 1183 in 5d 1h  │
+│ One Piece Fan Letter                                    untracked  –     0/?        1                                    │
+│ Ranma 1-2 2024 S3                                       following  74    0/12       2     2      2d    ep 3 in 5d 23h    │
+│ Sousou no Frieren · 1/2                                 following  90    28/38      5     31     12d   ep 32 in 3d 4h    │
+│ Yuru Camp                                               untracked  83    0/12       12    12           finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  ⏎ open  / search  f filter  s status  o AniList  m merge  M metadata  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Series · on disk 13 franchises folded (F) ───────────────────────────────────────────────────────────────────────────────╮
+│ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
+│▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
+│ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
+│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
+│ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
+│ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
+│ Meitantei Precure!                                      paused     –     1/48       3     3      now   ep 4 in 3d 23h    │
+│ Monogatari Series 2/3 · Nisemonogatari                  following  –     3/11       11    11     3w    finished          │
+│ One Piece                                               following  88    11/?       13    1182   10d   ep 1183 in 5d 1h  │
+│ One Piece Fan Letter                                    untracked  –     0/?        1                                    │
+│ Ranma 1-2 2024 S3                                       following  74    0/12       2     2      2d    ep 3 in 5d 23h    │
+│ Sousou no Frieren · 1/2                                 following  90    28/38      5     31     12d   ep 32 in 3d 4h    │
+│ Yuru Camp                                               untracked  83    0/12       12    12           finished          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+│                                                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  ⏎ open  / search  f filter  s status  o AniList  m merge  M metadata  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · newest first · 25 · t: folders ──────────────────────────────────────────────────────────────────────────────────╮
@@ -2082,7 +2691,36 @@
 │ · now  Meitantei Precure!                   02 · fanar [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv        │
 │ · now  Meitantei Precure!                   03         [GroupB] Meitantei Precure! - 03 (1080p).mkv                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
+ p play queue  space queue  w watched  ⏎ series  t folders  ? help
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
+╭ Files · newest first · 25 · t: folders ──────────────────────────────────────────────────────────────────────────────────╮
+│   Add  Series                               Item       File                                                              │
+│▌· now  Laid-Back Camp The Movie (2022)      laid back  Laid-Back Camp The Movie (2022) (BD Remux 1080p AVC TrueHD) [ABCD2│
+│ ◐ now  Ranma 1-2 2024 S3                    01         Ranma.1-2.2024.S03E01.1080p.WEB.DUAL.AAC2.0.H.264-GRP.mkv         │
+│ · now  Ranma 1-2 2024 S3                    02         Ranma.1-2.2024.S03E02.1080p.WEB.DUAL.AAC2.0.H.264-GRP.mkv         │
+│ ✓ now  Dandadan S2                          05         [GroupA] Dandadan S2 - 05 (1080p) [DDDD0005].mkv                  │
+│ · now  Dandadan S2                          06         [GroupA] Dandadan S2 - 06 (1080p) [DDDD0006].mkv                  │
+│ · now  Dandadan S2                          06         [GroupA] Dandadan S2 - 06v2 (1080p) [DDDE0006].mkv                │
+│ · now  Dandadan S2                          07         [GroupA] Dandadan S2 - 07 (1080p) [DDDD0007].mkv                  │
+│ · now  Dandadan S2                          08         [GroupA] Dandadan S2 - 08 (1080p) [DDDD0008].mkv                  │
+│ · now  One Piece Fan Letter                 one piece  [GroupA] One Piece Fan Letter (1080p) [ABD00001].mkv              │
+│ ✓ now  Sousou no Frieren                    27         [GroupA] Sousou no Frieren - 27 (1080p) [ABCD0027].mkv            │
+│ ✓ now  Sousou no Frieren                    28         [GroupA] Sousou no Frieren - 28 (1080p) [ABCD0028].mkv            │
+│ · now  Sousou no Frieren                    29         [GroupA] Sousou no Frieren - 29 (1080p) [ABCD0029].mkv            │
+│ · now  Sousou no Frieren                    30         [GroupA] Sousou no Frieren - 30 (1080p) [ABCD0030].mkv            │
+│ · now  Sousou no Frieren                    31         [GroupA] Sousou no Frieren - 31 (1080p) [ABCD0031].mkv            │
+│ · now  Sousou no Frieren S2                 01         [GroupA] Sousou no Frieren S2 - 01 (1080p) [ABCE0001].mkv         │
+│ · now  Dungeon Meshi                        01         [GroupB] Dungeon Meshi - 01 (1080p) [ABCF0001].mkv                │
+│ · now  Dungeon Meshi                        02         [GroupB] Dungeon Meshi - 02 (1080p) [ABCF0002].mkv                │
+│ · now  Dungeon Meshi                        03         [GroupB] Dungeon Meshi - 03 (1080p) [ABCF0003].mkv                │
+│ ✓ now  Meitantei Precure!                   01         [GroupB] Meitantei Precure! - 01 (1080p).mkv                      │
+│ · now  Meitantei Precure!                   01 · fanar [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv        │
+│ ◐ now  Meitantei Precure!                   02         [GroupB] Meitantei Precure! - 02 (1080p).mkv                      │
+│ · now  Meitantei Precure!                   02 · fanar [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv        │
+│ · now  Meitantei Precure!                   03         [GroupB] Meitantei Precure! - 03 (1080p).mkv                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ p play queue  space queue  w watched  ⏎ series  t folders  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · all folders · 2 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -2111,7 +2749,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
+ p play queue  ⏎ open  h up  space queue  w watched  / search  t newest files  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · all folders · 2 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -2140,7 +2778,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
+ p play queue  ⏎ open  h up  space queue  w watched  / search  t newest files  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · all folders · 2 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -2169,7 +2807,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
+ p play queue  ⏎ open  h up  space queue  w watched  / search  t newest files  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · all folders · 2 ─────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -2198,7 +2836,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
+ p play queue  ⏎ open  h up  space queue  w watched  / search  t newest files  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · Anime · 6 ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -2227,7 +2865,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- Meitantei Precure! → paused
+ p play queue  ⏎ open  h up  space queue  w watched  / search  t newest files  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Files · Anime · 6 ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
