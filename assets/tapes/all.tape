@@ -52,8 +52,16 @@ Type "x" Sleep 1.2s
 Type "s" Sleep 1s
 Down Sleep 600ms Enter Sleep 500ms
 Type "catching up later" Sleep 600ms Enter Sleep 1.5s
-# Back to the series list, the help, and Up next (paused shows are hidden).
+# Back to the series list.
 Escape Sleep 800ms
+# A franchise entry: the ones around it are a row away (▲ ▼), or [ and ].
+Escape Sleep 600ms
+Type "/nisemonogatari" Sleep 600ms Enter Sleep 400ms Enter Sleep 1.5s
+Type "g" Sleep 400ms Type "k" Sleep 1s
+Enter Sleep 1.5s
+Type "]" Sleep 1.2s
+Type "]" Sleep 1.5s
+Escape Sleep 800ms Escape Sleep 600ms
 # Files as folders (4 again): the roots, into Anime, then the Monogatari Series
 # franchise folder; space queues an entry's unwatched episodes, in order.
 Type "4" Sleep 1s

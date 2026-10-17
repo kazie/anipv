@@ -653,7 +653,7 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let title = format!(" {title} ");
     let widths = [
         Constraint::Length(1),
-        Constraint::Length(22),
+        Constraint::Length(EPISODE_LABEL_WIDTH),
         Constraint::Length(7),
         Constraint::Length(13),
         Constraint::Fill(1),
@@ -831,6 +831,10 @@ fn fit_line(
     Line::from([left, vec![Span::raw(" ".repeat(gap))], right].concat())
 }
 
+/// How wide the Episodes list's label column is (episode numbers, extras'
+/// names, the season links' names).
+const EPISODE_LABEL_WIDTH: u16 = 22;
+
 /// A Detail row linking to the franchise entry before (`▲`) or after (`▼`):
 /// its short name, and how far you are in it (green once it's all watched,
 /// as the franchise line marks it ✓). "Before" and "after", not "season": it
@@ -847,7 +851,9 @@ fn season_row<'a>(lib: &Library, series: &Series, at: usize, next: bool) -> Row<
     );
     Row::new(vec![
         Cell::from(""),
-        Cell::from(format!("{arrow} {label}")).style(style.bold()),
+        // Cut with `…` to the label column, as a long name would be cut anyway.
+        Cell::from(crate::fmt::trunc(&format!("{arrow} {label}"), usize::from(EPISODE_LABEL_WIDTH)))
+            .style(style.bold()),
         Cell::from(""),
         Cell::from(""),
         Cell::from(about).style(Style::new().dark_gray()),
