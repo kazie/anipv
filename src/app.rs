@@ -11,7 +11,7 @@ use crate::events::{CachedLog, EventBody, EventLog, Recorded, SetBy};
 use crate::index::Db;
 use crate::index::FileRow;
 use crate::index::classify::{Classified, FileClass, classify_rows};
-use crate::index::db::{AnilistCheck, MatchAttempt, OFFLINE_DB_VERSION, ScanStats, SeriesMeta};
+use crate::index::db::{AnilistCheck, MatchAttempt, OFFLINE_DB_VERSION, ScanStats, ScanTry, SeriesMeta};
 use crate::index::scan::scan_root;
 use crate::library::{Library, Series};
 use crate::model::{ItemKey, SeriesStatus, WatchState};
@@ -393,7 +393,7 @@ impl Ctx {
         note: Option<String>,
     ) -> Result<Recorded> {
         let keep = status != SeriesStatus::Completed && lib.get(series).is_some_and(Series::is_done);
-        self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep }])
+        self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep, via: None }])
     }
 
     /// Mark followed series that are finished and fully watched as completed,
@@ -424,7 +424,7 @@ impl Ctx {
                         (status[i], by[i]) = (SeriesStatus::Completed, SetBy::Anipv);
                         done.completed.push(s.title.clone());
                         let note = format!("all {n} episodes watched", n = s.whole_watched_count());
-                        bodies.push(status_event(s, SeriesStatus::Completed, note, true));
+                        bodies.push(status_event(s, SeriesStatus::Completed, note));
                         changed = true;
                     }
                 }
@@ -444,7 +444,7 @@ impl Ctx {
                     if undecided && !s.auto_followed && s.present() {
                         (status[next], by[next]) = (SeriesStatus::Following, SetBy::Anipv);
                         let after = lib.stop_label(&f.stops[last]).to_string();
-                        bodies.push(status_event(s, SeriesStatus::Following, format!("next after {after}"), true));
+                        bodies.push(status_event(s, SeriesStatus::Following, format!("next after {after}")));
                         done.followed.push((s.title.clone(), after));
                         changed = true;
                     }
@@ -515,7 +515,8 @@ pub fn catch_up(lib: &Library, key: &str) -> Result<CatchUp> {
     let s = &lib.series[i];
     let Some((f, _)) = lib.franchise_pos(i) else {
         // A series of its own: a franchise of one stop.
-        let stop = crate::franchise::Stop { series: i, folder: None, items: Vec::new(), watched: false };
+        let stop =
+            crate::franchise::Stop { series: i, folder: None, items: Vec::new(), watched: false, short: String::new() };
         let alone = crate::franchise::Franchise { name: s.title.clone(), stops: vec![stop] };
         return Ok(catch_up_to(lib, &alone, 0));
     };
@@ -554,16 +555,16 @@ pub fn catch_up_to(lib: &Library, f: &crate::franchise::Franchise, pos: usize) -
             (false, _) => Some(SeriesStatus::Following),
         };
         if let Some(status) = status {
-            events.push(status_event(s, status, "caught up".into(), false));
+            events.push(EventBody::status_via(s.key.clone(), status, crate::events::StatusVia::CatchUp));
         }
     }
     let entries = upto.iter().map(|stop| lib.stop_label(stop).to_string()).collect();
     CatchUp { entries, episodes, events }
 }
 
-/// A status change of `s`, made by anipv (`auto`) or for the user.
-fn status_event(s: &Series, status: SeriesStatus, note: String, auto: bool) -> EventBody {
-    EventBody::SeriesStatus { series: s.key.clone(), status, note: Some(note), auto, keep: false }
+/// A status change of `s` anipv makes on its own (`auto`), saying why.
+fn status_event(s: &Series, status: SeriesStatus, note: String) -> EventBody {
+    EventBody::SeriesStatus { series: s.key.clone(), status, note: Some(note), auto: true, keep: false, via: None }
 }
 
 /// Everything that counts toward a series' total: its items that do, and
@@ -610,10 +611,76 @@ pub fn scan_all(
             }
             Err(e) => (Err(e), Vec::new()),
         };
+        // An unreachable root was looked at too (see `index_fresh`); a scan
+        // that could not be stored was not. Failing to remember it only
+        // costs the TUI a scan on start, so it doesn't fail the scan.
+        if offline || stats.is_ok() {
+            let tried = ScanTry { at: ts, offline, fingerprint: scan_fingerprint(cfg, root) };
+            let _ = db.set_scan_tried(&root.name, &tried);
+        }
         out.push(RootScan { root: root.name.clone(), stats, offline, errors });
     }
     if let (Some(o), true) = (only, out.is_empty()) {
         bail!("no root named {o:?} (roots: {names})", names = names.join(", "));
+    }
+    Ok(out)
+}
+
+/// What the index knows about how recent it is (see [`index_fresh`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreshIndex {
+    /// When the root looked at longest ago was last looked at.
+    pub oldest: i64,
+    /// Roots that could not be reached then.
+    pub offline_roots: Vec<String>,
+}
+
+/// What a scan of `root` depends on: its folder and the folders left out.
+/// A scan made with others (the config changed since) says nothing about
+/// what a scan now would find.
+pub fn scan_fingerprint(cfg: &Config, root: &crate::config::Root) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (root.resolved(), &cfg.ignore_dirs).hash(&mut h);
+    format!("{h:016x}", h = h.finish())
+}
+
+/// Whether every configured root was looked at (scanned, or found
+/// unreachable) within `scan_fresh_for` minutes of `now`, as configured now
+/// (see [`scan_fingerprint`]), and the index holds no files of roots no
+/// longer configured, so that the TUI can do without a scan on start; `None`
+/// if not, or if that is turned off.
+pub fn index_fresh(cfg: &Config, db: &Db, now: i64) -> Result<Option<FreshIndex>> {
+    let window = i64::try_from(cfg.scan_fresh_for.saturating_mul(60)).unwrap_or(i64::MAX);
+    if window == 0 || cfg.roots.is_empty() {
+        return Ok(None);
+    }
+    // A scan forgets them (see `Db::retain_roots`).
+    if db.indexed_roots()?.iter().any(|r| !cfg.roots.iter().any(|c| &c.name == r)) {
+        return Ok(None);
+    }
+    let mut fresh = FreshIndex { oldest: now, offline_roots: Vec::new() };
+    for root in &cfg.roots {
+        let Some(tried) = db.scan_tried(&root.name)? else { return Ok(None) };
+        // One from the future (the clock was ahead then) says nothing.
+        if !(0..window).contains(&now.saturating_sub(tried.at)) || tried.fingerprint != scan_fingerprint(cfg, root) {
+            return Ok(None);
+        }
+        fresh.oldest = fresh.oldest.min(tried.at);
+        if tried.offline {
+            fresh.offline_roots.push(root.name.clone());
+        }
+    }
+    Ok(Some(fresh))
+}
+
+/// Roots that could not be reached when they were last looked at.
+pub fn offline_roots(cfg: &Config, db: &Db) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for root in &cfg.roots {
+        if db.scan_tried(&root.name)?.is_some_and(|t| t.offline) {
+            out.push(root.name.clone());
+        }
     }
     Ok(out)
 }
@@ -1250,6 +1317,80 @@ mod tests {
         let offline: Vec<(&str, bool, bool)> =
             scans.iter().map(|r| (r.root.as_str(), r.offline, r.stats.is_err())).collect();
         assert_eq!(offline, [("here", false, false), ("gone", true, true)]);
+    }
+
+    /// Every root looked at is remembered, an unreachable one too, and an
+    /// unreachable root's files stay in the index as they were.
+    #[test]
+    fn scans_remember_every_root_looked_at() {
+        use crate::config::{Root, RootKind};
+        let dir = tempfile::tempdir().unwrap();
+        let here = dir.path().join("here");
+        std::fs::create_dir_all(here.join("Show")).unwrap();
+        std::fs::write(here.join("Show/Show - 01.mkv"), b"x").unwrap();
+        let cfg = Config {
+            roots: vec![
+                Root::test("here", &here, RootKind::Archive),
+                Root::test("gone", dir.path().join("gone"), RootKind::Archive),
+            ],
+            ..Config::default()
+        };
+        let mut db = Db::open_in_memory().unwrap();
+        let before = crate::events::now();
+        scan_all(&cfg, &mut db, None, &|_, _| {}).unwrap();
+        let tried = |db: &Db, root| db.scan_tried(root).unwrap().unwrap();
+        assert!(!tried(&db, "here").offline && tried(&db, "here").at >= before);
+        assert!(tried(&db, "gone").offline);
+        assert_eq!(offline_roots(&cfg, &db).unwrap(), ["gone"]);
+        // `here` unreachable now: its file is kept, not marked gone.
+        std::fs::rename(&here, dir.path().join("moved")).unwrap();
+        scan_all(&cfg, &mut db, Some("here"), &|_, _| {}).unwrap();
+        assert!(tried(&db, "here").offline);
+        assert!(db.files().unwrap().iter().all(|f| f.present));
+        assert_eq!(db.files().unwrap().len(), 1);
+    }
+
+    /// The index is fresh when every root was looked at (reached or not)
+    /// within `scan_fresh_for` minutes; never when that is 0.
+    #[test]
+    fn index_freshness() {
+        use crate::config::{Root, RootKind};
+        let roots = vec![Root::test("a", "/a", RootKind::Archive), Root::test("b", "/b", RootKind::Ongoing)];
+        let cfg = Config { roots, scan_fresh_for: 30, ..Config::default() };
+        let db = Db::open_in_memory().unwrap();
+        let now = 10_000;
+        assert_eq!(index_fresh(&cfg, &db, now).unwrap(), None, "never scanned");
+        let tried = |root: usize, at, offline| {
+            let fingerprint = scan_fingerprint(&cfg, &cfg.roots[root]);
+            db.set_scan_tried(&cfg.roots[root].name, &ScanTry { at, offline, fingerprint }).unwrap();
+        };
+        tried(0, now - 60, false);
+        assert_eq!(index_fresh(&cfg, &db, now).unwrap(), None, "b never scanned");
+        tried(1, now - 29 * 60, true);
+        let fresh = FreshIndex { oldest: now - 29 * 60, offline_roots: vec!["b".into()] };
+        assert_eq!(index_fresh(&cfg, &db, now).unwrap(), Some(fresh));
+        assert_eq!(index_fresh(&cfg, &db, now + 60).unwrap(), None, "b is 30 minutes old");
+        tried(0, now + 3600, false);
+        assert_eq!(index_fresh(&cfg, &db, now).unwrap(), None, "a is from the future");
+        tried(0, now - 60, false);
+        assert!(index_fresh(&cfg, &db, now).unwrap().is_some());
+        let always = Config { scan_fresh_for: 0, ..cfg.clone() };
+        assert_eq!(index_fresh(&always, &db, now).unwrap(), None);
+        // Scanned with other settings, or another folder: not fresh.
+        let ignoring = Config { ignore_dirs: vec!["x".into()], ..cfg.clone() };
+        assert_eq!(index_fresh(&ignoring, &db, now).unwrap(), None);
+        let mut moved = cfg.clone();
+        moved.roots[0].path = "/elsewhere".into();
+        assert_eq!(index_fresh(&moved, &db, now).unwrap(), None);
+        // Files of a root no longer configured are left for a scan to forget.
+        let mut db2 = Db::open_in_memory().unwrap();
+        let file = crate::index::scan::ScannedFile { path: "/o/x.mkv".into(), rel: "x.mkv".into(), size: 1, mtime: 0 };
+        db2.apply_scan("old", &[file], 1, true, Path::new("/o"), None).unwrap();
+        let tried2 = |root: &Root| ScanTry { at: now, offline: false, fingerprint: scan_fingerprint(&cfg, root) };
+        for r in &cfg.roots {
+            db2.set_scan_tried(&r.name, &tried2(r)).unwrap();
+        }
+        assert_eq!(index_fresh(&cfg, &db2, now).unwrap(), None);
     }
 
     /// `scan --root` takes a root's exact name over one that differs only in

@@ -47,6 +47,24 @@ fix:
 install:
     cargo install --path . --locked
 
+# Where `cargo install` (`just install`) puts anipv.
+anipv_bin := env("CARGO_INSTALL_ROOT", env("CARGO_HOME", env("HOME") / ".cargo")) / "bin/anipv"
+
+# Run `anipv update` every 15 minutes from a systemd user timer (after `just install`).
+install-timer:
+    test -x "{{anipv_bin}}" || { echo "{{anipv_bin}} not found: run \`just install\` first"; exit 1; }
+    mkdir -p ~/.config/systemd/user
+    sed 's|^ExecStart=.*/anipv |ExecStart={{anipv_bin}} |' contrib/systemd/anipv-update.service > ~/.config/systemd/user/anipv-update.service
+    cp contrib/systemd/anipv-update.timer ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now anipv-update.timer
+
+# Stop and remove the timer `install-timer` set up.
+uninstall-timer:
+    -systemctl --user disable --now anipv-update.timer
+    rm -f ~/.config/systemd/user/anipv-update.service ~/.config/systemd/user/anipv-update.timer
+    systemctl --user daemon-reload
+
 # Run anipv with arguments, e.g. `just run next`.
 run *args:
     cargo run -- {{args}}
@@ -67,7 +85,7 @@ screenshots:
 # Re-record the README GIF and its text, assets/tapes/all.txt (needs vhs and ttyd).
 record: _need-vhs demo-home
     PATH="{{justfile_directory()}}/target/debug:$PATH" vhs assets/tapes/all.tape
-    @if git ls-files --error-unmatch assets/tapes/all.txt >/dev/null 2>&1 && git diff --quiet -- assets/tapes/all.txt; then echo "assets/tapes/all.txt is unchanged, so the demo is too (only timing or colors can differ): git restore assets/img/demo.gif drops the new GIF"; fi
+    @if git ls-files --error-unmatch assets/tapes/all.txt assets/img/demo.gif >/dev/null 2>&1 && git diff --quiet -- assets/tapes/all.txt; then git restore assets/img/demo.gif; echo "assets/tapes/all.txt is unchanged, so the demo is too (only timing or colors differ): kept the GIF you had"; fi
 
 # Fresh demo library in assets/demo-home, as the recordings expect.
 demo-home:

@@ -1,0 +1,133 @@
+# anipv configuration: ~/.config/anipv/config.toml (or $ANIPV_CONFIG).
+#
+# `anipv init` writes this file with your folders filled in. Every key is
+# optional: the values shown are the defaults, and a commented-out key keeps
+# its default. More detail: docs/config.md in the anipv repository.
+
+# ---- Identity and history -------------------------------------------------
+
+# Name of this machine in the event log (its file is `<device>.jsonl`). Must
+# be unique per machine, and use only letters, digits, `-` and `_`.
+# Default: the hostname.
+# device = "desktop"
+
+# Folder of per-device event logs: your watch history, the one thing to keep.
+# Point it at a folder you sync between machines (Syncthing, Nextcloud, a git
+# repository…); each machine writes only its own file. Absolute, or starting
+# with `~`. Default: ~/.local/share/anipv/events
+# events_dir = "~/Sync/anipv"
+
+# ---- Playback -------------------------------------------------------------
+
+# Player executable.
+mpv = "mpv"
+
+# Extra arguments for every mpv invocation, e.g. ["--fs", "--profile=anime"].
+mpv_args = []
+
+# Fraction of an episode you must reach for it to count as watched (above 0,
+# at most 1). Reaching the end of the file isn't enough on its own, so a
+# partly downloaded episode stays in progress.
+watched_threshold = 0.85
+
+# Start every TUI playback in remote mode: keys go to mpv (your input.conf
+# applies) until ctrl-c hands them back to anipv. With false, press `v` while
+# mpv plays to turn it on.
+remote_auto = true
+
+# ---- Scanning -------------------------------------------------------------
+
+# Minutes a scan stays fresh: the TUI scans on start only when some root was
+# last looked at longer ago than this (by the TUI, `anipv scan`, or
+# `anipv update` from a timer; an unreachable root counts as looked at).
+# 0 = always scan on start.
+scan_fresh_for = 30
+
+# Directory names never scanned (dot-directories are always skipped).
+ignore_dirs = [
+    "Screens",
+    "Screenshots",
+    "Thumbs",
+    "@eaDir",
+    "lost+found",
+]
+
+# Files below directories with these names are extras (openings, menus, PVs).
+extras_dirs = [
+    "Extras",
+    "Extra",
+    "Bonus",
+    "Menus",
+    "Menu",
+    "NC",
+    "NCOP",
+    "NCED",
+    "Trailers",
+    "Trailer",
+    "Scans",
+    "DVD Extras",
+    "Bluray Extras",
+    "BD Extras",
+    "Bonus Features",
+]
+
+# Numbered files below directories with these names are specials, not
+# episodes (so are those in a `Season 0` / `S00` folder).
+specials_dirs = [
+    "Specials",
+    "Special",
+    "SP",
+    "SPs",
+    "OVA",
+    "OVAs",
+    "Omake",
+]
+
+# ---- Metadata (network) ---------------------------------------------------
+
+# Network metadata: airing info, episode counts and scores from AniList
+# (anonymous, by anime id; nothing about what you watched), and the weekly
+# download of the offline anime database. With false nothing goes over the
+# network; matching still uses an already downloaded database.
+anilist = true
+
+# Also look up series the offline database can't match on AniList BY TITLE.
+# Sends those titles (as parsed from your file and folder names), nothing
+# else. Each series at most once a month, 10 per update. Needs anilist = true.
+anilist_search = false
+
+# Let `anipv update` also refresh series you don't track (untracked, dropped,
+# skipped) for their score, popularity and airing info: at most 50 per run,
+# those not refreshed for a month, oldest first. Sends AniList the ids of
+# those anime, so it sees which anime you have. Needs anilist = true.
+refresh_untracked = false
+
+# Where the offline anime database is downloaded from: an http(s) URL of
+# anime-offline-database-minified.json. Default: the community continuation,
+# then the archived manami-project release when nothing is cached yet.
+# offline_db_url = "https://example.org/anime-offline-database-minified.json"
+
+# ---- Media roots ----------------------------------------------------------
+#
+# Folders to scan, in order. Each has a `name` (shown in the UI; it keys the
+# index, so renaming one rescans it), a `path` (absolute, or starting with
+# `~`) and a `kind`:
+#
+#   ongoing  a download folder: the series comes from each file name
+#            ("[Group] Show S2 - 07.mkv" is Show S2, episode 7).
+#   archive  one folder per series: the top-level folder names the series,
+#            whatever its files are called.
+#
+# Roots must not overlap (use ignore_dirs to leave a sub-folder out). A root
+# that can't be reached (an unmounted drive) is skipped and keeps its files
+# listed until it is back.
+#
+# [[roots]]
+# name = "Downloads"
+# path = "~/Videos/Downloads"
+# kind = "ongoing"
+#
+# [[roots]]
+# name = "Anime"
+# path = "~/Videos/Anime"
+# kind = "archive"

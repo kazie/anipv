@@ -14,6 +14,7 @@
 
 pub mod anilist;
 pub mod offline;
+pub mod ratelimit;
 pub mod search;
 
 pub use search::{SearchOutcome, add_title_search, search_due, search_unmatched};
@@ -195,6 +196,18 @@ pub const INBOX_RECHECK: i64 = 30 * DAY;
 /// The offline database comes out weekly: a download older than this is replaced.
 pub const OFFLINE_DB_MAX_AGE: i64 = 7 * DAY;
 
+/// How long a background update waits before trying an offline database
+/// download again (the last try may have failed: a source that is down).
+pub const OFFLINE_DB_RETRY: i64 = DAY;
+
+/// With `refresh_untracked`, how old the data of a series that isn't tracked
+/// may get before a background update refreshes it.
+pub const UNTRACKED_MAX_AGE: i64 = 30 * DAY;
+
+/// With `refresh_untracked`, how many untracked series one background update
+/// refreshes at most (the oldest first), so a large library is spread out.
+pub const UNTRACKED_PER_RUN: usize = 50;
+
 /// When `AniList` was last asked about each id (see [`AnilistCheck`]).
 pub type Checks = HashMap<u64, AnilistCheck>;
 
@@ -238,6 +251,27 @@ fn stale_id(s: &Series, m: Option<&SeriesMeta>, checks: &Checks, ts: i64, max_ag
     let age = ts - refreshed;
     let aired = m.next_airing.is_some_and(|t| t < ts) && age >= AIRED_RETRY;
     (!finished && (age >= max_age || aired)).then_some(id)
+}
+
+/// `AniList` ids of linked series that aren't tracked (untracked, dropped,
+/// skipped) whose data is missing or older than [`UNTRACKED_MAX_AGE`]: at
+/// most [`UNTRACKED_PER_RUN`], least recently refreshed first. Ids `AniList`
+/// recently didn't know (see `checks`) are left out.
+pub fn untracked_stale_ids(lib: &Library, checks: &Checks, ts: i64) -> Vec<(String, u64)> {
+    let mut due: Vec<(Option<i64>, &str, u64)> = lib
+        .series
+        .iter()
+        .filter(|s| !s.status.is_tracked())
+        .filter_map(|s| {
+            let id = s.anilist_id_with(s.meta.as_ref())?;
+            let refreshed = s.meta.as_ref().filter(|m| m.is_for(id)).and_then(|m| m.refreshed_at);
+            let stale = refreshed.is_none_or(|at| ts.saturating_sub(at) >= UNTRACKED_MAX_AGE);
+            (stale && !recently_not_found(checks, id, ts)).then_some((refreshed, s.key.as_str(), id))
+        })
+        .collect();
+    // `None` (never refreshed) sorts first.
+    due.sort_unstable();
+    due.into_iter().take(UNTRACKED_PER_RUN).map(|(_, key, id)| (key.to_string(), id)).collect()
 }
 
 /// `AniList` ids to refresh because the user asked for it: every tracked series
@@ -568,6 +602,39 @@ pub fn plan(
     })
 }
 
+/// Plan a background update (`anipv update`): what the TUI's automatic update
+/// on start does ([`STARTUP_MAX_AGE`]), plus the offline database when
+/// `offline_due` (see [`OfflineDb::needs_update`]) and, with
+/// `refresh_untracked`, some [`untracked_stale_ids`]. `None` when nothing is
+/// due. Like [`plan`], nothing needs the network with `anilist = false`.
+pub fn plan_background(
+    lib: &Library,
+    cfg: &crate::config::Config,
+    checks: &Checks,
+    offline_due: bool,
+    ts: i64,
+) -> Option<SyncOptions> {
+    let network = cfg.anilist;
+    let update_offline = network && offline_due;
+    let untracked = if network && cfg.refresh_untracked { untracked_stale_ids(lib, checks, ts) } else { Vec::new() };
+    let auto = plan(lib, cfg, checks, &Request::Auto { max_age: STARTUP_MAX_AGE }, ts);
+    if auto.is_none() && untracked.is_empty() && !update_offline {
+        return None;
+    }
+    let mut opts = auto.unwrap_or_else(|| SyncOptions {
+        refresh: Refresh::Stale { ids: Vec::new(), max_age: STARTUP_MAX_AGE, checks: checks.clone() },
+        offline_urls: offline::source_urls(cfg.offline_db_url.as_deref()),
+        network,
+        ..SyncOptions::default()
+    });
+    // No overlap: `plan` only refreshes tracked series.
+    if let Refresh::Stale { ids, .. } = &mut opts.refresh {
+        ids.extend(untracked);
+    }
+    opts.update_offline = update_offline;
+    Some(opts)
+}
+
 /// What a [`sync_with_progress`] is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStep {
@@ -654,7 +721,7 @@ pub fn sync_with_progress(
     };
     if let Some(mut rep) = report {
         if let Some(http) = searching {
-            out.notes.extend(add_title_search(&mut rep, lib, http, ts, false).stopped);
+            http.optional(&mut || out.notes.extend(add_title_search(&mut rep, lib, http, ts, false).stopped));
         }
         fresh.extend(rep.rows.into_iter().map(|r| (r.series.clone(), r)));
         out.attempts = rep.attempts;
@@ -988,6 +1055,78 @@ mod tests {
         assert!(opts.rematch && !opts.asks_anilist());
     }
 
+    /// Untracked series are refreshed when never refreshed or a month old,
+    /// the oldest first; tracked ones are left to [`stale_ids`].
+    #[test]
+    fn untracked_series_are_refreshed_oldest_first() {
+        let ts = 100 * DAY;
+        let drop = Event::new(1, "d", EventBody::status("one piece", SeriesStatus::Dropped, None));
+        let follow = Event::new(2, "d", EventBody::status("shared", SeriesStatus::Following, None));
+        let rows = [
+            row("one piece", 21, Some(ts - UNTRACKED_MAX_AGE)),
+            row("grand blue s3", 22, None),
+            row("zzz", 23, Some(ts - UNTRACKED_MAX_AGE + 1)),
+            row("shared", 24, None),
+        ];
+        let l = lib(&[drop, follow], &rows);
+        assert_eq!(
+            untracked_stale_ids(&l, &Checks::new(), ts),
+            vec![("grand blue s3".to_string(), 22), ("one piece".to_string(), 21)]
+        );
+        // Not asked again right after AniList didn't know it.
+        let checks = Checks::from([(22, AnilistCheck { checked_at: ts - 1, found: false })]);
+        assert_eq!(untracked_stale_ids(&l, &checks, ts), vec![("one piece".to_string(), 21)]);
+    }
+
+    #[test]
+    fn untracked_refreshes_are_capped_per_run() {
+        let mut l = lib(&[], &[]);
+        let mut many = l.series[0].clone();
+        many.meta = Some(row(&many.key, 1, None));
+        l.series = vec![many; UNTRACKED_PER_RUN + 5];
+        assert_eq!(untracked_stale_ids(&l, &Checks::new(), 5).len(), UNTRACKED_PER_RUN);
+    }
+
+    /// A background update adds the offline database (when due) and, only
+    /// when asked to, untracked series; nothing of it without the network.
+    #[test]
+    fn background_updates_add_the_offline_database_and_untracked_series() {
+        let ts = 100 * DAY;
+        let l = lib(&[], &[row("one piece", 21, None)]);
+        let ids = |o: &SyncOptions| match &o.refresh {
+            Refresh::Stale { ids, .. } => ids.clone(),
+            Refresh::Requested => panic!("not a requested update"),
+        };
+        let untracked = ("one piece".to_string(), 21);
+        let on = Config { anilist: true, refresh_untracked: true, ..cfg() };
+        let opts = plan_background(&l, &on, &Checks::new(), true, ts).unwrap();
+        assert!(opts.update_offline && opts.network);
+        assert!(ids(&opts).contains(&untracked));
+        let off = Config { refresh_untracked: false, ..on.clone() };
+        let opts = plan_background(&l, &off, &Checks::new(), false, ts).unwrap();
+        assert!(!opts.update_offline && !ids(&opts).contains(&untracked));
+        let offline = Config { anilist: false, ..on };
+        if let Some(opts) = plan_background(&l, &offline, &Checks::new(), true, ts) {
+            assert!(!opts.update_offline && !opts.network && ids(&opts).is_empty());
+        }
+    }
+
+    /// With nothing stale and the offline database recent, there is nothing
+    /// to do; an old offline database alone is reason enough.
+    #[test]
+    fn background_updates_are_planned_only_when_needed() {
+        let follow = Event::new(1, "d", EventBody::status("one piece", SeriesStatus::Following, None));
+        let fresh = SeriesMeta { status: Some("RELEASING".into()), ..row("one piece", 21, Some(99)) };
+        let cfg = Config { anilist: true, refresh_untracked: true, ..cfg() };
+        let files = vec![FileRow::test("dl", "[A] One Piece - 1181.mkv")];
+        let sequels = HashMap::from([(21, (vec![], 100))]);
+        let index = Index::new(&cfg, files, MetaCache { rows: vec![fresh], sequels, ..MetaCache::default() });
+        let l = Library::build(&cfg, &[follow], &index);
+        assert!(plan_background(&l, &cfg, &Checks::new(), false, 100).is_none());
+        let opts = plan_background(&l, &cfg, &Checks::new(), true, 100).unwrap();
+        assert!(opts.update_offline && !opts.asks_anilist());
+    }
+
     #[test]
     fn plan_searches_only_with_the_key_and_the_network() {
         let l = lib(&[], &[]);
@@ -1226,6 +1365,20 @@ mod tests {
         let (l, checked) = inbox_lib(checks(&res, 100), &[]);
         assert!(inbox_lookups(&l, &cfg(), &checked, 100 + NOT_FOUND_RETRY - 1).is_empty());
         assert_eq!(inbox_lookups(&l, &cfg(), &checked, 100 + NOT_FOUND_RETRY).len(), 1);
+    }
+
+    /// docs/anilist.md R13: Once the client gives up during the airing refresh, the relations
+    /// aren't asked for: the inbox id gets no check record (so it is asked
+    /// again), and the outage is reported once.
+    #[test]
+    fn a_given_up_client_skips_the_relations() {
+        let (l, _) = inbox_lib(Checks::new(), &[]);
+        let opts = SyncOptions { inbox: vec![("zzz".into(), 5)], ..auto(&l, Checks::new(), 100, 0) };
+        let fake = Echo::giving_up(1);
+        let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&fake), &opts, 100);
+        assert_eq!(res.errors, vec!["connection reset".to_string()]);
+        assert!(res.checked.is_empty() && res.prequels.is_empty() && res.sequels.is_empty());
+        assert!(fake.asked.borrow().is_empty());
     }
 
     /// A found inbox id (with its prequels stored) is asked again only after

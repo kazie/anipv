@@ -94,7 +94,7 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 | | |
 | --- | --- |
 | <img src="assets/img/series.svg" alt="series list"> | <img src="assets/img/detail.svg" alt="episode list with extras"> |
-| **Series**: everything on disk, filterable by status and fuzzy-searchable. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. |
+| **Series**: everything on disk, filterable by status and fuzzy-searchable. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. The seasons around it are a row away (`▲`/`▼`, or `[`/`]`). |
 | <img src="assets/img/queue.svg" alt="play queue"> | <img src="assets/img/status.svg" alt="status picker"> |
 | **Queue**: reorder with `J`/`K`, play with `p`, or `y` to copy the plain `mpv …` command. | **Status**: `s`, then a letter. Dropping or pausing asks for an optional note. |
 
@@ -127,7 +127,34 @@ anipv catch-up owarimonogatari        # seen it and all before it: follow the ne
 anipv split "carole & tuesday" "Mini Series"   # another anime kept in a show's folder
 anipv show frieren
 anipv export | jq '.[] | select(.status=="following") | .title'
+anipv update                          # scan + metadata, unattended (for a timer)
 ```
+
+### Keep the index fresh in the background
+
+`anipv update` scans every media folder and then updates metadata the way the
+TUI does on start (stale airing info, matching, the offline database once a
+week). Run it from a systemd user timer and the TUI no longer needs to scan when
+it starts: it does so only when a folder was last looked at more than
+`scan_fresh_for` minutes ago (30 by default), and while it is open it picks up
+what the timer found within half a minute.
+
+```sh
+just install          # the timer runs ~/.cargo/bin/anipv
+just install-timer    # every 15 minutes, and 2 minutes after you log in
+systemctl --user list-timers anipv-update.timer
+journalctl --user -u anipv-update -n 30
+just uninstall-timer
+```
+
+The recipe copies [`contrib/systemd/`](contrib/systemd) to
+`~/.config/systemd/user/`; a rebuilt anipv is used without installing it again.
+It is lenient by design: an unmounted folder (an rclone mount that isn't up)
+or no network is a warning in the journal, and what anipv knows stays as it
+was until a later run can reach it. Nothing is ever dropped from the index
+because a folder couldn't be read. With `refresh_untracked = true` it also
+refreshes the series you don't track, a few at a time (see
+[Privacy](#privacy)).
 
 ## How it works
 
@@ -168,12 +195,19 @@ anipv makes two kinds of network requests by default, both optional, and a third
 
 `anipv meta refresh --all --untracked` asks the same about every anime in your
 library, tracked or not: AniList then sees which anime you have, though still
-nothing about what you watched. It only runs when you ask for it.
+nothing about what you watched. It only runs when you ask for it, or a few at a
+time from `anipv update` when you set `refresh_untracked = true`.
+
+anipv keeps to AniList's [rate limits](https://docs.anilist.co/guide/rate-limiting):
+it paces its requests by what AniList says is left, and when it is told to
+wait anyway, it waits and tries again (the TUI header shows the countdown).
+So an update may take a little longer while AniList's API is degraded, rather
+than fail.
 
 Pressing `o` opens an AniList page in your browser; that request is yours,
 made only when you ask.
 
-More: [configuration](docs/config.md) · [architecture](docs/architecture.md) · [event log](docs/events.md) · [keys](docs/keybindings.md)
+More: [configuration](docs/config.md) · [architecture](docs/architecture.md) · [AniList and rate limits](docs/anilist.md) · [event log](docs/events.md) · [keys](docs/keybindings.md)
 
 ## Development
 

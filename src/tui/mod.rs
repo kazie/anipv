@@ -19,8 +19,9 @@ pub use app::App;
 /// Run the TUI until the user quits.
 pub fn run(ctx: Ctx) -> Result<()> {
     let mut app = App::new(ctx)?;
-    // Freshen the index and metadata in the background on start.
-    app.start_scan();
+    // Freshen the index (unless `anipv update` did lately) and metadata in
+    // the background on start.
+    app.scan_unless_fresh();
     app.start_meta(app::STARTUP);
 
     let mut terminal = ratatui::init();

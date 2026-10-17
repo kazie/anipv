@@ -12,7 +12,7 @@ use ratatui::widgets::{
     Block, BorderType, Cell, Clear, Gauge, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
 };
 
-use super::app::{App, FilesMode, MergePicker, NowPlaying, Popup, Severity, View};
+use super::app::{App, DetailRow, FilesMode, MergePicker, NowPlaying, Popup, Severity, View};
 use crate::fmt::{ago, ago_opt, clock};
 use crate::folders::Entry;
 use crate::library::Hint;
@@ -20,6 +20,14 @@ use crate::library::{Item, Library, Series};
 use crate::model::{ItemKey, ItemKind, SeriesStatus, WatchState};
 
 const ACCENT: Color = Color::Magenta;
+
+/// What marks AniList's facts (its id, its count, its name for a series): a
+/// one-column text symbol, not an emoji.
+const ANILIST_MARK: &str = "ⓐ";
+
+/// AniList's blue, for AniList ids: the nearest of the 256 colours (as the
+/// others here), not truecolor, which not every terminal has.
+const ANILIST: Color = Color::Indexed(39);
 
 fn status_color(s: SeriesStatus) -> Color {
     match s {
@@ -74,6 +82,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Some(Popup::Input { purpose, text, .. }) => draw_input(f, &purpose.prompt(), text),
         Some(Popup::ConfirmQuit) => draw_confirm(f, app.playing.is_some()),
         Some(Popup::CatchUp { prompt, .. }) => draw_catch_up(f, prompt),
+        Some(Popup::Unmerge { names, .. }) => draw_unmerge(f, names),
         None => {}
     }
 }
@@ -105,7 +114,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     if let Some(s) = &app.scanning {
         right.push(Span::styled(format!("⟳ {s} "), Style::new().fg(Color::Yellow)));
     }
-    if let Some(m) = app.meta_busy() {
+    if let Some(m) = app.meta_status() {
         right.push(Span::styled(format!("⟳ {m} "), Style::new().fg(Color::Blue)));
     }
     if !app.offline_roots.is_empty() {
@@ -489,89 +498,120 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let ts = app.now();
-    let mut info: Vec<Line> = Vec::new();
-    let mut l1 = vec![
-        Span::styled(s.title.clone(), Style::new().bold()),
-        Span::raw("  "),
-        Span::styled(s.status.as_str(), Style::new().fg(status_color(s.status)).bold()),
-        Span::raw("  "),
-        Span::styled(format!("watched {progress}", progress = s.progress()), Style::new()),
-        Span::raw("  "),
-        Span::styled(format!("on disk {disk}", disk = s.on_disk_items()), Style::new().dark_gray()),
-        Span::raw("  "),
-        airing_span(s, ts),
-    ];
+    let width = usize::from(area.width.saturating_sub(2));
+    let lib = &app.lib;
+    let franchise = lib.index_of(&s.key).and_then(|at| Some((lib.franchise_pos(at)?.0, at)));
+    let dim = Style::new().dark_gray();
+
+    // Line 1: the title, coloured by status, and what AniList calls it when
+    // that's another name; at the right, the small facts.
+    // Untracked plain; skipped (decided against) dimmed.
+    let title_style = match s.status {
+        SeriesStatus::Untracked => Style::new(),
+        st => Style::new().fg(status_color(st)),
+    };
+    let title = vec![Span::styled(s.title.clone(), title_style.bold())];
+    let alt = s.meta.as_ref().and_then(|m| m.title.as_ref()).filter(|t| {
+        let key = crate::identity::series_key(t);
+        !t.eq_ignore_ascii_case(&s.title) && key != s.key && !s.aliases.contains(&key)
+    });
+    let alt = alt.map(|t| vec![Span::styled(format!("{ANILIST_MARK} {t}"), dim)]);
+    // (rank, spans): the lowest rank goes first when the line is too narrow.
+    let mut right: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
+    if !s.aliases.is_empty() {
+        // Names merged into it (U lists them before splitting them off).
+        let n = s.aliases.len();
+        right.push((0, vec![Span::styled(format!("+{n} name{s}", s = if n == 1 { "" } else { "s" }), dim)]));
+    }
     if let Some(m) = &s.meta {
-        if let Some(t) = &m.title
-            && !t.eq_ignore_ascii_case(&s.title)
-        {
-            l1.push(Span::styled(format!("  ≈ {t}"), Style::new().dark_gray()));
-        }
-        let fmt_year =
-            [m.format.clone(), m.year.map(|y| y.to_string())].into_iter().flatten().collect::<Vec<_>>().join(" ");
-        if !fmt_year.is_empty() {
-            l1.push(Span::styled(format!(" ({fmt_year})"), Style::new().dark_gray()));
-        }
         if m.score.is_some() {
-            l1.extend([Span::raw("  ★ "), score_span(s)]);
+            right.push((3, vec![Span::styled("★ ", dim), score_span(s)]));
         }
         if let Some(p) = m.popularity {
-            l1.push(Span::styled(format!(" · {members} members", members = short_count(p)), Style::new().dark_gray()));
+            right.push((1, vec![Span::styled(short_count(p), dim)]));
         }
     }
-    info.push(Line::from(l1));
-    let mut l2 = vec![Span::styled(s.key.clone(), Style::new().dark_gray())];
     if let Some(id) = s.anilist_id() {
-        l2.push(Span::styled(format!("  anilist.co/anime/{id}"), Style::new().dark_gray()));
+        right.push((2, vec![Span::styled(format!("{ANILIST_MARK}{id}"), Style::new().fg(ANILIST))]));
     }
-    if !s.aliases.is_empty() {
-        l2.push(Span::styled(format!("  also: {aliases}", aliases = s.aliases.join(", ")), Style::new().dark_gray()));
+    let mut info = vec![fit_line(title, alt, right, width)];
+
+    // Line 2: how far you are, and a note of your own; at the right, the
+    // franchise's entries (on a line of their own when there's no room).
+    let mut facts: Vec<Vec<Span<'static>>> = vec![progress_spans(s)];
+    let new = s.new_count();
+    if new > 0 {
+        facts.push(vec![Span::styled(format!("{new} new"), Style::new().green())]);
     }
-    if let Some(n) = &s.note {
-        l2.push(Span::styled(format!("  “{n}”"), Style::new().fg(Color::Yellow)));
-    }
-    info.push(Line::from(l2));
-    if let Some(at) = app.lib.index_of(&s.key)
-        && let Some((fr, _)) = app.lib.franchise_pos(at)
-        && let Some(place) = app.lib.franchise_place(&s.key)
-    {
-        let mut l3 = vec![Span::styled(format!("{place}: "), Style::new().dark_gray())];
-        // This series' stops in bold, the ones watched in green.
-        for (i, stop) in fr.stops.iter().enumerate() {
-            if i > 0 {
-                l3.push(Span::styled(" → ", Style::new().dark_gray()));
-            }
-            let mut style = if stop.watched { Style::new().green() } else { Style::new() };
-            if stop.series == at {
-                style = style.bold();
-            }
-            l3.push(Span::styled(app.lib.stop_label(stop).to_string(), style));
+    if let Some(m) = &s.meta {
+        let fmt_year = [m.format.clone(), m.year.map(|y| y.to_string())].into_iter().flatten().collect::<Vec<_>>();
+        if !fmt_year.is_empty() {
+            facts.push(vec![Span::styled(fmt_year.join(" "), dim)]);
         }
-        info.push(Line::from(l3));
+    }
+    let mut facts = join_spans(facts, " · ");
+    let chain = franchise.map(|(fr, at)| franchise_chain(fr, at));
+    let chain_w = chain.as_ref().map_or(0, |(stops, _)| chain_width(stops));
+    let chain_inline = chain.is_some() && spans_width(&facts) + 3 + chain_w <= width;
+    let room = if chain_inline { width - chain_w - 3 } else { width };
+    if let Some(note) = user_note(s) {
+        // Cut to what's left, or left out when that's too little to read.
+        let spare = room.saturating_sub(spans_width(&facts) + 2);
+        if spare >= 8 {
+            facts.push(Span::raw("  "));
+            facts.extend(cut_spans(vec![Span::styled(format!("“{note}”"), Style::new().fg(Color::Yellow))], spare));
+        }
+    }
+    let facts = cut_spans(facts, room);
+    match chain {
+        Some((stops, _)) if chain_inline => {
+            let gap = width.saturating_sub(spans_width(&facts) + chain_w);
+            info.push(Line::from([facts, vec![Span::raw(" ".repeat(gap))], join_spans(stops, " → ")].concat()));
+        }
+        Some((stops, current)) => {
+            info.push(Line::from(facts));
+            info.push(Line::from(chain_window(&stops, current, width)));
+        }
+        None => info.push(Line::from(facts)),
     }
     // A few at most: the episode list below needs the room.
     let shared = s.shared_dirs(&app.ctx.cfg);
+    let warn = |text: String| Line::from(cut_spans(vec![Span::styled(text, Style::new().fg(Color::Yellow))], width));
     for (dir, n) in shared.iter().take(2) {
-        let text = format!("! {n} episode(s) in {dir} are also in another folder (anipv split, if it's another anime)");
-        info.push(Line::from(Span::styled(text, Style::new().fg(Color::Yellow))));
-    }
-    if let Some(more) = shared.len().checked_sub(2).filter(|n| *n > 0) {
-        info.push(Line::from(Span::styled(
-            format!("! … {more} more such folders (anipv show)"),
-            Style::new().fg(Color::Yellow),
+        info.push(warn(format!(
+            "! {n} episode(s) in {dir} are also in another folder (anipv split, if it's another anime)"
         )));
     }
+    if let Some(more) = shared.len().checked_sub(2).filter(|n| *n > 0) {
+        info.push(warn(format!("! … {more} more such folders (anipv show)")));
+    }
 
+    // The border: the franchise's name, the fish (statuses from fish history),
+    // and when the next episode airs.
+    let name = franchise.map_or_else(|| " Series ".to_string(), |(fr, _)| format!(" {name} ", name = fr.name));
+    let mut header = block(name);
+    if s.status_via == Some(crate::events::StatusVia::FishImport) {
+        let fish = Span::styled(" ϵ( 'Θ' )϶ ", Style::new().fg(Color::Cyan));
+        header = header.title_top(Line::from(vec![fish, Span::styled("─", Style::new().dark_gray())]).right_aligned());
+    }
+    let airing = airing_span(s, ts);
+    if !airing.content.is_empty() {
+        header = header.title_bottom(Line::from(vec![Span::raw(" "), airing, Span::raw(" ")]).centered());
+    }
     let height = u16::try_from(info.len()).unwrap_or(u16::MAX).saturating_add(2);
     let [top, list] = Layout::vertical([Constraint::Length(height), Constraint::Min(1)]).areas(area);
-    f.render_widget(Paragraph::new(info).block(block(" Series ")).wrap(Wrap { trim: true }), top);
+    f.render_widget(Paragraph::new(info).block(header), top);
 
     let queued_set = queued_set(app);
     let window = Window::of_table(&app.detail_state, app.rows_len(View::Detail), list, false);
     let rows: Vec<Row> = app
         .detail_rows_in(window.range.clone())
-        .iter()
-        .map(|&it| {
+        .into_iter()
+        .map(|row| {
+            let it = match row {
+                DetailRow::Item(it) => it,
+                DetailRow::Season { series, index, next } => return season_row(&app.lib, series, index, next),
+            };
             let (kind, kind_style) = match it.key.kind {
                 ItemKind::Episode | ItemKind::Unknown => ("", Style::new()),
                 ItemKind::Special => ("special", Style::new().fg(Color::Magenta)),
@@ -619,6 +659,199 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Fill(1),
     ];
     window.render(f, list_table(rows, widths, None, title), list, &mut app.detail_state);
+}
+
+/// `watched/total` for the Detail header, `✓` once all are watched. When
+/// more episodes are on disk than `AniList` counts (a folder numbering on
+/// through later seasons, which `AniList` lists apart), the total is the
+/// latest on disk, with `AniList`'s in brackets: `0/51 (ⓐ24 eps)`. Not for a
+/// season numbered on from the last (13–24 of 12), nor a total you set.
+fn progress_spans(s: &Series) -> Vec<Span<'static>> {
+    let watched = s.whole_watched_count();
+    // Only what counts toward the total (no 00, no .5 recaps).
+    let on_disk = s.items.iter().filter(|i| i.counts_toward_total() && i.present()).count();
+    let latest = s.latest_on_disk().map(crate::model::EpNo::whole);
+    let from_anilist = s.episodes_override.is_none();
+    let (mut spans, total) = match (s.total(), latest) {
+        (Some(total), Some(latest)) if from_anilist && on_disk > total as usize && latest > total => (
+            vec![
+                Span::raw(format!("{watched}/{latest}")),
+                Span::styled(format!(" ({ANILIST_MARK}{total} eps)"), Style::new().dark_gray()),
+            ],
+            Some(latest),
+        ),
+        (total, _) => (vec![Span::raw(s.progress())], total),
+    };
+    if total.is_some_and(|t| t > 0 && watched >= t as usize) {
+        spans.push(Span::styled(" ✓", Style::new().green()));
+    }
+    spans
+}
+
+/// A note you wrote on the series' status (an automatic status's says
+/// nothing new).
+fn user_note(s: &Series) -> Option<&str> {
+    s.note.as_deref().filter(|_| s.status_by == crate::events::SetBy::User)
+}
+
+/// The franchise's entries for the Detail header, one span group per stop:
+/// the one shown (`at`) marked `▸ ◂`, the ones watched `✓`; and which group
+/// is the first of the one shown.
+fn franchise_chain(fr: &crate::franchise::Franchise, at: usize) -> (Vec<Vec<Span<'static>>>, usize) {
+    let mut current = None;
+    let stops = fr
+        .stops
+        .iter()
+        .enumerate()
+        .map(|(i, stop)| {
+            let style = if stop.watched { Style::new().green() } else { Style::new() };
+            let mut spans = if stop.series == at {
+                current.get_or_insert(i);
+                vec![Span::styled(format!("▸{short}◂", short = stop.short), style.bold().reversed())]
+            } else {
+                vec![Span::styled(stop.short.clone(), style)]
+            };
+            if stop.watched {
+                spans.push(Span::styled(" ✓", Style::new().green()));
+            }
+            spans
+        })
+        .collect();
+    (stops, current.unwrap_or(0))
+}
+
+/// The `stops` around the one at `current`, joined by arrows, in `width`:
+/// as many whole stops as fit on either side, `…` where some are left out.
+fn chain_window(stops: &[Vec<Span<'static>>], current: usize, width: usize) -> Vec<Span<'static>> {
+    let joined = |r: Range<usize>| join_spans(stops[r].to_vec(), " → ");
+    let w = |r: Range<usize>| chain_width(&stops[r]);
+    if w(0..stops.len()) <= width {
+        return joined(0..stops.len());
+    }
+    let (mut start, mut end) = (current, current + 1);
+    // Room for `… → ` on both sides.
+    let room = width.saturating_sub(8);
+    loop {
+        let grown_end = end < stops.len() && w(start..end + 1) <= room;
+        if grown_end {
+            end += 1;
+        }
+        let grown_start = start > 0 && w(start - 1..end) <= room;
+        if grown_start {
+            start -= 1;
+        }
+        if !grown_end && !grown_start {
+            break;
+        }
+    }
+    let ell = |s: &'static str| Span::styled(s, Style::new().dark_gray());
+    let head = (start > 0).then(|| ell("… → "));
+    let tail = (end < stops.len()).then(|| ell(" → …"));
+    cut_spans(head.into_iter().chain(joined(start..end)).chain(tail).collect(), width)
+}
+
+/// `spans` cut to `width` columns, ending in `…` when anything is cut.
+fn cut_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    if spans_width(&spans) <= width {
+        return spans;
+    }
+    // One column kept for the `…`.
+    let mut out = Vec::new();
+    let mut left = width.saturating_sub(1);
+    for span in spans {
+        let w = span.width();
+        if w <= left {
+            left -= w;
+            out.push(span);
+        } else {
+            // `…` after it even when the span itself fits (more is cut).
+            let cut = crate::fmt::trunc(&format!("{content}…", content = span.content), left + 1);
+            out.push(Span::styled(cut, span.style));
+            break;
+        }
+    }
+    out
+}
+
+/// How wide `stops` are, joined by ` → `.
+fn chain_width(stops: &[Vec<Span<'static>>]) -> usize {
+    stops.iter().map(|stop| spans_width(stop)).sum::<usize>() + 3 * stops.len().saturating_sub(1)
+}
+
+/// How many columns `spans` take.
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+/// `parts` one after the other, `sep` (dim) between them.
+fn join_spans(parts: Vec<Vec<Span<'static>>>, sep: &'static str) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            out.push(Span::styled(sep, Style::new().dark_gray()));
+        }
+        out.extend(part);
+    }
+    out
+}
+
+/// The title and the small facts on one line of `width` columns, the facts
+/// (`right`, as `(rank, spans)`) ending at the right edge. When it is too
+/// narrow, it gives in this order: `alt` (AniList's name) is cut, then left
+/// out below 12 columns; the title is cut down to 20; the facts are left
+/// out, lowest rank first; then the title is cut further.
+fn fit_line(
+    title: Vec<Span<'static>>,
+    alt: Option<Vec<Span<'static>>>,
+    mut right: Vec<(u8, Vec<Span<'static>>)>,
+    width: usize,
+) -> Line<'static> {
+    const MIN_TITLE: usize = 20;
+    const MIN_ALT: usize = 12;
+    // The facts with ` · ` between them, and two columns before them.
+    let room = |right: &[(u8, Vec<Span<'static>>)]| {
+        let w: usize = right.iter().map(|(_, s)| spans_width(s) + 3).sum();
+        width.saturating_sub(w.saturating_sub(1))
+    };
+    let title_w = spans_width(&title);
+    while title_w.min(MIN_TITLE) > room(&right)
+        && let Some(lowest) = right.iter().enumerate().min_by_key(|(_, (rank, _))| *rank).map(|(i, _)| i)
+    {
+        right.remove(lowest);
+    }
+    let room = room(&right);
+    let right = join_spans(right.into_iter().map(|(_, s)| s).collect(), " · ");
+    let mut left = cut_spans(title, room);
+    let spare = room.saturating_sub(spans_width(&left) + 2);
+    if let Some(alt) = alt.filter(|_| spare >= MIN_ALT) {
+        left.push(Span::raw("  "));
+        left.extend(cut_spans(alt, spare));
+    }
+    let gap = width.saturating_sub(spans_width(&left) + spans_width(&right));
+    Line::from([left, vec![Span::raw(" ".repeat(gap))], right].concat())
+}
+
+/// A Detail row linking to the franchise entry before (`▲`) or after (`▼`):
+/// its short name, and how far you are in it (green once it's all watched,
+/// as the franchise line marks it ✓). "Before" and "after", not "season": it
+/// may be a movie or a spin-off.
+fn season_row<'a>(lib: &Library, series: &Series, at: usize, next: bool) -> Row<'a> {
+    let (arrow, which) = if next { ("▼", "after this") } else { ("▲", "before this") };
+    let label = lib.short_series_label(at).unwrap_or(&series.title);
+    let watched = lib.franchise_pos(at).is_some_and(|(f, _)| f.series_watched(at));
+    let style = if watched { Style::new().green() } else { Style::new() };
+    let about = format!(
+        "{which} · watched {progress} · ⏎ or {key}",
+        progress = series.progress(),
+        key = if next { "]" } else { "[" }
+    );
+    Row::new(vec![
+        Cell::from(""),
+        Cell::from(format!("{arrow} {label}")).style(style.bold()),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(about).style(Style::new().dark_gray()),
+    ])
 }
 
 fn draw_playing(f: &mut Frame, app: &App, area: Rect) {
@@ -689,14 +922,15 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         View::Detail => vec![
             ("space", "queue"),
             ("⏎", "play"),
-            ("w", "toggle seen"),
-            ("W", "seen up to here"),
-            ("x", "extras"),
-            ("d", "not on disk"),
-            ("o", "AniList"),
-            ("M", "metadata"),
-            ("esc", "back"),
-        ],
+            // Short, so `[ ]`, `esc` and `?` fit 110 columns with a queue
+            // (o and M are in the help, under Everywhere).
+            ("w", "seen"),
+            ("W", "up to here"),
+        ]
+        .into_iter()
+        .chain(app.detail_has_seasons().then_some(("[ ]", "season")))
+        .chain([("x", "extras"), ("d", "missing"), ("esc", "back")])
+        .collect(),
     };
     if !app.queue.is_empty() && app.view != View::Queue {
         v.insert(0, ("p", "play queue"));
@@ -796,7 +1030,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "Episodes",
         &[
             ("space", "add / remove from queue"),
-            ("⏎", "play this episode"),
+            ("⏎", "play this episode (or open a ▲ ▼ season)"),
+            ("[ ]", "previous / next season"),
             ("w", "toggle watched"),
             ("W", "mark everything up to here watched"),
             ("C", "catch up: this and earlier entries watched"),
@@ -1018,16 +1253,28 @@ fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
     window.render(f, table, area, &mut app.tree_state);
 }
 
-fn draw_catch_up(f: &mut Frame, prompt: &str) {
+/// A yes/no popup: `question`, what it is about (bold), and the keys.
+fn draw_yes_no(f: &mut Frame, title: &str, question: &str, what: &str, keys: &str) {
     let area = centered(f.area(), 64, 6);
     f.render_widget(Clear, area);
     let lines = vec![
-        Line::from("Seen all of it? Mark watched and completed:"),
-        Line::from(prompt.to_string()).bold(),
-        Line::from(Span::styled("y/Enter confirms, any other key cancels", Style::new().dark_gray())),
+        Line::from(question.to_string()),
+        Line::from(what.to_string()).bold(),
+        Line::from(Span::styled(keys.to_string(), Style::new().dark_gray())),
     ];
     let para = Paragraph::new(lines).alignment(Alignment::Center).wrap(Wrap { trim: true });
-    f.render_widget(para.block(block(" Catch up ")), area);
+    f.render_widget(para.block(block(format!(" {title} "))), area);
+}
+
+fn draw_unmerge(f: &mut Frame, names: &[String]) {
+    let (question, keys) =
+        ("Make these names series of their own again?", "y/Enter splits them off, any other key cancels");
+    draw_yes_no(f, "Undo merges", question, &names.join(", "), keys);
+}
+
+fn draw_catch_up(f: &mut Frame, prompt: &str) {
+    let (question, keys) = ("Seen all of it? Mark watched and completed:", "y/Enter confirms, any other key cancels");
+    draw_yes_no(f, "Catch up", question, prompt, keys);
 }
 
 /// A series' title with its place in its franchise, dimmed:
@@ -1053,6 +1300,58 @@ mod tests {
         *state.offset_mut() = offset;
         let w = Window::of(&state, len, height);
         (w.range, w.selected)
+    }
+
+    fn text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The facts end at the right edge; when it's narrow, AniList's name is
+    /// cut and then left out, the title is cut to 20, then facts are left
+    /// out (lowest rank first), then the title is cut further.
+    /// A cut always shows `…`, also between two spans; a cut chain shows
+    /// whole entries around the one shown, never a dangling arrow.
+    #[test]
+    fn cuts_show_and_keep_whole_entries() {
+        let spans = vec![Span::raw("1/48"), Span::raw(" · 2 new")];
+        assert_eq!(text(&Line::from(cut_spans(spans.clone(), 4))), "1/4…");
+        assert_eq!(text(&Line::from(cut_spans(spans.clone(), 5))), "1/48…");
+        assert_eq!(text(&Line::from(cut_spans(spans, 20))), "1/48 · 2 new");
+        let stops: Vec<Vec<Span<'static>>> =
+            ["S1", "S2", "S3", "▸S4◂", "S5", "S6", "S7"].map(|s| vec![Span::raw(s)]).to_vec();
+        let window = |w| text(&Line::from(chain_window(&stops, 3, w)));
+        assert_eq!(window(80), "S1 → S2 → S3 → ▸S4◂ → S5 → S6 → S7");
+        assert_eq!(window(30), "… → S3 → ▸S4◂ → S5 → S6 → …");
+        assert_eq!(window(20), "… → ▸S4◂ → S5 → …");
+    }
+
+    #[test]
+    fn header_lines_give_way_in_order() {
+        let spans = |s: &str| vec![Span::raw(s.to_string())];
+        let right = || vec![(3, spans("★ 85")), (1, spans("43k")), (2, spans("ⓐ1"))];
+        let line = |w| {
+            let l = fit_line(
+                spans("Steel Ball Run - JoJo's Bizarre Adventure"),
+                Some(spans("ⓐ JoJo no Kimyou")),
+                right(),
+                w,
+            );
+            let t = text(&l);
+            assert_eq!(unicode_width::UnicodeWidthStr::width(t.as_str()), w, "{t}");
+            t
+        };
+        assert!(line(90).starts_with("Steel Ball Run - JoJo's Bizarre Adventure  ⓐ JoJo no Kimyou "));
+        assert!(line(90).ends_with("★ 85 · 43k · ⓐ1"));
+        assert!(
+            line(72).contains("Adventure  ⓐ JoJo no K…") && line(72).ends_with("★ 85 · 43k · ⓐ1"),
+            "{l}",
+            l = line(72)
+        );
+        assert!(line(60).starts_with("Steel Ball Run - JoJo's Bizarre Adventure "), "{l}", l = line(60));
+        assert!(!line(60).contains("ⓐ JoJo"), "below 12 columns, left out");
+        assert!(line(40).contains("…") && line(40).ends_with("★ 85 · 43k · ⓐ1"), "{l}", l = line(40));
+        assert_eq!(line(30), "Steel Ball Run - JoJo's…  ★ 85", "the title fills what ★ leaves");
+        assert_eq!(line(10), "Steel Bal…");
     }
 
     #[test]

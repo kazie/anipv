@@ -8,6 +8,35 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The episode list links the franchise entries around it: a `▲` row first
+  and a `▼` row last open the one before or after (⏎), and `[` / `]` do from
+  any row. `g` / `G` still go to the first and last episode (the links are
+  one more `k` / `j`), and Esc goes back to where you opened the series from.
+- `anipv update`: scans every media folder, then updates metadata as the TUI
+  does on start (and the offline database weekly), made to run unattended.
+  An unreachable folder or network trouble is a warning and changes nothing.
+  `just install-timer` runs it every 15 minutes from a systemd user timer
+  (`contrib/systemd/`). With `refresh_untracked = true` it also refreshes
+  series you don't track, 50 at a time, a month apart.
+- `anipv init` writes a commented config file: every setting with its
+  default and what it does, your folders filled in
+  ([`config.example.toml`](config.example.toml) is the same file).
+- AniList rate limits are kept to: requests are paced by AniList's own
+  count of what is left (other clients on your connection included) with a
+  small gap against its burst limiter, and a "too many requests" answer is
+  waited out and asked again instead of failing (up to 2 minutes in all per
+  update while you watch, with a countdown in the TUI header; 10 minutes in
+  `anipv update`; title searches may use half of it). Pacing only makes a big
+  update slower, never failed. A timeout longer than what is left fails at
+  once, and so do the requests after it until it ends. A server error or
+  failed request is retried once; when two requests in a row fail, or the
+  rate limit outlasts the wait, the update stops asking instead of failing
+  the same way for every batch. The rules, with their reasons, are in
+  [docs/anilist.md](docs/anilist.md).
+- The TUI skips its scan on start when every folder was looked at within
+  `scan_fresh_for` minutes (30 by default), and picks up what another
+  process (the timer) stored while it is open.
+
 - Remote mode in the TUI: while mpv plays, keys are pressed in mpv (over its
   IPC socket, as mpv key names), so your own `input.conf` decides what they
   do: pause, seek, quit and so on, without reaching for the player window.
@@ -54,6 +83,30 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- How you set a status, when not by hand, is recorded on the event (`via`:
+  `fish_import`, `catch_up`) instead of in its note, so a note is always
+  yours and shows as such, whatever it says. A log written before this
+  keeps such statuses as notes ("from fish history", "caught up"), which now
+  show as yours: rewrite those lines once to `"via":"fish_import"` /
+  `"via":"catch_up"` without the note (see docs/events.md).
+
+- The series header is calmer. The franchise's name is in its border, the
+  title is coloured by status (no status word), and the small facts (★,
+  members, the AniList id as `ⓐ12345`, `+2 names` merged into it) sit at the
+  right, giving way one by one on narrow terminals instead of wrapping. The
+  second line has progress, new episodes, the format and your own note; the
+  franchise's entries are at its right, named
+  short (`S1 ✓ → S2 ✓ → ▸S3◂`, `Pretty Gray → ▸Full Gate!◂`). When the next
+  episode airs is in the bottom border. AniList's name for the series shows
+  only when it's another name (`ⓐ JoJo no Kimyou na Bouken…`). Notes anipv
+  wrote itself ("all 12 episodes watched", "caught up") and the series key
+  are gone, and
+  statuses from fish history show a puffer fish `ϵ( 'Θ' )϶` in the border.
+  A folder numbering on past AniList's count (later seasons in one folder)
+  shows `0/51 (ⓐ24 eps)`, not `0/24`.
+- Franchises without a folder are named without a season (`Grand Blue`, not
+  `Grand Blue S2`).
+- `U` (undo merges) lists the names it would split off and asks first.
 - The integration tests' stand-in for mpv is now written in Rust (the hidden
   `anipv fake-mpv`) instead of Python, so the tests no longer need (or
   quietly skip without) `python3`. Its `--demo` mode plays in real time and

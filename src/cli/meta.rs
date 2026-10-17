@@ -62,6 +62,22 @@ fn anilist_arg(s: &str) -> Result<u64, String> {
     anilist::parse_ref(s).ok_or_else(|| "expected an AniList id or https://anilist.co/anime/… URL".into())
 }
 
+/// `kv` key holding when `update` last tried to download the offline database.
+const OFFLINE_DB_TRIED: &str = "offline_db_tried";
+
+/// The `AniList` client for a command someone waits for (see
+/// [`crate::meta::anilist::INTERACTIVE_WAIT`]).
+fn interactive() -> anilist::Ureq<'static> {
+    anilist::Ureq::new(anilist::INTERACTIVE_WAIT, &tell_wait)
+}
+
+/// Say why a command pauses: `AniList`'s rate limit (on stderr, which
+/// `anipv update` under systemd sends to the journal too).
+#[expect(clippy::print_stderr, reason = "a note while the command runs, not its output")]
+fn tell_wait(d: std::time::Duration) {
+    eprintln!("{warn} AniList rate limit: waiting {s} s", warn = yellow("!"), s = crate::fmt::secs_up(d));
+}
+
 /// Why a command that needs the network doesn't run.
 const NETWORK_OFF: &str = "network metadata is turned off (`anilist = false` in the config)";
 
@@ -130,7 +146,7 @@ fn match_series(ctx: &Ctx, lib: &Library, dry_run: bool, search: bool, out: &mut
     };
     let before = rep.rows.len() - rep.scored;
     // `--search` asks again about series searched before.
-    let found = searching.then(|| crate::meta::add_title_search(&mut rep, lib, &anilist::Ureq, ts, search));
+    let found = searching.then(|| crate::meta::add_title_search(&mut rep, lib, &interactive(), ts, search));
     // Rows that only add a score to a link already made aren't matches.
     let matched = rep.rows.len() - rep.scored;
     if !dry_run {
@@ -182,7 +198,8 @@ fn link(ctx: &Ctx, s: &mut Session, query: &str, anilist: u64, out: &mut impl Wr
     let request = Request::Series(key.clone());
     let planned = crate::meta::plan(&s.lib, &ctx.cfg, &s.index.meta.anilist_checks, &request, now());
     let opts = SyncOptions { update_offline: false, ..planned.unwrap_or_default() };
-    let http = Some(&anilist::Ureq as &dyn anilist::Http);
+    let ureq = interactive();
+    let http = Some(&ureq as &dyn anilist::Http);
     let res = crate::meta::sync(&s.lib, &ctx.paths.cache_dir, http, &opts, now());
     ctx.store_sync(&res)?;
     let linked = res.rows.iter().find(|r| r.series == key).and_then(|r| r.title.clone());
@@ -195,6 +212,47 @@ fn link(ctx: &Ctx, s: &mut Session, query: &str, anilist: u64, out: &mut impl Wr
     // The link is recorded either way: a failed lookup is retried by the next update.
     print_warnings(out, &res.errors)?;
     Ok(())
+}
+
+/// `update`'s metadata half: what [`crate::meta::plan_background`] finds due.
+/// Download and `AniList` failures are warnings (the next update tries
+/// again); so is an event log that can't be read in full, which leaves
+/// metadata alone. Series the update finished are completed, as after any
+/// command that writes.
+pub(super) fn background(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
+    let mut s = ctx.loaded()?;
+    if s.lib.partial_history {
+        let why = "part of the event log can't be read (see the warning above); metadata left as it was";
+        return print_warnings(out, [why]);
+    }
+    // A download is tried at most daily: a failed one leaves the old copy,
+    // which would be "due" again on every run.
+    let tried = ctx.db.get_kv(OFFLINE_DB_TRIED)?.and_then(|t| t.parse::<i64>().ok());
+    let retry_due = tried.is_none_or(|t| !(0..crate::meta::OFFLINE_DB_RETRY).contains(&(now() - t)));
+    let offline_due = retry_due && OfflineDb::needs_update(&ctx.paths.cache_dir);
+    let checks = &s.index.meta.anilist_checks;
+    let Some(opts) = crate::meta::plan_background(&s.lib, &ctx.cfg, checks, offline_due, now()) else {
+        writeln!(out, "{ok} metadata: nothing due", ok = green("✓"))?;
+        return Ok(());
+    };
+    if opts.update_offline {
+        ctx.db.set_kv(OFFLINE_DB_TRIED, &now().to_string())?;
+    }
+    let mut shown = Ok(());
+    let first_url = opts.offline_urls.first().map_or("", String::as_str);
+    let ureq = anilist::Ureq::new(anilist::BACKGROUND_WAIT, &tell_wait);
+    let http = Some(&ureq as &dyn anilist::Http);
+    let res = crate::meta::sync_with_progress(&s.lib, &ctx.paths.cache_dir, http, &opts, now(), &mut |step| {
+        if step == SyncStep::Downloading {
+            shown = writeln!(out, "downloading {first_url} …", first_url = dim(first_url));
+        }
+    });
+    shown?;
+    ctx.store_sync(&res)?;
+    print_warnings(out, res.notes.iter().chain(&res.errors))?;
+    writeln!(out, "{ok} metadata: updated {n} series", ok = green("✓"), n = res.rows.len())?;
+    let done = super::complete(ctx, &mut s)?;
+    Ok(super::report_automated(&done, out)?)
 }
 
 /// `meta refresh`: refresh from `AniList` (see [`MetaAction::Refresh`]).
@@ -221,7 +279,8 @@ fn refresh(
     let opts = SyncOptions { update_offline: all, untracked, ..opts };
     let mut shown = Ok(());
     let first_url = opts.offline_urls.first().map_or("", String::as_str);
-    let http = Some(&anilist::Ureq as &dyn anilist::Http);
+    let ureq = interactive();
+    let http = Some(&ureq as &dyn anilist::Http);
     let res = crate::meta::sync_with_progress(lib, &ctx.paths.cache_dir, http, &opts, now(), &mut |step| {
         if step == SyncStep::Downloading {
             shown = writeln!(out, "downloading {first_url} …", first_url = dim(first_url));

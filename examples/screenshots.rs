@@ -54,6 +54,7 @@ fn hex(c: Color, fg: bool) -> Option<&'static str> {
         Color::LightMagenta => "#f5c2e7",
         Color::LightCyan => "#94e2d5",
         Color::White => "#f5f5f5",
+        Color::Indexed(39) => "#02a9ff",
         Color::Indexed(53) => "#45305a",
         Color::Indexed(235) => "#262637",
         Color::Indexed(236) => "#313244",

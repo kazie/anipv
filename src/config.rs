@@ -44,9 +44,14 @@ impl Root {
     }
 }
 
+/// The commented config file `anipv init` writes: every key with its default
+/// and what it does (see [`Config::to_file_text`]).
+pub const TEMPLATE: &str = include_str!("../config.example.toml");
+
 /// User configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[expect(clippy::struct_excessive_bools, reason = "independent on/off settings, as they read in config.toml")]
 pub struct Config {
     /// Name of this machine in the event log; defaults to the hostname.
     pub device: Option<String>,
@@ -63,6 +68,9 @@ pub struct Config {
     pub remote_auto: bool,
     /// Media roots, scanned in order.
     pub roots: Vec<Root>,
+    /// Minutes a scan stays fresh: the TUI doesn't scan on start when every
+    /// root was looked at more recently (by `anipv update`, say); 0 always scans.
+    pub scan_fresh_for: u64,
     /// Directory names that are never scanned.
     pub ignore_dirs: Vec<String>,
     /// Directory names whose contents are extras (NCOP, menus, …).
@@ -74,6 +82,9 @@ pub struct Config {
     /// Also look series the offline database can't match up on `AniList` by
     /// title (sends those titles to `AniList`). Needs `anilist`.
     pub anilist_search: bool,
+    /// Let `anipv update` also refresh linked series that aren't tracked, a
+    /// few at a time (sends their ids to `AniList`). Needs `anilist`.
+    pub refresh_untracked: bool,
     /// Where to download the offline anime database from (an `http(s)` URL
     /// of `anime-offline-database-minified.json`); the built-in sources when unset.
     pub offline_db_url: Option<String>,
@@ -89,6 +100,7 @@ impl Default for Config {
             watched_threshold: 0.85,
             remote_auto: true,
             roots: Vec::new(),
+            scan_fresh_for: 30,
             ignore_dirs: ["Screens", "Screenshots", "Thumbs", "@eaDir", "lost+found"].map(String::from).to_vec(),
             extras_dirs: [
                 "Extras",
@@ -112,6 +124,7 @@ impl Default for Config {
             specials_dirs: ["Specials", "Special", "SP", "SPs", "OVA", "OVAs", "Omake"].map(String::from).to_vec(),
             anilist: true,
             anilist_search: false,
+            refresh_untracked: false,
             offline_db_url: None,
         }
     }
@@ -296,8 +309,39 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        replace_file(path, toml::to_string_pretty(self)?.as_bytes())?;
+        replace_file(path, self.to_file_text()?.as_bytes())?;
         Ok(())
+    }
+
+    /// The text of a config file holding this config: the commented
+    /// [`TEMPLATE`] with `device`, `events_dir` and the roots filled in (all
+    /// `anipv init` sets). Anything else that differs from the defaults can't
+    /// be shown there, so then it is plain TOML without the comments.
+    pub fn to_file_text(&self) -> Result<String> {
+        #[derive(Serialize)]
+        struct Roots<'a> {
+            roots: &'a [Root],
+        }
+        let quoted = |s: &str| toml::Value::String(s.into()).to_string();
+        let events_dir = match &self.events_dir {
+            Some(d) => Some(d.to_str().context("`events_dir` is not valid UTF-8")?),
+            None => None,
+        };
+        let mut text = String::with_capacity(TEMPLATE.len());
+        for line in TEMPLATE.lines() {
+            let filled = match (&self.device, events_dir) {
+                (Some(d), _) if line.starts_with("# device = ") => format!("device = {d}", d = quoted(d)),
+                (_, Some(d)) if line.starts_with("# events_dir = ") => format!("events_dir = {d}", d = quoted(d)),
+                _ => line.to_string(),
+            };
+            text += &filled;
+            text.push('\n');
+        }
+        if !self.roots.is_empty() {
+            text.push('\n');
+            text += &toml::to_string(&Roots { roots: &self.roots })?;
+        }
+        Ok(if toml::from_str::<Self>(&text).ok().as_ref() == Some(self) { text } else { toml::to_string_pretty(self)? })
     }
 
     /// Device name for the event log.
@@ -407,6 +451,50 @@ pub fn expand_tilde(p: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The template is the default config, as comments and all.
+    #[test]
+    fn template_is_the_default_config() {
+        assert_eq!(toml::from_str::<Config>(TEMPLATE).unwrap(), Config::default());
+    }
+
+    /// Every key is in the template, set or commented out, so a new setting
+    /// can't be added without its explanation.
+    #[test]
+    fn template_mentions_every_key() {
+        let cfg = Config { device: Some("d".into()), events_dir: Some("/e".into()), ..Config::default() };
+        let cfg = Config { offline_db_url: Some("https://e".into()), ..cfg };
+        for line in toml::to_string(&cfg).unwrap().lines().filter(|l| l.contains(" = ")) {
+            let key = line.split(" = ").next().unwrap();
+            if key == "roots" {
+                assert!(TEMPLATE.contains("# [[roots]]"), "config.example.toml has no example root");
+                continue;
+            }
+            let set = TEMPLATE.lines().any(|l| l.trim_start_matches("# ").starts_with(&format!("{key} = ")));
+            assert!(set, "config.example.toml has no `{key} = …` line");
+        }
+    }
+
+    /// What `init` sets is filled in and the comments kept; a config the
+    /// template can't show is written plainly. Either way it reads back the same.
+    #[test]
+    fn config_files_are_commented_when_they_can_be() {
+        let mut cfg = Config {
+            device: Some("desk".into()),
+            events_dir: Some(r#"~/Sync/"quoted" \ dir"#.into()),
+            ..Config::default()
+        };
+        cfg.roots.push(Root::test("Ånime \"x\"", "/media/anime", RootKind::Archive));
+        cfg.roots.push(Root::test("dl", "~/dl", RootKind::Ongoing));
+        let text = cfg.to_file_text().unwrap();
+        assert!(text.contains("# ---- Playback") && text.contains("\ndevice = \"desk\"\n"));
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
+        assert_eq!(toml::from_str::<Config>(&Config::default().to_file_text().unwrap()).unwrap(), Config::default());
+        let custom = Config { mpv: "mpv.com".into(), ..cfg };
+        let text = custom.to_file_text().unwrap();
+        assert!(!text.contains("# ----"));
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), custom);
+    }
 
     #[test]
     fn only_an_absolute_runtime_dir_counts() {

@@ -14,6 +14,7 @@ use ratatui::widgets::TableState;
 use crate::app::{Ctx, Index, QueueEntry, fuzzy_rank, queue_new};
 use crate::events::{CachedLog, EventBody, Recorded, now};
 use crate::folders::{Dir, Entry, Folders};
+use crate::index::db::Changes;
 use crate::library::{Hint, InboxEntry, Item, Library, Series};
 use crate::model::{ItemKey, ItemKind, SeriesStatus};
 use crate::mpv::{Outcome, PlayerEvent};
@@ -170,6 +171,13 @@ pub enum Popup {
     },
     /// Quit anipv? (Warns that tracking is lost while mpv is still running.)
     ConfirmQuit,
+    /// Split off every name merged into a series (`U`)?
+    Unmerge {
+        /// Series key.
+        series: String,
+        /// The names merged into it.
+        names: Vec<String>,
+    },
     /// Catch up to a series (see [`crate::app::catch_up`])?
     CatchUp {
         /// Series key.
@@ -258,6 +266,52 @@ fn franchise_order(lib: &Library, ix: impl Iterator<Item = usize>, fold: bool) -
     rows.into_iter().map(|(_, _, i)| i).collect()
 }
 
+/// A row of the Detail list: an item of the series shown, or a link to the
+/// season before (`▲`) or after (`▼`) it in its franchise.
+#[derive(Debug, Clone, Copy)]
+pub enum DetailRow<'a> {
+    /// An item of the series shown.
+    Item(&'a Item),
+    /// The season before (or, `next`, after) it.
+    Season {
+        /// That season.
+        series: &'a Series,
+        /// Its index in [`Library::series`].
+        index: usize,
+        /// After, rather than before.
+        next: bool,
+    },
+}
+
+impl<'a> DetailRow<'a> {
+    /// The item, unless this is a season link.
+    pub fn item(self) -> Option<&'a Item> {
+        match self {
+            Self::Item(it) => Some(it),
+            Self::Season { .. } => None,
+        }
+    }
+}
+
+/// What a Detail row is: an index into the series' items, or into
+/// [`Library::series`] for the season it links to (`next`: after, rather
+/// than before).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetailAt {
+    Item(usize),
+    Season { series: usize, next: bool },
+}
+
+impl DetailAt {
+    /// The index of its item, unless it is a season link.
+    fn item_ix(self) -> Option<usize> {
+        match self {
+            Self::Item(i) => Some(i),
+            Self::Season { .. } => None,
+        }
+    }
+}
+
 /// What a list row stands for, to find it again after a reload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RowId {
@@ -269,6 +323,14 @@ enum RowId {
     Item(ItemKey),
     /// A folder in the Files view's tree.
     Dir(Dir),
+    /// A season link in Detail: the series it opens, and which of the two
+    /// (both can open the same one: a series split around this one).
+    Season {
+        /// Series key.
+        key: String,
+        /// The `▼` link, not the `▲` one.
+        next: bool,
+    },
 }
 
 /// Live playback info.
@@ -315,6 +377,8 @@ pub enum Msg {
     Player(PlayerEvent),
     /// What a background metadata update is doing now (header text).
     MetaProgress(&'static str),
+    /// A background metadata update waits for `AniList`'s rate limit until then.
+    AniListWait(Instant),
     /// Metadata sync finished; the number is the link epoch it started under.
     Meta(crate::meta::SyncResult, u64),
     /// Metadata error.
@@ -330,6 +394,23 @@ pub struct ScanSummary {
     pub offline_roots: Vec<String>,
     /// A root that could be reached failed to scan in full.
     pub failed: bool,
+}
+
+/// The metadata update running now.
+#[derive(Debug)]
+struct MetaRun {
+    /// What it was asked to update.
+    request: MetaRequest,
+    /// What it is doing, for the header.
+    doing: &'static str,
+    /// Until when it waits for `AniList`'s rate limit.
+    wait_until: Option<Instant>,
+}
+
+impl MetaRun {
+    fn new(request: MetaRequest) -> Self {
+        Self { request, doing: "metadata", wait_until: None }
+    }
 }
 
 /// Opens a URL; fails if no opener could be started.
@@ -396,8 +477,8 @@ pub struct App {
     meta_epoch: u64,
     /// Series whose link changed by hand, with the epoch of the change.
     relinked: HashMap<String, u64>,
-    /// The metadata update running now, with what it is doing (for the header).
-    meta_running: Option<(MetaRequest, &'static str)>,
+    /// The metadata update running now.
+    meta_running: Option<MetaRun>,
     /// A metadata update requested while one ran: it starts when that ends.
     meta_pending: Option<MetaRequest>,
     /// Playback state while mpv runs.
@@ -428,10 +509,16 @@ pub struct App {
     inbox_hint_width: usize,
     series_ix: Vec<usize>,
     files_ix: Vec<usize>,
-    /// Detail rows: indices into the items of the series shown.
-    detail_ix: Vec<usize>,
+    /// Detail rows: the season before, the items of the series shown, the
+    /// season after.
+    detail_ix: Vec<DetailAt>,
     /// When the last scan progress message was taken (they come in faster than they can be drawn).
     last_progress: Option<Instant>,
+    /// What the cache held at the last reload, to notice what another process
+    /// (`anipv update`) stored since (see [`App::pick_up_changes`]).
+    changes: Option<Changes>,
+    /// When `changes` was last compared.
+    changes_checked: Instant,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     /// Opens a URL in the browser (`o`); tests swap in a recorder.
@@ -441,6 +528,8 @@ pub struct App {
 impl App {
     /// Create the app and load the library.
     pub fn new(ctx: Ctx) -> Result<Self> {
+        // Taken before reading, so what is stored meanwhile counts as new.
+        let changes = ctx.db.changes().ok();
         let mut index = ctx.index()?;
         let mut events = ctx.log.load_cached()?;
         // Like every reload: a series finished while anipv was closed (watched
@@ -495,6 +584,8 @@ impl App {
             files_ix: Vec::new(),
             detail_ix: Vec::new(),
             last_progress: None,
+            changes,
+            changes_checked: Instant::now(),
             tx,
             rx,
             opener: Box::new(open_url),
@@ -557,17 +648,92 @@ impl App {
     /// Re-read the indexed files from the cache database (after a scan: files
     /// known before keep their classification), then reload.
     pub fn reload_index(&mut self) {
+        // Taken first, so what is stored meanwhile counts as new; kept only
+        // if the read works, so a failed one is tried again.
+        let changes = self.ctx.db.changes().ok();
         match self.ctx.index_from(&self.index) {
-            Ok(index) => self.index = index,
+            Ok(index) => {
+                self.index = index;
+                // Files and metadata were both read again.
+                self.changes = changes;
+            }
             Err(e) => self.fail(format!("reading the index failed: {e:#}")),
         }
         self.reload();
     }
 
+    /// [`App::reload_index`], telling of shows that arrived in the inbox.
+    fn reload_index_with_news(&mut self) -> Option<String> {
+        let before: HashSet<String> = self.inbox_rows().iter().map(|(s, _)| s.key.clone()).collect();
+        self.reload_index();
+        let arrived = self.inbox_rows().iter().filter(|(s, _)| !before.contains(&s.key)).count();
+        (arrived > 0).then(|| {
+            format!("{arrived} new show{plural} in your inbox (press 2)", plural = if arrived == 1 { "" } else { "s" })
+        })
+    }
+
+    /// Reload what another process (`anipv update`, from a timer) stored in
+    /// the cache since the last reload: scans, or else metadata. Not while a
+    /// scan or update of this TUI runs, whose own reload follows. True if
+    /// anything was reloaded.
+    pub fn pick_up_changes(&mut self) -> bool {
+        self.changes_checked = Instant::now();
+        if self.scanning.is_some() || self.meta_running.is_some() {
+            return false;
+        }
+        let Ok(now) = self.ctx.db.changes() else { return false };
+        match &self.changes {
+            Some(seen) if seen.files != now.files => {
+                match crate::app::offline_roots(&self.ctx.cfg, &self.ctx.db) {
+                    Ok(roots) => self.offline_roots = roots,
+                    Err(e) => self.fail(format!("reading the index failed: {e:#}")),
+                }
+                if let Some(news) = self.reload_index_with_news() {
+                    self.say(news);
+                }
+                true
+            }
+            Some(seen) if seen.meta != now.meta => {
+                self.reload_meta();
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.changes = Some(now);
+                false
+            }
+        }
+    }
+
+    /// On start: scan, unless every root was looked at lately (see
+    /// [`crate::app::index_fresh`]), by `anipv update` say.
+    pub fn scan_unless_fresh(&mut self) {
+        // The clock scans are recorded by, not a test or demo clock.
+        let now = now();
+        match crate::app::index_fresh(&self.ctx.cfg, &self.ctx.db, now) {
+            Ok(Some(fresh)) => {
+                self.offline_roots = fresh.offline_roots;
+                let when = match crate::fmt::ago(fresh.oldest, now).as_str() {
+                    "now" => "just now".to_string(),
+                    ago => format!("{ago} ago"),
+                };
+                self.say(format!("index scanned {when} · r rescans"));
+            }
+            Ok(None) | Err(_) => self.start_scan(),
+        }
+    }
+
     /// Re-read only the cached metadata (the files are unchanged), then reload.
     fn reload_meta(&mut self) {
+        let changes = self.ctx.db.changes();
         match self.ctx.meta_cache() {
-            Ok(meta) => self.index.meta = meta,
+            Ok(meta) => {
+                self.index.meta = meta;
+                // Only metadata was read again: a scan stored elsewhere stays new.
+                if let (Some(seen), Ok(now)) = (&mut self.changes, changes) {
+                    seen.meta = now.meta;
+                }
+            }
             Err(e) => self.fail(format!("reading the cached metadata failed: {e:#}")),
         }
         self.reload();
@@ -682,7 +848,12 @@ impl App {
             },
             View::Files => RowId::File(self.lib.files[*self.files_ix.get(i)?].file.path.clone()),
             View::Queue => RowId::File(self.queue.get(i)?.file.clone()),
-            View::Detail => RowId::Item(self.detail_rows().get(i)?.key.clone()),
+            View::Detail => match *self.detail_ix.get(i)? {
+                DetailAt::Item(n) => RowId::Item(self.detail_series()?.items.get(n)?.key.clone()),
+                DetailAt::Season { series, next } => {
+                    RowId::Season { key: self.lib.series.get(series)?.key.clone(), next }
+                }
+            },
         })
     }
 
@@ -710,7 +881,7 @@ impl App {
             }
             (View::Files, RowId::File(p)) => self.files_ix.iter().position(|&i| lib.files[i].file.path == *p),
             (View::Queue, RowId::File(p)) => self.queue.iter().position(|q| q.file == *p),
-            (View::Detail, RowId::Item(k)) => self.detail_rows().iter().position(|it| it.key == *k),
+            (View::Detail, id) => self.detail_row_of(id),
             _ => None,
         };
         if found.is_some() {
@@ -823,12 +994,76 @@ impl App {
     /// or the episode list's filters change).
     fn refresh_detail_rows(&mut self) {
         let EpisodeFilter { extras, missing } = self.episodes_shown;
-        self.detail_ix = self.detail_series().map(|s| s.ordered_indices(extras, missing)).unwrap_or_default();
+        let Some((at, s)) = self.detail_key.as_deref().and_then(|k| Some((self.lib.index_of(k)?, self.lib.get(k)?)))
+        else {
+            self.detail_ix = Vec::new();
+            return;
+        };
+        let (prev, next) = self.lib.franchise_neighbours(at);
+        let season = |i: Option<usize>, next| i.map(|series| DetailAt::Season { series, next });
+        let items = s.ordered_indices(extras, missing).into_iter().map(DetailAt::Item);
+        self.detail_ix = season(prev, false).into_iter().chain(items).chain(season(next, true)).collect();
     }
 
-    /// What a running metadata update is doing, for the header.
-    pub fn meta_busy(&self) -> Option<&'static str> {
-        self.meta_running.as_ref().map(|(_, doing)| *doing)
+    /// Whether the series in Detail has a season before or after it.
+    pub fn detail_has_seasons(&self) -> bool {
+        self.detail_season(false).is_some() || self.detail_season(true).is_some()
+    }
+
+    /// The season (index) the Detail rows link to before or, `next`, after
+    /// the series: by the link's own `next`, not by where it is (with every
+    /// episode hidden, the `▼` link is the first row).
+    fn detail_season(&self, next: bool) -> Option<usize> {
+        self.detail_ix.iter().find_map(|r| match *r {
+            DetailAt::Season { series, next: n } if n == next => Some(series),
+            _ => None,
+        })
+    }
+
+    /// The first Detail row that is an item, else the first row.
+    fn first_item_row(&self) -> usize {
+        self.detail_ix.iter().position(|r| r.item_ix().is_some()).unwrap_or(0)
+    }
+
+    /// The last Detail row that is an item, else the last row.
+    fn last_item_row(&self) -> usize {
+        let last = self.detail_ix.len().saturating_sub(1);
+        self.detail_ix.iter().rposition(|r| r.item_ix().is_some()).unwrap_or(last)
+    }
+
+    /// The Detail row for `id`: an item by its key, a season link by its
+    /// series (a key held from before a merge finds the series it went into).
+    fn detail_row_of(&self, id: &RowId) -> Option<usize> {
+        match id {
+            RowId::Item(k) => {
+                let s = self.detail_series()?;
+                self.detail_ix
+                    .iter()
+                    .position(|r| matches!(*r, DetailAt::Item(n) if s.items.get(n).is_some_and(|it| it.key == *k)))
+            }
+            RowId::Season { key, next } => {
+                let at = self.lib.index_of(key)?;
+                let link = DetailAt::Season { series: at, next: *next };
+                self.detail_ix.iter().position(|r| *r == link)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a metadata update is running.
+    pub fn meta_busy(&self) -> bool {
+        self.meta_running.is_some()
+    }
+
+    /// What a running metadata update is doing, for the header, with the
+    /// seconds left while it waits for `AniList`'s rate limit.
+    pub fn meta_status(&self) -> Option<String> {
+        let MetaRun { doing, wait_until, .. } = self.meta_running.as_ref()?;
+        let left = wait_until.and_then(|t| t.checked_duration_since(Instant::now())).filter(|d| !d.is_zero());
+        Some(match left {
+            Some(d) => format!("{doing} · AniList rate limit {s}s", s = crate::fmt::secs_up(d)),
+            None => doing.to_string(),
+        })
     }
 
     /// Counts for the tab bar: Up next rows with something new, inbox size.
@@ -902,13 +1137,18 @@ impl App {
         self.detail_key.iter_mut().for_each(&resolve);
         self.queue.iter_mut().map(|q| &mut q.series).for_each(&resolve);
         match &mut self.popup {
-            Some(Popup::Status { series, .. } | Popup::Input { series, .. } | Popup::CatchUp { series, .. }) => {
+            Some(
+                Popup::Status { series, .. }
+                | Popup::Input { series, .. }
+                | Popup::CatchUp { series, .. }
+                | Popup::Unmerge { series, .. },
+            ) => {
                 resolve(series);
             }
             Some(Popup::Merge(picker)) => resolve(&mut picker.from),
             Some(Popup::Help { .. } | Popup::ConfirmQuit | Popup::Search) | None => {}
         }
-        let running = self.meta_running.as_mut().map(|(r, _)| r);
+        let running = self.meta_running.as_mut().map(|run| &mut run.request);
         for request in running.into_iter().chain(&mut self.meta_pending) {
             if let MetaRequest::Series(key) = request {
                 resolve(key);
@@ -921,15 +1161,24 @@ impl App {
         self.detail_key.as_deref().and_then(|k| self.lib.get(k))
     }
 
-    /// Items in Detail, extras placed right after their episode.
-    pub fn detail_rows(&self) -> Vec<&Item> {
-        self.detail_rows_in(0..self.detail_ix.len())
+    /// Detail rows: the season before, the items (extras right after their
+    /// episode), the season after.
+    pub fn detail_rows(&self) -> Vec<DetailRow<'_>> {
+        self.detail_rows_in(0..self.rows_len(View::Detail))
     }
 
-    /// Items in Detail, rows `range` only.
-    pub fn detail_rows_in(&self, range: Range<usize>) -> Vec<&Item> {
+    /// Detail rows `range` only.
+    pub fn detail_rows_in(&self, range: Range<usize>) -> Vec<DetailRow<'_>> {
         let Some(s) = self.detail_series() else { return Vec::new() };
-        self.detail_ix[clip(&range, self.detail_ix.len())].iter().filter_map(|&i| s.items.get(i)).collect()
+        self.detail_ix[clip(&range, self.detail_ix.len())]
+            .iter()
+            .filter_map(|r| match *r {
+                DetailAt::Item(i) => s.items.get(i).map(DetailRow::Item),
+                DetailAt::Season { series, next } => {
+                    self.lib.series.get(series).map(|s| DetailRow::Season { series: s, index: series, next })
+                }
+            })
+            .collect()
     }
 
     /// Inbox rows: (series, relation hint).
@@ -1178,15 +1427,7 @@ impl App {
                 if let Ok(done) = &res {
                     self.offline_roots.clone_from(&done.offline_roots);
                 }
-                let before: HashSet<String> = self.inbox_rows().iter().map(|(s, _)| s.key.clone()).collect();
-                self.reload_index();
-                let arrived = self.inbox_rows().iter().filter(|(s, _)| !before.contains(&s.key)).count();
-                let inbox = (arrived > 0).then(|| {
-                    format!(
-                        "{arrived} new show{plural} in your inbox (press 2)",
-                        plural = if arrived == 1 { "" } else { "s" }
-                    )
-                });
+                let inbox = self.reload_index_with_news();
                 match res {
                     // A root that failed is not left out for the inbox news.
                     Ok(done) if done.failed => {
@@ -1198,12 +1439,17 @@ impl App {
             }
             Msg::Player(ev) => self.on_player(ev),
             Msg::MetaProgress(what) => {
-                if let Some((_, doing)) = &mut self.meta_running {
-                    *doing = what;
+                if let Some(run) = &mut self.meta_running {
+                    run.doing = what;
+                }
+            }
+            Msg::AniListWait(until) => {
+                if let Some(run) = &mut self.meta_running {
+                    run.wait_until = Some(until);
                 }
             }
             Msg::Meta(mut res, epoch) => {
-                let request = self.meta_running.take().map_or(STARTUP, |(r, _)| r);
+                let request = self.meta_running.take().map_or(STARTUP, |run| run.request);
                 // Keep everything except what this sync found for series
                 // relinked while it ran; their own refresh is queued.
                 let stale = |series: &String| self.relinked.get(series).is_some_and(|&at| at > epoch);
@@ -1313,6 +1559,9 @@ impl App {
             self.reload();
             any = true;
         }
+        if self.changes_checked.elapsed() >= CHANGES_INTERVAL {
+            any |= self.pick_up_changes();
+        }
         any
     }
 
@@ -1330,10 +1579,10 @@ impl App {
     #[doc(hidden)]
     pub fn wait_for_meta(&mut self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
-        while self.meta_busy().is_some() && Instant::now() < deadline {
+        while self.meta_busy() && Instant::now() < deadline {
             self.wait_msg(Duration::from_millis(50));
         }
-        self.meta_busy().is_none()
+        !self.meta_busy()
     }
 
     // ---- input ------------------------------------------------------------
@@ -1468,6 +1717,12 @@ impl App {
                     self.popup = Some(Popup::Status { series: s.key.clone(), idx });
                 }
             }
+            // In Detail, top and bottom (g/G) are the first and last episode:
+            // the season links are one more k/j away, so G ⏎ still plays.
+            code if self.view == View::Detail && matches!(vi_alias(code), KeyCode::Home | KeyCode::End) => {
+                let row = if vi_alias(code) == KeyCode::Home { self.first_item_row() } else { self.last_item_row() };
+                self.detail_state.select(Some(row));
+            }
             code if let Some(delta) = cursor_delta(vi_alias(code)) => self.move_cursor(delta),
             _ => return false,
         }
@@ -1480,18 +1735,30 @@ impl App {
     }
 
     /// After the episode list's filters change, put the cursor back on
-    /// `target`, or on the nearest row still shown (later rows first).
-    fn reselect_detail(&mut self, target: Option<&ItemKey>) {
+    /// `target`: a season link (always still shown), or an item, else the
+    /// nearest item still shown (later rows first).
+    fn reselect_detail(&mut self, target: Option<&RowId>) {
         self.refresh_detail_rows();
-        let idx = self.detail_series().zip(target).and_then(|(s, t)| {
+        let item = match target {
+            Some(RowId::Item(k)) => Some(k),
+            // A season link, if it's still there.
+            Some(id) => {
+                let row = self.detail_row_of(id).unwrap_or_else(|| self.first_item_row());
+                self.detail_state.select(Some(row));
+                return;
+            }
+            None => None,
+        };
+        let idx = self.detail_series().zip(item).and_then(|(s, t)| {
             // The rows are these items with some left out: find each by index.
             let all = s.ordered_indices(self.episodes_shown.extras, true);
-            let row_of: HashMap<usize, usize> = self.detail_ix.iter().enumerate().map(|(n, &i)| (i, n)).collect();
+            let row_of: HashMap<usize, usize> =
+                self.detail_ix.iter().enumerate().filter_map(|(row, r)| Some((r.item_ix()?, row))).collect();
             let shown = |i: &usize| row_of.get(i).copied();
             let at = all.iter().position(|&i| s.items[i].key == *t)?;
             all[at..].iter().find_map(shown).or_else(|| all[..at].iter().rev().find_map(shown))
         });
-        self.detail_state.select(idx.or(Some(0)));
+        self.detail_state.select(Some(idx.unwrap_or_else(|| self.first_item_row())));
     }
 
     fn open_detail(&mut self, key: String) {
@@ -1502,7 +1769,8 @@ impl App {
         self.refresh_detail_rows();
         let first = self.detail_series().map(|s| {
             let target = s.next_up().map(|i| &i.key);
-            self.detail_rows().iter().position(|i| Some(&i.key) == target).unwrap_or(0)
+            let row = self.detail_rows().iter().position(|r| r.item().is_some_and(|i| Some(&i.key) == target));
+            row.unwrap_or_else(|| self.first_item_row())
         });
         self.detail_state.select(first);
         self.view = View::Detail;
@@ -1613,9 +1881,7 @@ impl App {
                 if aliases.is_empty() {
                     self.say("nothing merged into this series");
                 } else {
-                    self.say(format!("split off {aliases} merged name(s)", aliases = aliases.len()));
-                    let res = self.ctx.unmerge(&self.lib, aliases.iter().map(String::as_str));
-                    self.after_write(res);
+                    self.popup = Some(Popup::Unmerge { series, names: aliases });
                 }
             }
             _ => {}
@@ -1787,31 +2053,54 @@ impl App {
         // Borrow the selected item from our own handle on the library instead
         // of cloning it, so `self` stays free for the actions below.
         let lib = Arc::clone(&self.lib);
-        let item: Option<&Item> =
-            self.detail_state.selected().and_then(|i| lib.get(&series)?.items.get(*self.detail_ix.get(i)?));
+        let at = self.detail_state.selected().and_then(|i| self.detail_ix.get(i).copied());
+        let item: Option<&Item> = match at {
+            Some(DetailAt::Item(i)) => lib.get(&series).and_then(|s| s.items.get(i)),
+            _ => None,
+        };
         match (key.code, item) {
             (KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left, _) => self.view = self.back,
-            (KeyCode::Char('x'), _) => {
+            // A season link opens that season; [ and ] open them from anywhere.
+            (KeyCode::Enter, None) => {
+                if let Some(DetailAt::Season { series, .. }) = at {
+                    self.open_detail(lib.series[series].key.clone());
+                }
+            }
+            (KeyCode::Char(c @ ('[' | ']')), _) => match self.detail_season(c == ']') {
+                Some(i) => self.open_detail(lib.series[i].key.clone()),
+                None => self.say(if c == '[' { "nothing before this one" } else { "nothing after this one" }),
+            },
+            (KeyCode::Char('x'), item) => {
                 let hiding = self.episodes_shown.extras;
-                // Keep the cursor on the same item if it is still shown, else
-                // on the nearest row above it that is (hiding hides only extras).
-                let rows = self.detail_rows();
-                let upto = self.detail_state.selected().map_or(0, |i| (i + 1).min(rows.len()));
-                let target = rows[..upto]
-                    .iter()
-                    .rev()
-                    .find(|it| !hiding || it.key.kind != ItemKind::Extra)
-                    .map(|it| it.key.clone());
+                // Keep the cursor on the same row if it is still shown, else
+                // on the nearest item above it that is (hiding hides only extras).
+                let target = if item.is_some() {
+                    let rows = self.detail_rows();
+                    let upto = self.detail_state.selected().map_or(0, |i| (i + 1).min(rows.len()));
+                    rows[..upto]
+                        .iter()
+                        .rev()
+                        .filter_map(|r| r.item())
+                        .find(|it| !hiding || it.key.kind != ItemKind::Extra)
+                        .map(|it| RowId::Item(it.key.clone()))
+                } else {
+                    self.selected_id(View::Detail)
+                };
                 self.episodes_shown.extras = !hiding;
                 self.reselect_detail(target.as_ref());
             }
-            (KeyCode::Char('d'), item) => {
+            (KeyCode::Char('d'), _) => {
+                let target = self.selected_id(View::Detail);
                 self.episodes_shown.missing = !self.episodes_shown.missing;
-                self.reselect_detail(item.map(|it| &it.key));
+                self.reselect_detail(target.as_ref());
             }
             (KeyCode::Char(' '), Some(it)) => {
                 self.toggle_queue(&series, it);
-                self.move_cursor(1);
+                // Down to the next episode, not onto the ▼ link.
+                let next = self.detail_state.selected().map(|i| i + 1);
+                if next.and_then(|i| self.detail_ix.get(i)?.item_ix()).is_some() {
+                    self.move_cursor(1);
+                }
             }
             (KeyCode::Char('w'), Some(it)) => self.toggle_watched(&series, std::slice::from_ref(it)),
             (KeyCode::Char('W'), Some(it)) if it.key.kind == ItemKind::Episode => {
@@ -1848,8 +2137,19 @@ impl App {
                     self.quit = true;
                 }
             }
+            Popup::Unmerge { series, names } => {
+                // The names you were shown that are still merged into it (a
+                // reload may have changed them): never one you weren't shown.
+                let now = self.lib.get(&series).map(|s| s.aliases.clone()).unwrap_or_default();
+                let names: Vec<String> = names.into_iter().filter(|n| now.contains(n)).collect();
+                if is_yes(key.code) && !names.is_empty() {
+                    self.say(format!("split off {n} merged name(s)", n = names.len()));
+                    let res = self.ctx.unmerge(&self.lib, names.iter().map(String::as_str));
+                    self.after_write(res);
+                }
+            }
             Popup::CatchUp { series, .. } => {
-                if matches!(key.code, KeyCode::Char('y') | KeyCode::Enter) {
+                if is_yes(key.code) {
                     let mut entries = String::new();
                     let res = crate::app::catch_up(&self.lib, &series).and_then(|plan| {
                         entries = plan.entries.join(", ");
@@ -2064,12 +2364,17 @@ impl App {
         let checks = &self.index.meta.anilist_checks;
         let Some(opts) = crate::meta::plan(&self.lib, &self.ctx.cfg, checks, &request, now()) else { return };
         let opts = crate::meta::SyncOptions { offline: Arc::clone(&self.offline), ..opts };
-        self.meta_running = Some((request, "metadata"));
+        self.meta_running = Some(MetaRun::new(request));
         let (lib, cache, tx, epoch) =
             (Arc::clone(&self.lib), self.ctx.paths.cache_dir.clone(), self.tx.clone(), self.meta_epoch);
         spawn_meta(&self.tx, epoch, move || {
             // `opts` says whether the network may be used (see `plan`).
-            let http = Some(&crate::meta::anilist::Ureq as &dyn crate::meta::anilist::Http);
+            let waiting = tx.clone();
+            let on_wait = move |d: Duration| {
+                let _ = waiting.send(Msg::AniListWait(Instant::now() + d));
+            };
+            let ureq = crate::meta::anilist::Ureq::new(crate::meta::anilist::INTERACTIVE_WAIT, &on_wait);
+            let http = Some(&ureq as &dyn crate::meta::anilist::Http);
             crate::meta::sync_with_progress(&lib, &cache, http, &opts, now(), &mut |step| {
                 let _ = tx.send(Msg::MetaProgress(match step {
                     crate::meta::SyncStep::Downloading => "downloading anime database…",
@@ -2222,6 +2527,11 @@ fn vi_alias(code: KeyCode) -> KeyCode {
     }
 }
 
+/// A yes to a yes/no popup: `y` or Enter (any other key is a no).
+fn is_yes(code: KeyCode) -> bool {
+    matches!(code, KeyCode::Char('y') | KeyCode::Enter)
+}
+
 /// How far a cursor key moves the cursor in a list (`None`: not one).
 fn cursor_delta(code: KeyCode) -> Option<isize> {
     Some(match code {
@@ -2293,6 +2603,9 @@ fn spawn_meta(tx: &Sender<Msg>, epoch: u64, sync: impl FnOnce() -> crate::meta::
         error.into_iter().chain([Msg::Meta(res, epoch)])
     });
 }
+
+/// How often the TUI looks for scans and metadata stored by another process.
+const CHANGES_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Scan progress is shown at most this often.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -2652,6 +2965,43 @@ mod tests {
         assert_eq!(app.series_ix, franchise_order(&app.lib, accepted, app.fold_franchises));
     }
 
+    /// `[` and `]` follow the franchise, not the rows: with only the `▼`
+    /// link listed (no episodes shown), `[` still says there's nothing
+    /// before, and a link whose series went away (a merge) leaves the cursor
+    /// on an episode.
+    #[test]
+    fn season_links_are_told_apart() {
+        let (_dir, mut app) = demo_app();
+        app.press("3/frieren\n\n");
+        // As for a series split around this one: both links open it.
+        let s2 = app.lib.index_of("sousou no frieren s2").unwrap();
+        app.detail_ix.insert(0, DetailAt::Season { series: s2, next: false });
+        let last = app.detail_ix.len() - 1;
+        app.detail_state.select(Some(last));
+        let id = app.selected_id(View::Detail).unwrap();
+        assert_eq!(app.detail_row_of(&id), Some(last), "the ▼ link, not the ▲ one");
+    }
+
+    #[test]
+    fn season_keys_follow_the_franchise_not_the_rows() {
+        let (_dir, mut app) = demo_app();
+        app.press("3/frieren\n\n");
+        assert_eq!(app.detail_key.as_deref(), Some("sousou no frieren"));
+        // As if every episode were hidden: only the link to S2 is a row.
+        app.detail_ix.retain(|r| matches!(r, DetailAt::Season { .. }));
+        app.detail_state.select(Some(0));
+        app.press("[");
+        assert_eq!(app.detail_key.as_deref(), Some("sousou no frieren"));
+        assert_eq!(app.current_message(), Some("nothing before this one"));
+        // A link to a series no longer next to it falls back to an episode.
+        app.refresh_detail_rows();
+        app.reselect_detail(Some(&RowId::Series("one piece".into())));
+        let row = app.detail_state.selected().unwrap();
+        assert!(matches!(app.detail_ix[row], DetailAt::Item(_)));
+        app.press("]");
+        assert_eq!(app.detail_key.as_deref(), Some("sousou no frieren s2"));
+    }
+
     /// Folded, the Series view shows the franchise entry you're at; `F`
     /// unfolds it into every entry, in watch order.
     #[test]
@@ -2849,6 +3199,80 @@ mod tests {
         assert_eq!(app.current_message(), Some("mpv exited before playing anything"));
     }
 
+    /// docs/anilist.md R18: While a metadata update waits for AniList's rate limit, the header
+    /// says so, with the seconds left; once it is over, it doesn't.
+    #[test]
+    fn rate_limit_waits_show_in_the_header() {
+        let (_dir, mut app) = demo_app();
+        assert_eq!(app.meta_status(), None);
+        app.meta_running = Some(MetaRun::new(STARTUP));
+        app.on_msg(Msg::AniListWait(Instant::now() + Duration::from_secs(41)));
+        let shown = app.meta_status().unwrap();
+        assert!(
+            ["metadata · AniList rate limit 41s", "metadata · AniList rate limit 40s"].contains(&shown.as_str()),
+            "{shown}"
+        );
+        app.meta_running.as_mut().unwrap().wait_until = Some(Instant::now());
+        assert_eq!(app.meta_status().as_deref(), Some("metadata"));
+    }
+
+    /// A start right after a scan (the demo's own) doesn't scan again, but
+    /// knows the unreachable roots; with `scan_fresh_for = 0` it scans.
+    #[test]
+    fn a_fresh_index_is_not_scanned_on_start() {
+        let (_dir, mut app) = demo_app();
+        let fingerprint = crate::app::scan_fingerprint(&app.ctx.cfg, &app.ctx.cfg.roots[0]);
+        let tried = crate::index::db::ScanTry { at: now(), offline: true, fingerprint };
+        app.ctx.db.set_scan_tried("Downloads", &tried).unwrap();
+        app.scan_unless_fresh();
+        assert!(app.scanning.is_none());
+        assert_eq!(app.offline_roots, ["Downloads"]);
+        assert_eq!(app.current_message(), Some("index scanned just now · r rescans"));
+        app.ctx.cfg.scan_fresh_for = 0;
+        app.scan_unless_fresh();
+        assert!(app.scanning.is_some());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.scanning.is_some() && Instant::now() < deadline {
+            app.wait_msg(Duration::from_millis(50));
+        }
+        assert!(app.scanning.is_none(), "the scan finished");
+    }
+
+    /// What another process stores (here: a scan that finds a new file and an
+    /// unreachable root, then a metadata update) is picked up, once, but not
+    /// while a scan of the TUI's own runs.
+    #[test]
+    fn changes_stored_elsewhere_are_picked_up() {
+        let (_dir, mut app) = demo_app();
+        assert!(!app.pick_up_changes(), "nothing new");
+        let roots = &app.ctx.cfg.roots;
+        let (dl, anime) = (roots[0].resolved(), roots[1].resolved());
+        std::fs::write(dl.join("[Fake] Brand New Show - 01.mkv"), b"x").unwrap();
+        let mut other = crate::index::Db::open(&app.ctx.paths.db_file).unwrap();
+        crate::app::scan_all(&app.ctx.cfg, &mut other, Some("Downloads"), &|_, _| {}).unwrap();
+        std::fs::rename(&anime, anime.with_extension("away")).unwrap();
+        crate::app::scan_all(&app.ctx.cfg, &mut other, Some("Anime"), &|_, _| {}).unwrap();
+        app.scanning = Some("scanning…".into());
+        assert!(!app.pick_up_changes(), "not while scanning");
+        app.scanning = None;
+        assert!(app.pick_up_changes());
+        assert_eq!(app.offline_roots, ["Anime"]);
+        assert!(app.lib.get("brand new show").is_some());
+        assert_eq!(app.current_message(), Some("1 new show in your inbox (press 2)"));
+        assert!(!app.pick_up_changes(), "once");
+        other.store_sync(&[], &[], None, &[], &[], &[], now()).unwrap();
+        assert!(app.pick_up_changes());
+        assert!(!app.pick_up_changes());
+        // The TUI's own metadata reload doesn't hide a scan stored meanwhile.
+        std::fs::write(dl.join("[Fake] Another Show - 01.mkv"), b"x").unwrap();
+        crate::app::scan_all(&app.ctx.cfg, &mut other, Some("Downloads"), &|_, _| {}).unwrap();
+        app.reload_meta();
+        assert!(app.pick_up_changes(), "the scan is still new");
+        // Nor does a link made elsewhere go unnoticed.
+        other.delete_meta("sousou no frieren").unwrap();
+        assert!(app.pick_up_changes());
+    }
+
     /// mpv finishing a file and exiting right after reload the library once,
     /// after both messages are handled.
     #[test]
@@ -2903,7 +3327,7 @@ mod tests {
     #[test]
     fn a_panicking_metadata_update_still_clears_busy() {
         let (_dir, mut app) = demo_app();
-        app.meta_running = Some((STARTUP, "metadata"));
+        app.meta_running = Some(MetaRun::new(STARTUP));
         spawn_meta(&app.tx, 0, || panic!("kaboom"));
         assert!(app.wait_for_meta(Duration::from_secs(10)), "still busy");
         let msg = app.current_message().unwrap_or_default();

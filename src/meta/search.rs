@@ -7,6 +7,7 @@
 //! while ([`SEARCH_RETRY`]), and at most [`SEARCH_CAP`] series are searched per
 //! sync, least recently searched first.
 
+use super::anilist::Outage;
 use super::{DAY, MatchReport, Unlinked, anilist, episode_shape};
 use crate::identity::series_key;
 use crate::index::db::{MatchAttempt, MatchResult, SeriesMeta};
@@ -126,18 +127,28 @@ pub struct SearchOutcome {
 ///
 /// Stops at the first failed request: the rest would most likely fail too.
 /// The series it failed for is answered [`MatchResult::SearchFailed`], so it
-/// waits behind the others for a while instead of failing first every time.
+/// waits behind the others for a while instead of failing first every time;
+/// not when `AniList` refused for its rate limit, which says nothing about
+/// the series. When only the search's share of the wait ran out
+/// ([`anilist::Http::optional`]), the sync waits it out itself: no note.
 pub fn search_unmatched(series: &[&Series], http: &dyn anilist::Http, ts: i64) -> SearchReport {
     let mut rep = SearchReport::default();
-    let mut asked = 0;
     for s in series.iter().take(SEARCH_CAP) {
-        asked += 1;
         let unlinked = |result, candidates| Unlinked { series: s.key.clone(), result, candidates };
         let found = match anilist::search(http, &s.title) {
             Ok(found) => found,
             Err(e) => {
-                rep.unlinked.push(unlinked(MatchResult::SearchFailed, Vec::new()));
-                rep.outcome.stopped = Some(format!("title search stopped at {title:?}: {e:#}", title = s.title));
+                let outage = Outage::of(&e);
+                let limited = anilist::Unavailable::rate_limited(&e);
+                // Not asked (left for the next run), or only rate limited.
+                if !limited && outage != Some(Outage::GaveUpBefore) {
+                    rep.unlinked.push(unlinked(MatchResult::SearchFailed, Vec::new()));
+                }
+                // Said already, or waited out by the sync.
+                let quiet = outage == Some(Outage::GaveUpBefore) || (limited && outage == Some(Outage::Once));
+                if !quiet {
+                    rep.outcome.stopped = Some(format!("title search stopped at {title:?}: {e:#}", title = s.title));
+                }
                 break;
             }
         };
@@ -155,7 +166,8 @@ pub fn search_unmatched(series: &[&Series], http: &dyn anilist::Http, ts: i64) -
             SearchPick::None => rep.unlinked.push(unlinked(MatchResult::SearchNone, Vec::new())),
         }
     }
-    rep.outcome.skipped = series.len() - asked;
+    // Every series asked has an answer, failed or not.
+    rep.outcome.skipped = series.len() - rep.rows.len() - rep.unlinked.len();
     rep
 }
 
@@ -240,6 +252,8 @@ mod tests {
     struct Search {
         answers: HashMap<String, Vec<serde_json::Value>>,
         fail: HashSet<String>,
+        /// Fail as rate limited instead, within the search's share of the wait.
+        limited: bool,
         asked: std::cell::RefCell<Vec<String>>,
         /// Ids asked about by id queries (airing refreshes, prequels).
         ids: std::cell::RefCell<Vec<u64>>,
@@ -265,7 +279,10 @@ mod tests {
             let q = body["variables"]["q"].as_str().expect("a title search").to_string();
             self.asked.borrow_mut().push(q.clone());
             if self.fail.contains(&q) {
-                anyhow::bail!("AniList rate limit hit; try again in a minute");
+                if self.limited {
+                    return Err(anilist::Unavailable::limited(Outage::Once).into());
+                }
+                anyhow::bail!("AniList error: query too complex");
             }
             let media = self.answers.get(&q).cloned().unwrap_or_default();
             Ok(serde_json::json!({"data": {"Page": {"media": media}}}))
@@ -387,7 +404,7 @@ mod tests {
         assert!(matches!(pick_search_match(&["zzz"], 0, 0, &both), SearchPick::Ambiguous(v) if v.len() == 2));
     }
 
-    /// Titles are searched one request each, up to the cap; a failed request
+    /// docs/anilist.md R16, R17: Titles are searched one request each, up to the cap; a failed request
     /// stops the rest, and its series is answered "failed".
     #[test]
     fn searches_stop_at_the_cap_and_at_a_failure() {
@@ -408,8 +425,16 @@ mod tests {
             results(&rep.unlinked),
             [("one piece", MatchResult::SearchNone), ("grand blue s3", MatchResult::SearchFailed)]
         );
-        assert!(rep.outcome.stopped.as_deref().is_some_and(|n| n.contains("rate limit")));
+        assert!(rep.outcome.stopped.as_deref().is_some_and(|n| n.contains("too complex")));
         assert_eq!(rep.outcome.skipped, 2);
+
+        // Rate limited: that says nothing about the series, so it isn't
+        // answered "failed" but left for next time; and the sync waits the
+        // limit out itself, so nothing is said.
+        let http = Search { limited: true, ..Search::failing(&titles[1]) };
+        let rep = search_unmatched(&series, &http, 1);
+        assert_eq!(results(&rep.unlinked), [("one piece", MatchResult::SearchNone)]);
+        assert_eq!((rep.outcome.stopped, rep.outcome.skipped), (None, 3));
 
         // More series than the cap.
         let cfg = cfg();
@@ -589,7 +614,7 @@ mod tests {
         let l = lib(&[], &[]);
         let res = sync_at(&l, &Search::failing(&title(&l, "zzz")), searching(), 9);
         assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
-        assert!(res.notes.iter().any(|n| n.contains("rate limit")), "{notes:?}", notes = res.notes);
+        assert!(res.notes.iter().any(|n| n.contains("too complex")), "{notes:?}", notes = res.notes);
         let failed = res.attempts.iter().find(|a| a.series == "zzz").unwrap().clone();
         assert_eq!(failed.result, MatchResult::SearchFailed);
         let zzz = lib_with(&[], &[], &[failed]).get("zzz").cloned().unwrap();
@@ -629,7 +654,7 @@ mod tests {
         for earlier in [MatchResult::SearchAmbiguous, MatchResult::SearchNone] {
             let l = lib_with(&[], &[], &[attempt("zzz", earlier, 9)]);
             let res = sync_at(&l, &Search::failing(&title(&l, "zzz")), searching(), 9 + SEARCH_RETRY);
-            assert!(res.notes.iter().any(|n| n.contains("rate limit")), "{notes:?}", notes = res.notes);
+            assert!(res.notes.iter().any(|n| n.contains("too complex")), "{notes:?}", notes = res.notes);
             assert!(
                 res.attempts.iter().all(|a| a.series != "zzz" || a.result == earlier),
                 "{attempts:?}",
@@ -638,7 +663,7 @@ mod tests {
         }
     }
 
-    /// A failed request stops the search; the series it failed for waits
+    /// docs/anilist.md R16: A failed request stops the search; the series it failed for waits
     /// (and then goes behind those never searched), so it can't hold them up.
     #[test]
     fn a_failing_title_does_not_hold_up_the_others() {

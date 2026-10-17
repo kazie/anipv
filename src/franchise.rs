@@ -77,6 +77,9 @@ pub struct Stop {
     /// Every item of it is watched (a whole series: completed, or finished
     /// and fully watched). [`group`] leaves it false; the library sets it.
     pub watched: bool,
+    /// What to call it next to the others (see [`short_labels`]). [`group`]
+    /// leaves it empty; the library sets it.
+    pub short: String,
 }
 
 /// Series that belong together, in watch order.
@@ -88,7 +91,85 @@ pub struct Franchise {
     pub stops: Vec<Stop>,
 }
 
+/// The longest start of `label`, ending between words, whose series key is
+/// `key` (`Ranma 1-2 (2024)` of `Ranma 1-2 (2024) S2` for `ranma 1 2 2024`).
+fn key_prefix<'a>(label: &'a str, key: &str) -> Option<&'a str> {
+    let ends = label.char_indices().filter(|(_, c)| !c.is_alphanumeric()).map(|(i, _)| i).chain([label.len()]);
+    ends.rev().map(|i| &label[..i]).find(|p| crate::identity::series_key(p) == key)
+}
+
+/// A franchise's name from its first entry: the title without a season
+/// suffix (`Grand Blue` for `Grand Blue S2`).
+fn base_title(node: &Node<'_>) -> String {
+    // A title that doesn't spell its key (renamed) is kept as it is.
+    let without = crate::identity::season_suffix(node.key).and_then(|(base, _)| key_prefix(node.title, base));
+    let name =
+        without.map_or(node.title, |name| name.trim_end_matches(|c: char| c.is_whitespace() || "-:~–—,".contains(c)));
+    name.to_string()
+}
+
+/// What to call each of `labels` (a franchise's stops) next to the others:
+/// without the franchise `name` they start with, and the separator after it
+/// (`Pretty Gray` for `Umayuru - Pretty Gray`). What's left of a season is
+/// its number (`S2`); the entry named like the franchise is `S1` among
+/// seasons, else keeps its whole label, as do labels not starting with the
+/// name (`Kabukimonogatari`). Two can't both be `S1`: series keys fold `S0`
+/// and `S1` into the bare name, so `Foo S1` and `Foo` are one series.
+pub fn short_labels<'a>(name: &str, labels: &[&'a str]) -> Vec<String> {
+    /// What follows the franchise's name in a label.
+    enum Rest<'a> {
+        Nothing,
+        Season(u32),
+        Text(&'a str),
+        Whole,
+    }
+    let name = crate::identity::series_key(name);
+    let rest = |label: &&'a str| -> Rest<'a> {
+        let Some(prefix) = key_prefix(label, &name) else { return Rest::Whole };
+        let text = label[prefix.len()..].trim_start_matches(|c: char| !c.is_alphanumeric()).trim_end();
+        // A closing bracket whose opening one was cut off goes too: `2024`,
+        // not `2024)`, after `Ranma 1-2 (`.
+        let unbalanced = |open, close| text.matches(close).count() > text.matches(open).count();
+        let text = text.strip_suffix(')').filter(|_| unbalanced('(', ')')).unwrap_or(text);
+        let text = text.strip_suffix(']').filter(|_| unbalanced('[', ']')).unwrap_or(text);
+        let key = crate::identity::series_key(text);
+        let season = key.strip_prefix('s').filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        match season.and_then(|n| n.parse().ok()) {
+            _ if key.is_empty() => Rest::Nothing,
+            Some(n) => Rest::Season(n),
+            None => Rest::Text(text),
+        }
+    };
+    let rests: Vec<Rest<'a>> = labels.iter().map(rest).collect();
+    let seasons = rests.iter().any(|r| matches!(r, Rest::Season(_)));
+    labels
+        .iter()
+        .zip(rests)
+        .map(|(label, rest)| match rest {
+            Rest::Nothing if seasons => "S1".into(),
+            Rest::Season(n) => format!("S{n}"),
+            Rest::Text(text) => text.to_string(),
+            Rest::Nothing | Rest::Whole => (*label).to_string(),
+        })
+        .collect()
+}
+
 impl Franchise {
+    /// The series before and after series `i`: the stop before its first,
+    /// the stop after its last. A series split around another (in a
+    /// franchise folder) leads on to what follows its last part, and what
+    /// follows a stop between its parts leads back to it.
+    pub fn neighbours(&self, i: usize) -> (Option<usize>, Option<usize>) {
+        let (Some(first), Some(last)) = (self.stops_of(i).next(), self.stops_of(i).last()) else { return (None, None) };
+        let series = |n: Option<usize>| n.and_then(|n| self.stops.get(n)).map(|s| s.series);
+        (series(first.checked_sub(1)), series(Some(last + 1)))
+    }
+
+    /// Whether every stop of series `i` is watched (each marked ✓).
+    pub fn series_watched(&self, i: usize) -> bool {
+        self.stops_of(i).all(|n| self.stops[n].watched)
+    }
+
     /// Indices of the stops of series `i`, in order.
     pub fn stops_of(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
         self.stops.iter().enumerate().filter(move |(_, s)| s.series == i).map(|(n, _)| n)
@@ -170,7 +251,7 @@ pub fn group(nodes: &[Node<'_>]) -> Vec<Franchise> {
         .map(|m| {
             let order = watch_order(nodes, &m, inside.get(&groups.find(m[0])).map_or(&[][..], Vec::as_slice));
             let folder = order.iter().find_map(|&i| nodes[i].folder.map(|f| f.name.as_str()));
-            let name = folder.unwrap_or(nodes[order[0]].title).to_string();
+            let name = folder.map_or_else(|| base_title(&nodes[order[0]]), str::to_string);
             Franchise { name, stops: stops(nodes, &order) }
         })
         .collect();
@@ -186,7 +267,7 @@ fn stops(nodes: &[Node<'_>], order: &[usize]) -> Vec<Stop> {
     let mut out = Vec::new();
     for &i in order {
         if nodes[i].parts.is_empty() {
-            out.push(Stop { series: i, folder: None, items: Vec::new(), watched: false });
+            out.push(Stop { series: i, folder: None, items: Vec::new(), watched: false, short: String::new() });
         }
         let mut parts: Vec<&(Part, Vec<ItemKey>)> = nodes[i].parts.iter().collect();
         parts.sort_by_key(|(part, _)| part.no);
@@ -195,6 +276,7 @@ fn stops(nodes: &[Node<'_>], order: &[usize]) -> Vec<Stop> {
             folder: Some(part.clone()),
             items: items.clone(),
             watched: false,
+            short: String::new(),
         }));
     }
     // The franchise folder a folder stop is in.
@@ -266,6 +348,56 @@ impl UnionFind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Short names: a season number, and only that.
+    #[test]
+    fn short_labels_drop_the_franchise_name() {
+        let ranma = ["Ranma 1-2 (2024)", "Ranma 1-2 (2024) S2", "Ranma 1-2 2024 S3"];
+        assert_eq!(short_labels("Ranma 1-2 (2024)", &ranma), ["S1", "S2", "S3"]);
+        // What follows the name, past its separator: a spin-off's name.
+        let sao = ["Sword Art Online", "Sword Art Online S2", "Sword Art Online Alternative Gun Gale Online S2"];
+        assert_eq!(short_labels("Sword Art Online", &sao), ["S1", "S2", "Alternative Gun Gale Online S2"]);
+        let uma = ["Umayuru", "Umayuru - Pretty Gray", "Umayuru - Full Gate!"];
+        assert_eq!(short_labels("Umayuru", &uma), ["Umayuru", "Pretty Gray", "Full Gate!"]);
+        let camp = ["Yuru Camp", "Yuru Camp Movie"];
+        assert_eq!(short_labels("Yuru Camp", &camp), ["Yuru Camp", "Movie"]);
+        // Named after an entry that is a season itself.
+        assert_eq!(short_labels("Grand Blue", &["Grand Blue S2", "Grand Blue S3"]), ["S2", "S3"]);
+        // Not starting with the franchise's name, or only by part of a word.
+        assert_eq!(short_labels("Monogatari Series", &["Bakemonogatari"]), ["Bakemonogatari"]);
+        assert_eq!(short_labels("Ranma", &["Ranma", "Ranmaru S2"]), ["Ranma", "Ranmaru S2"]);
+        // Brackets stay balanced.
+        assert_eq!(short_labels("Ranma 1-2", &["Ranma 1-2", "Ranma 1-2 (2024)"]), ["Ranma 1-2", "2024"]);
+        assert_eq!(short_labels("Spy x Family", &["Spy x Family (Part 2)"]), ["Part 2"]);
+    }
+
+    /// The entries around a series split around another: Second Season (1)
+    /// at stops 1, 2 and 4, Hanamonogatari (2) at 3, a movie (3) after.
+    #[test]
+    fn neighbours_follow_the_stops() {
+        let stop = |series| Stop { series, folder: None, items: Vec::new(), watched: false, short: String::new() };
+        let f = Franchise { name: "Monogatari Series".into(), stops: [0, 1, 1, 2, 1, 3].map(stop).to_vec() };
+        assert_eq!(f.neighbours(0), (None, Some(1)));
+        assert_eq!(f.neighbours(1), (Some(0), Some(3)), "on from its last part, to the movie");
+        assert_eq!(f.neighbours(2), (Some(1), Some(1)), "back to the part it sits in");
+        assert_eq!(f.neighbours(3), (Some(1), None), "the movie follows Second Season's last part");
+        assert_eq!(f.neighbours(9), (None, None));
+    }
+
+    /// A franchise without a folder is named after its first entry, without
+    /// the season: `Grand Blue`, not `Grand Blue S2`.
+    #[test]
+    fn franchise_names_drop_the_season() {
+        let name = |key, title| base_title(&Node { key, title, ..Node::default() });
+        assert_eq!(name("grand blue s2", "Grand Blue S2"), "Grand Blue");
+        assert_eq!(name("ranma 1 2 2024", "Ranma 1-2 (2024)"), "Ranma 1-2 (2024)");
+        assert_eq!(name("ranma 1 2 2024 s2", "Ranma 1-2 (2024) Season 2"), "Ranma 1-2 (2024)");
+        assert_eq!(name("umayuru", "Umayuru"), "Umayuru");
+        // Its symbols stay; a renamed title is kept as it is.
+        assert_eq!(name("yuru camp", "Yuru Camp△"), "Yuru Camp△");
+        assert_eq!(name("yuru camp s2", "Yuru Camp△ S2"), "Yuru Camp△");
+        assert_eq!(name("shingeki no kyojin s2", "Attack on Titan Season 2"), "Attack on Titan Season 2");
+    }
 
     fn node(key: &'static str) -> Node<'static> {
         Node { key, title: key, ..Node::default() }

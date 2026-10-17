@@ -198,6 +198,11 @@ fn catch_up_rolls_on() {
         .stdout(predicate::str::contains("caught up: 8 episode(s) of 2 entries"))
         .stdout(predicate::str::contains("Nekomonogatari is now following: the next entry after Nisemonogatari"));
     anipv(d.path()).arg("next").assert().success().stdout(predicate::str::contains("Nekomonogatari"));
+    // Recorded as a catch-up (`via`), not as a note of yours.
+    let log = std::fs::read_to_string(d.path().join("data/events/desktop.jsonl")).unwrap();
+    let status = log.lines().rfind(|l| l.contains(r#""series":"nisemonogatari""#) && l.contains("series_status"));
+    assert!(status.is_some_and(|l| l.contains(r#""via":"catch_up""#) && !l.contains("note")), "{log}");
+    anipv(d.path()).args(["show", "nisemonogatari"]).assert().success().stdout(predicate::str::contains("caught up"));
 }
 
 /// One anime spread over entry folders with another between them: the watch
@@ -308,6 +313,34 @@ fn import_fish_history() {
         .assert()
         .success()
         .stdout(predicate::str::contains("0 mpv commands"));
+}
+
+/// A status the import applies is recorded as imported (`via`), not as a
+/// note, and `show` says where it came from.
+#[test]
+fn import_fish_applies_statuses_as_imported() {
+    let d = demo();
+    let hist = d.path().join("fish_history");
+    let yesterday = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 86_400;
+    std::fs::write(
+        &hist,
+        format!("- cmd: mpv '[GroupB] Dungeon Meshi - 01 (1080p) [ABCF0001].mkv'\n  when: {yesterday}\n"),
+    )
+    .unwrap();
+    anipv(d.path())
+        .args(["import-fish", "--apply-status", "--history"])
+        .arg(&hist)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("applied statuses"));
+    let log = std::fs::read_to_string(d.path().join("data/events/desktop.jsonl")).unwrap();
+    let status = log.lines().rfind(|l| l.contains(r#""series":"dungeon meshi""#) && l.contains("series_status"));
+    assert!(status.is_some_and(|l| l.contains(r#""via":"fish_import""#) && !l.contains("note")), "{log}");
+    anipv(d.path())
+        .args(["show", "dungeon meshi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from fish history"));
 }
 
 #[test]
@@ -593,6 +626,27 @@ fn scan_fails_when_a_root_fails() {
         .failure()
         .stderr(predicate::str::contains("1 of 1 root(s) could not be scanned"));
     anipv(d.path()).args(["scan", "anime"]).assert().success();
+}
+
+/// `update` is lenient: an unreachable root is a warning, the others are
+/// scanned, metadata is still updated, and the command succeeds.
+#[test]
+fn update_warns_about_unreachable_roots() {
+    let d = demo();
+    std::fs::rename(d.path().join("media/Downloads"), d.path().join("media/gone")).unwrap();
+    anipv(d.path()).arg("update").assert().success().stdout(
+        predicate::str::contains("✓ Anime")
+            .and(predicate::str::contains("! Downloads"))
+            .and(predicate::str::contains("index kept as it was"))
+            .and(predicate::str::contains("metadata")),
+    );
+    // The files under the unreachable root are still known.
+    anipv(d.path()).arg("next").assert().success().stdout(predicate::str::contains("Sousou no Frieren"));
+    anipv(d.path())
+        .args(["update", "--no-meta"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ Anime").and(predicate::str::contains("metadata").not()));
 }
 
 /// `anilist = false` (as in the demo) means no network from the CLI either.

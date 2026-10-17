@@ -1,0 +1,12 @@
+# Runs anipv-update.service every 15 minutes, and soon after logging in.
+# No dependency on mounts or the network: `anipv update` warns and keeps what
+# it knows when a folder or AniList can't be reached.
+[Unit]
+Description=anipv: update the index every 15 minutes
+
+[Timer]
+OnStartupSec=2min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target
