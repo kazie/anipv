@@ -43,7 +43,7 @@ then the code and the tests.
 | R5 | Each sync or command may wait out 429s for a total of 2 minutes while someone watches (the TUI, a command), or 10 minutes in `anipv update`. Its requests share that budget. | Someone watching shouldn't wait long; the timer runs unattended. | `the_budget_is_shared`, `waiting_stops_at_the_budget` |
 | R6 | Only 429 timeouts count against the budget, never pacing (R1, R2), not even pacing that goes on after a timeout ends. | A big sync while AniList is degraded gets slower, never failed. | `pacing_is_not_counted`, `pacing_past_a_timeout_is_not_counted` |
 | R7 | When waiting out a timeout would go past what is left of the budget, the request fails before it is sent, saying how long is left ("try again in N s"). So does every later request until the timeout ends. | Sending while AniList still refuses gets another 429 and can lengthen the timeout. | `a_long_timeout_fails_at_once` |
-| R8 | Title searches, which are optional, may use only half of what is left of the budget. | The airing refresh after them must still have time. | `title_searches_get_half_the_budget` |
+| R8 | In a sync, title searches, which are optional there, may use only half of what is left of the budget. `anipv meta match --search`, which only searches, has the whole budget. | The airing refresh after them must still have time. | `title_searches_get_half_the_budget` |
 
 ### Failures: no answer
 
@@ -52,7 +52,7 @@ then the code and the tests.
 | R9 | A request that gets no answer, or a server error (5xx), is sent once more after 5 s. That pause isn't a rate limit wait: it isn't counted or announced. | Most failures are brief. | `server_errors_and_failures_are_retried_once` |
 | R10 | The client gives up on AniList after two failed requests in a row. A failure is no answer, a 5xx, or an answer that isn't JSON (a proxy or captive portal answering instead). A JSON answer, even an error, resets the count. | One slow batch isn't an outage; two in a row are. | `the_client_gives_up_after_two_failures`, `answers_that_arent_json_give_up` |
 | R11 | The client also gives up when a 429 outlasts the budget (R7). | Every later request would fail the same way. | `a_long_rate_limit_gives_up_unless_optional` |
-| R12 | Optional requests (title searches) never give up and don't count towards it. | A failed search must not cost the airing refresh. | `optional_failures_dont_count`, `a_long_rate_limit_gives_up_unless_optional` |
+| R12 | Optional requests (a sync's title searches) never give up and don't count towards it. | A failed search must not cost the airing refresh. | `optional_failures_dont_count`, `a_long_rate_limit_gives_up_unless_optional` |
 | R13 | Once the client gives up, every later request fails at once without being sent, and the reason is reported once, not by every query. Ids not answered get no check record, so they are asked again next time. | No timeouts or waits for requests that would fail, and one message for one outage. | `the_client_gives_up_after_two_failures`, `a_given_up_client_skips_the_relations` |
 
 ### Batches

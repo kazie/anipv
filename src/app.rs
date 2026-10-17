@@ -515,7 +515,8 @@ pub fn catch_up(lib: &Library, key: &str) -> Result<CatchUp> {
     let s = &lib.series[i];
     let Some((f, _)) = lib.franchise_pos(i) else {
         // A series of its own: a franchise of one stop.
-        let stop = crate::franchise::Stop { series: i, folder: None, items: Vec::new(), watched: false };
+        let stop =
+            crate::franchise::Stop { series: i, folder: None, items: Vec::new(), watched: false, short: String::new() };
         let alone = crate::franchise::Franchise { name: s.title.clone(), stops: vec![stop] };
         return Ok(catch_up_to(lib, &alone, 0));
     };
@@ -554,7 +555,7 @@ pub fn catch_up_to(lib: &Library, f: &crate::franchise::Franchise, pos: usize) -
             (false, _) => Some(SeriesStatus::Following),
         };
         if let Some(status) = status {
-            events.push(status_event(s, status, "caught up".into(), false));
+            events.push(status_event(s, status, CAUGHT_UP_NOTE.into(), false));
         }
     }
     let entries = upto.iter().map(|stop| lib.stop_label(stop).to_string()).collect();
@@ -565,6 +566,10 @@ pub fn catch_up_to(lib: &Library, f: &crate::franchise::Franchise, pos: usize) -
 fn status_event(s: &Series, status: SeriesStatus, note: String, auto: bool) -> EventBody {
     EventBody::SeriesStatus { series: s.key.clone(), status, note: Some(note), auto, keep: false }
 }
+
+/// The note on the statuses a catch-up sets (see [`catch_up`]). It is stored
+/// in the event log, and the TUI doesn't show it as yours: never reword it.
+pub const CAUGHT_UP_NOTE: &str = "caught up";
 
 /// Everything that counts toward a series' total: its items that do, and
 /// episodes up to the total when it is known.

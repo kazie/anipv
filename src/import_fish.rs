@@ -29,6 +29,10 @@ use crate::library::Library;
 use crate::model::{EpNo, ItemKey, ItemKind, SeriesStatus};
 use crate::parse::is_video;
 
+/// The note on statuses the import applies (`--apply-status`). It is stored
+/// in the event log, and the TUI draws a fish for it: never reword it.
+pub const FISH_NOTE: &str = "from fish history";
+
 /// One `mpv` invocation found in history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Played {

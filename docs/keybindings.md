@@ -62,7 +62,8 @@ Press `?` in the TUI to see these at any time.
 | Key | Action |
 | --- | --- |
 | `space` | add / remove from queue |
-| `⏎` | play this episode |
+| `⏎` | play this episode (or open a ▲ ▼ season) |
+| `[ ]` | previous / next season |
 | `w` | toggle watched |
 | `W` | mark everything up to here watched |
 | `C` | catch up: this and earlier entries watched |

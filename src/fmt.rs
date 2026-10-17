@@ -105,7 +105,7 @@ pub fn clock(secs: f64) -> String {
 
 /// Truncate to `width` display columns (char-based), adding `…` (nothing at
 /// all for width 0, which has no room for it).
-fn trunc(s: &str, width: usize) -> String {
+pub fn trunc(s: &str, width: usize) -> String {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     if s.width() <= width {
         return s.to_string();

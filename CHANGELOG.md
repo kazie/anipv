@@ -8,6 +8,10 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The episode list links the franchise entries around it: a `▲` row first
+  and a `▼` row last open the one before or after (⏎), and `[` / `]` do from
+  any row. `g` / `G` still go to the first and last episode (the links are
+  one more `k` / `j`), and Esc goes back to where you opened the series from.
 - `anipv update`: scans every media folder, then updates metadata as the TUI
   does on start (and the offline database weekly), made to run unattended.
   An unreachable folder or network trouble is a warning and changes nothing.
@@ -79,6 +83,23 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The series header is calmer. The franchise's name is in its border, the
+  title is coloured by status (no status word), and the small facts (★,
+  members, the AniList id as `ⓐ12345`, `+2 names` merged into it) sit at the
+  right, giving way one by one on narrow terminals instead of wrapping. The
+  second line has progress, new episodes, the format and your own note; the
+  franchise's entries are at its right, named
+  short (`S1 ✓ → S2 ✓ → ▸S3◂`, `Pretty Gray → ▸Full Gate!◂`). When the next
+  episode airs is in the bottom border. AniList's name for the series shows
+  only when it's another name (`ⓐ JoJo no Kimyou na Bouken…`). Notes anipv
+  wrote itself ("all 12 episodes watched", "caught up") and the series key
+  are gone, and
+  statuses from fish history show a puffer fish `ϵ( 'Θ' )϶` in the border.
+  A folder numbering on past AniList's count (later seasons in one folder)
+  shows `0/51 (ⓐ24 eps)`, not `0/24`.
+- Franchises without a folder are named without a season (`Grand Blue`, not
+  `Grand Blue S2`).
+- `U` (undo merges) lists the names it would split off and asks first.
 - The integration tests' stand-in for mpv is now written in Rust (the hidden
   `anipv fake-mpv`) instead of Python, so the tests no longer need (or
   quietly skip without) `python3`. Its `--demo` mode plays in real time and

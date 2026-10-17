@@ -2,7 +2,7 @@
 //! each screen. Run `cargo insta review` after intentional UI changes.
 #![expect(clippy::unwrap_used, reason = "test helpers outside #[test] fns")]
 
-use anipv::tui::app::View;
+use anipv::tui::app::{DetailRow, View};
 use anipv::tui::{App, ui};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -20,6 +20,17 @@ fn app() -> (tempfile::TempDir, App) {
 
 fn render(app: &mut App) -> String {
     render_sized(app, 110, 28)
+}
+
+/// The items in Detail (the rows that aren't season links).
+fn items(app: &App) -> Vec<&anipv::library::Item> {
+    app.detail_rows().into_iter().filter_map(DetailRow::item).collect()
+}
+
+/// The key of the item under the cursor in Detail.
+fn selected_item(app: &App) -> Option<anipv::model::ItemKey> {
+    let i = app.detail_state.selected()?;
+    Some(app.detail_rows().get(i)?.item()?.key.clone())
 }
 
 fn render_sized(app: &mut App, width: u16, height: u16) -> String {
@@ -73,12 +84,12 @@ fn detail_hides_episodes_not_on_disk() {
     let s = render(&mut app);
     assert!(s.contains("Episodes · d shows 26 not on disk"), "{s}");
     assert!(!s.lines().any(|l| l.starts_with('│') && l.contains("not on disk")), "no missing rows:\n{s}");
-    let selected = |app: &App| app.detail_state.selected().map(|i| app.detail_rows()[i].key.describe());
+    let selected = |app: &App| selected_item(app).map(|k| k.describe());
     let next_up = selected(&app);
     app.press("d");
     let s = render(&mut app);
     assert!(s.contains("Episodes · d hides 26 not on disk"), "{s}");
-    assert_eq!(app.detail_rows().len(), 26 + app.lib.get("sousou no frieren").unwrap().on_disk_items());
+    assert_eq!(items(&app).len(), 26 + app.lib.get("sousou no frieren").unwrap().on_disk_items());
     assert_eq!(selected(&app), next_up, "the cursor stays put");
     // From a hidden row, hiding moves to the first row still shown.
     app.press("g");
@@ -101,6 +112,178 @@ fn series_view_filters_and_searches() {
     insta::assert_snapshot!("series_search", s);
     app.press("\x1b");
     assert!(app.query.is_empty());
+}
+
+/// A season of a franchise links to the seasons around it: a `▲` row first
+/// and a `▼` row last (one more k or j past g and G), opened with ⏎ (or `[`
+/// and `]`, from any row); Esc
+/// still goes back to where Detail was opened from. The header names the
+/// seasons short and marks the one shown.
+#[test]
+fn detail_links_the_seasons_around_it() {
+    let (_d, mut app) = app();
+    app.press("3/frieren s2\n\n");
+    assert_eq!(app.detail_series().map(|s| s.key.as_str()), Some("sousou no frieren s2"));
+    let s = render(&mut app);
+    insta::assert_snapshot!("detail_seasons", s);
+    let key = |app: &App| app.detail_series().map(|s| s.key.clone());
+    let first = |app: &App| matches!(app.detail_rows()[0], DetailRow::Season { next: false, .. });
+    assert!(first(&app));
+    assert!(matches!(app.detail_rows().last(), Some(DetailRow::Item(_))), "no season after it");
+    // g is the first episode; the link is one more k. Keys for items do
+    // nothing on it.
+    app.press("g");
+    assert_eq!(app.detail_state.selected(), Some(1));
+    app.press("k");
+    let watched = app.lib.get("sousou no frieren s2").unwrap().watched_count();
+    app.press("wW ");
+    assert_eq!(app.lib.get("sousou no frieren s2").unwrap().watched_count(), watched);
+    assert!(app.queue.is_empty());
+    // ⏎ on it opens the season before, at its next episode.
+    app.press("\n");
+    assert_eq!(key(&app).as_deref(), Some("sousou no frieren"));
+    let next_up = app.detail_series().unwrap().next_up().map(|i| i.key.clone());
+    let selected = app.detail_state.selected().and_then(|i| app.detail_rows()[i].item().map(|it| it.key.clone()));
+    assert_eq!(selected, next_up);
+    assert!(matches!(app.detail_rows().last(), Some(DetailRow::Season { next: true, .. })));
+    assert!(!first(&app), "no season before the first");
+    // [ and ] from any row; at either end, a message.
+    app.press("[");
+    assert_eq!(app.current_message(), Some("nothing before this one"));
+    app.press("]");
+    assert_eq!(key(&app).as_deref(), Some("sousou no frieren s2"));
+    app.press("]");
+    assert_eq!(app.current_message(), Some("nothing after this one"));
+    // On a season link, showing or hiding rows keeps the cursor on it.
+    app.press("gk");
+    for key in ["d", "x", "d", "x"] {
+        app.press(key);
+        assert_eq!(app.detail_state.selected(), Some(0), "after {key}");
+    }
+    app.press("[Gj");
+    let last = app.rows_len(View::Detail) - 1;
+    for key in ["d", "d"] {
+        app.press(key);
+        assert_eq!(app.detail_state.selected(), Some(app.rows_len(View::Detail) - 1), "after {key}");
+    }
+    assert_eq!(app.detail_state.selected(), Some(last));
+    app.press("]");
+    // Esc goes back to the Series view, not to the season before.
+    app.press("\x1b");
+    assert_eq!(app.view, View::Series);
+}
+
+/// A status taken from the fish shell's history shows as a little fish in
+/// the header's border, not as its note; a note of yours is quoted, at the
+/// right; one anipv wrote itself isn't shown.
+#[test]
+fn header_notes_fish_and_yours_only() {
+    use anipv::events::EventBody;
+    use anipv::model::SeriesStatus;
+    let (_d, mut app) = app();
+    let note = Some(anipv::import_fish::FISH_NOTE.to_string());
+    app.ctx.set_status(&app.lib, "meitantei precure", SeriesStatus::Following, note).unwrap();
+    app.reload();
+    app.press("3/meitantei\n\n");
+    let s = render(&mut app);
+    assert!(s.lines().nth(1).is_some_and(|l| l.ends_with("ϵ( 'Θ' )϶ ─╮")), "{s}");
+    assert!(!s.contains(anipv::import_fish::FISH_NOTE), "{s}");
+
+    app.ctx.set_status(&app.lib, "meitantei precure", SeriesStatus::Following, Some("cute".into())).unwrap();
+    app.reload();
+    let s = render(&mut app);
+    let line2 = s.lines().nth(3).unwrap();
+    assert!(line2.starts_with("│1/48 · 2 new · TV  “cute”"), "your note ends line 2:\n{s}");
+
+    // Nor does a catch-up's.
+    let note = Some(anipv::app::CAUGHT_UP_NOTE.to_string());
+    app.ctx.set_status(&app.lib, "meitantei precure", SeriesStatus::Following, note).unwrap();
+    app.reload();
+    let s = render(&mut app);
+    assert!(!s.contains(anipv::app::CAUGHT_UP_NOTE), "{s}");
+
+    let series = "meitantei precure".to_string();
+    let note = Some("all 48 episodes watched".to_string());
+    let auto = EventBody::SeriesStatus { series, status: SeriesStatus::Completed, note, auto: true, keep: false };
+    app.ctx.record([auto]).unwrap();
+    app.reload();
+    let s = render(&mut app);
+    assert!(!s.contains("episodes watched") && !s.contains("ϵ("), "{s}");
+}
+
+/// More episodes on disk than AniList counts (a folder numbering on through
+/// later seasons): the total is the latest on disk, AniList's in brackets.
+/// A total you set yourself stays.
+#[test]
+fn header_total_counts_what_is_on_disk() {
+    use anipv::events::EventBody;
+    use anipv::index::db::SeriesMeta;
+    let (_d, mut app) = app();
+    let fewer = SeriesMeta {
+        series: "meitantei precure".into(),
+        anilist: Some(195_000),
+        episodes: Some(2),
+        ..SeriesMeta::default()
+    };
+    app.ctx.store_sync(&anipv::meta::SyncResult { rows: vec![fewer], ..Default::default() }).unwrap();
+    app.reload_index();
+    app.press("3/meitantei\n\n");
+    let s = render(&mut app);
+    assert!(s.lines().nth(3).is_some_and(|l| l.starts_with("│1/3 (ⓐ2 eps) · 2 new")), "{s}");
+
+    let yours = EventBody::Meta { series: "meitantei precure".into(), anilist: Some(195_000), episodes: Some(2) };
+    app.ctx.record([yours]).unwrap();
+    app.reload();
+    let s = render(&mut app);
+    assert!(s.lines().nth(3).is_some_and(|l| l.starts_with("│1/2 · 2 new")), "{s}");
+}
+
+/// Names merged into a series show as a count; `U` lists them and asks
+/// before splitting them off.
+#[test]
+fn merged_names_are_counted_and_listed_before_unmerging() {
+    let (_d, mut app) = app();
+    app.press("3/kusuriya\n\nm");
+    app.press("frieren\n");
+    assert_eq!(app.detail_series().map(|s| s.key.as_str()), Some("sousou no frieren"));
+    let s = render(&mut app);
+    assert!(s.contains("+1 name · ★ 90"), "{s}");
+    app.press("U");
+    let s = render(&mut app);
+    assert!(s.contains("kusuriya no hitorigoto s3") && s.contains("y/Enter splits them off"), "{s}");
+    app.press("n");
+    assert_eq!(app.lib.get("sousou no frieren").unwrap().aliases.len(), 1, "any other key cancels");
+    app.press("Uy");
+    assert!(app.lib.get("sousou no frieren").unwrap().aliases.is_empty());
+}
+
+/// Space queues and moves down, but not past the last episode onto the
+/// link to the next season (so a ⏎ after it still plays).
+#[test]
+fn space_stays_on_the_episodes() {
+    let (_d, mut app) = app();
+    app.press("3/frieren\n\nG");
+    let last = selected_item(&app);
+    app.press(" ");
+    assert_eq!(selected_item(&app), last);
+    assert_eq!(app.queue.len(), 1);
+}
+
+/// A narrow header keeps the title and drops the small facts, least
+/// important first; nothing wraps.
+#[test]
+fn narrow_header_drops_facts_first() {
+    let (_d, mut app) = app();
+    app.press("3/yuru\n\n");
+    let wide = render_sized(&mut app, 110, 28);
+    assert!(wide.contains("★ 83 · 251k · ⓐ98444│"), "{wide}");
+    let s = render_sized(&mut app, 30, 28);
+    let line = s.lines().nth(2).unwrap();
+    assert!(line.starts_with("│Yuru Camp") && line.ends_with(" ★ 83 · ⓐ98444│"), "members go first:\n{s}");
+    let s = render_sized(&mut app, 22, 28);
+    insta::assert_snapshot!("detail_narrow", s);
+    let line = s.lines().nth(2).unwrap();
+    assert!(line.starts_with("│Yuru Camp") && line.ends_with("★ 83│"), "then the id:\n{s}");
 }
 
 #[test]
@@ -126,7 +309,7 @@ fn detail_view_marks_and_extras() {
 #[test]
 fn hiding_extras_keeps_the_cursor_near() {
     let (_d, mut app) = app();
-    let selected = |app: &App| app.detail_state.selected().map(|i| app.detail_rows()[i].key.describe());
+    let selected = |app: &App| selected_item(app).map(|k| k.describe());
     app.press("3/aria\n\nxG");
     assert_eq!(selected(&app).as_deref(), Some("ncop"));
     app.press("x");
@@ -174,7 +357,7 @@ fn merge_popup_merges_series() {
 fn merge_from_detail_keeps_a_cursor() {
     let (_d, mut app) = app();
     app.press("3/kusuriya\n\n");
-    let selected = |app: &App| app.detail_state.selected().map(|i| app.detail_rows()[i].key.clone());
+    let selected = selected_item;
     let item = selected(&app).unwrap();
     app.press("m");
     app.press("frieren\n");
@@ -376,7 +559,7 @@ fn o_shows_the_url_without_an_opener() {
     app.press("3/yuru\n\no");
     assert_eq!(app.current_message(), Some("https://anilist.co/anime/98444"));
     let s = render(&mut app);
-    assert!(s.contains("★ 83 · 251k members") && s.contains("anilist.co/anime/98444"), "{s}");
+    assert!(s.contains("★ 83 · 251k · ⓐ98444") && s.contains("anilist.co/anime/98444"), "{s}");
 }
 
 /// `ctrl-r` refreshes everything; asking again while it runs queues one more.
@@ -502,7 +685,7 @@ fn enter_in_detail_plays_only_that_item() {
     let rows = app.detail_rows();
     let idx = rows
         .iter()
-        .position(|it| it.present() && !app.is_queued("sousou no frieren", &it.key))
+        .position(|r| r.item().is_some_and(|it| it.present() && !app.is_queued("sousou no frieren", &it.key)))
         .expect("an episode on disk that is not queued");
     drop(rows);
     app.detail_state.select(Some(idx));
@@ -550,8 +733,9 @@ fn long_episode_list_scrolls_with_the_cursor() {
     assert_eq!(app.detail_state.offset(), 0);
     app.press("G");
     let s = render(&mut app);
-    let last = app.detail_rows().last().unwrap().key.describe();
-    assert!(s.lines().any(|l| l.contains("│▌") && l.contains(&format!(" {last} "))), "last row selected:\n{s}");
+    // G is the last episode; the link to the next season is one more j.
+    let last = items(&app).last().unwrap().key.describe();
+    assert!(s.lines().any(|l| l.contains("│▌") && l.contains(&format!(" {last} "))), "last episode selected:\n{s}");
     assert!(!s.contains(" 01 "), "scrolled past the top:\n{s}");
     let offset = app.detail_state.offset();
     assert!(offset > 0 && offset < total);
@@ -681,7 +865,7 @@ fn reload_keeps_selections_by_key() {
     let file = app.file_rows_in(1..2)[0].file.path.clone();
     // Detail: the episode after next up.
     app.press("3/frieren\n\nj");
-    let item = app.detail_rows()[app.detail_state.selected().unwrap()].key.clone();
+    let item = app.detail_rows()[app.detail_state.selected().unwrap()].item().unwrap().key.clone();
     // Behind the TUI's back: skip the first inbox row, and a new (earlier)
     // Frieren episode arrives, adding rows before the selected file and episode.
     app.ctx.set_status(&app.lib, &inbox[0], SeriesStatus::Skipped, None).unwrap();
@@ -694,7 +878,7 @@ fn reload_keeps_selections_by_key() {
     assert_eq!(app.selected_inbox().map(|s| s.key.as_str()), Some(inbox[1].as_str()));
     let files_sel = app.files_state.selected().unwrap();
     assert_eq!(app.file_rows_in(files_sel..files_sel + 1)[0].file.path, file);
-    assert_eq!(app.detail_rows()[app.detail_state.selected().unwrap()].key, item);
+    assert_eq!(app.detail_rows()[app.detail_state.selected().unwrap()].item().unwrap().key, item);
 }
 
 /// The merge picker keeps its cursor on the same target across a reload.
@@ -825,7 +1009,7 @@ fn detail_rows_follow_a_reload() {
     use anipv::events::EventBody;
     let (_d, mut app) = app();
     app.press("3/yuru\n\n");
-    let shown = |app: &App| -> Vec<String> { app.detail_rows().iter().map(|i| i.key.describe()).collect() };
+    let shown = |app: &App| -> Vec<String> { items(app).iter().map(|i| i.key.describe()).collect() };
     let expected = |app: &App| -> Vec<String> {
         let s = app.detail_series().unwrap();
         s.ordered_items(app.episodes_shown.extras, app.episodes_shown.missing)

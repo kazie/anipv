@@ -721,7 +721,7 @@ fn next(ctx: &Ctx, paused: bool, out: &mut impl Write) -> Result<()> {
     )?;
     for s in list {
         let next = s.next_up().map_or_else(|| "—".into(), |i| i.key.describe());
-        let new = s.new_episodes().len();
+        let new = s.new_count();
         let active = ago_opt(s.last_activity(), now);
         let title = if s.status == SeriesStatus::Paused { yellow(&pad(&s.title, 40)) } else { pad(&s.title, 40) };
         writeln!(
@@ -971,11 +971,10 @@ fn import_fish(ctx: &Ctx, s: &mut Session, a: ImportArgs, out: &mut impl Write) 
     let written = ctx.log.append_events(&events)?;
     s.add(ctx, Recorded { events, written });
     if a.apply_status {
-        let recorded = ctx.record(
-            p.proposals
-                .iter()
-                .map(|pr| EventBody::status(pr.series.clone(), pr.status, Some("from fish history".into()))),
-        )?;
+        let recorded =
+            ctx.record(p.proposals.iter().map(|pr| {
+                EventBody::status(pr.series.clone(), pr.status, Some(crate::import_fish::FISH_NOTE.into()))
+            }))?;
         s.add(ctx, recorded);
     }
     let also = if a.apply_status { " and applied statuses" } else { "" };

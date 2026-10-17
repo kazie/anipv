@@ -176,6 +176,11 @@ impl Series {
         self.new_iter().collect()
     }
 
+    /// How many [`Series::new_episodes`] there are.
+    pub fn new_count(&self) -> usize {
+        self.new_iter().count()
+    }
+
     fn new_iter(&self) -> impl Iterator<Item = &Item> {
         let after = self.max_watched();
         self.episodes().filter(|i| i.present() && !i.state.is_watched()).filter(move |i| match (after, i.key.ep) {
@@ -658,8 +663,13 @@ fn franchises(series: &[Series]) -> (Vec<Franchise>, Vec<Option<(usize, usize)>>
         })
         .collect();
     let mut franchises = crate::franchise::group(&nodes);
-    for stop in franchises.iter_mut().flat_map(|f| &mut f.stops) {
-        stop.watched = stop_watched(series, stop);
+    for f in &mut franchises {
+        let labels: Vec<&str> = f.stops.iter().map(|stop| stop_label(series, stop)).collect();
+        let short = crate::franchise::short_labels(&f.name, &labels);
+        for (stop, short) in f.stops.iter_mut().zip(short) {
+            stop.watched = stop_watched(series, stop);
+            stop.short = short;
+        }
     }
     let mut at: Vec<Option<(usize, usize)>> = vec![None; series.len()];
     for (f, franchise) in franchises.iter().enumerate() {
@@ -673,6 +683,11 @@ fn franchises(series: &[Series]) -> (Vec<Franchise>, Vec<Option<(usize, usize)>>
         }
     }
     (franchises, at)
+}
+
+/// What to call a stop: [`Library::stop_label`].
+fn stop_label<'a>(series: &'a [Series], stop: &'a crate::franchise::Stop) -> &'a str {
+    stop.folder.as_ref().map_or(series[stop.series].title.as_str(), |part| part.name.as_str())
 }
 
 /// Every item of the stop is watched (for a whole series: it is completed,
@@ -1160,7 +1175,23 @@ impl Library {
     /// What to call a stop: its entry folder's name (`Kabukimonogatari`),
     /// else the series' title.
     pub fn stop_label<'a>(&'a self, stop: &'a crate::franchise::Stop) -> &'a str {
-        stop.folder.as_ref().map_or(self.series[stop.series].title.as_str(), |part| part.name.as_str())
+        stop_label(&self.series, stop)
+    }
+
+    /// The short name ([`crate::franchise::Stop::short`]) of series `i`
+    /// in its franchise, if it is one stop; a series over several entry
+    /// folders has none (its title says more than its first arc's name).
+    pub fn short_series_label(&self, i: usize) -> Option<&str> {
+        let (f, _) = self.franchise_pos(i)?;
+        let mut stops = f.stops_of(i);
+        let (first, more) = (stops.next()?, stops.next());
+        more.is_none().then(|| f.stops[first].short.as_str())
+    }
+
+    /// The series (indices) before and after series `i` in its franchise's
+    /// watch order (see [`Franchise::neighbours`]).
+    pub fn franchise_neighbours(&self, i: usize) -> (Option<usize>, Option<usize>) {
+        self.franchise_pos(i).map_or((None, None), |(f, _)| f.neighbours(i))
     }
 
     /// The franchise stop whose entry folder is called `name` (compared as

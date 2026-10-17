@@ -94,7 +94,7 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 | | |
 | --- | --- |
 | <img src="assets/img/series.svg" alt="series list"> | <img src="assets/img/detail.svg" alt="episode list with extras"> |
-| **Series**: everything on disk, filterable by status and fuzzy-searchable. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. |
+| **Series**: everything on disk, filterable by status and fuzzy-searchable. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. The seasons around it are a row away (`▲`/`▼`, or `[`/`]`). |
 | <img src="assets/img/queue.svg" alt="play queue"> | <img src="assets/img/status.svg" alt="status picker"> |
 | **Queue**: reorder with `J`/`K`, play with `p`, or `y` to copy the plain `mpv …` command. | **Status**: `s`, then a letter. Dropping or pausing asks for an optional note. |
 

@@ -182,7 +182,7 @@ impl std::fmt::Display for StillLimited {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AniList rate limit: try again in {left} s", left = crate::fmt::secs_up(self.left))?;
         if !self.waited.is_zero() {
-            write!(f, " (already waited {waited} s)", waited = self.waited.as_secs())?;
+            write!(f, " (already waited {waited} s)", waited = crate::fmt::secs_up(self.waited))?;
         }
         Ok(())
     }

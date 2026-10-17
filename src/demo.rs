@@ -256,4 +256,26 @@ mod tests {
         let (mono, pos) = lib.franchise_of("nisemonogatari").unwrap();
         assert_eq!((mono.name.as_str(), pos, mono.stops.len()), ("Monogatari Series", 1, 3));
     }
+
+    /// Short names for a franchise's entries: a season by its number, the
+    /// first one `S1`; folder entries and a movie keep their whole name. Each
+    /// entry knows the ones before and after it.
+    #[test]
+    fn franchise_entries_have_short_names_and_neighbours() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = setup_now(dir.path()).unwrap().library().unwrap();
+        let short = |key: &str| lib.short_series_label(lib.index_of(key).unwrap());
+        assert_eq!(short("sousou no frieren"), Some("S1"));
+        assert_eq!(short("sousou no frieren s2"), Some("S2"));
+        assert_eq!(short("nisemonogatari"), Some("Nisemonogatari"));
+        assert_eq!(short("one piece"), None, "not in a franchise");
+        let keys = |key: &str| {
+            let (prev, next) = lib.franchise_neighbours(lib.index_of(key).unwrap());
+            let key = |i: Option<usize>| i.map(|i| lib.series[i].key.as_str());
+            (key(prev), key(next))
+        };
+        assert_eq!(keys("nisemonogatari"), (Some("bakemonogatari"), Some("nekomonogatari")));
+        assert_eq!(keys("sousou no frieren"), (None, Some("sousou no frieren s2")));
+        assert_eq!(keys("one piece"), (None, None));
+    }
 }
