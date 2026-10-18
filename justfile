@@ -77,6 +77,21 @@ man:
 completions shell:
     cargo run -q -- completions {{shell}}
 
+# Garbage-collect stale build artifacts, e.g. `just gc 3` (defaults to 14 days).
+gc days="14":
+    @if [ -d target ]; then \
+        echo "Removing build artifacts older than {{days}} days from target/..."; \
+        find target -type f -mtime +{{days}} -exec rm -f {} +; \
+        find target -type d -empty -delete; \
+        echo "Done."; \
+    else \
+        echo "No target/ directory found; nothing to clean."; \
+    fi
+
+# Clean all build artifacts.
+clean:
+    cargo clean
+
 # Regenerate README screenshots (SVG) from the demo library.
 screenshots:
     cargo build

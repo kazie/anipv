@@ -222,6 +222,8 @@ just demo             # try the TUI against a throwaway demo library
 just screenshots      # regenerate the SVGs in this README
 just record           # re-record the demo GIF and assets/tapes/all.txt (needs vhs and ttyd)
 just update-fixtures  # update golden files after an intentional change, then review
+just clean            # remove build artifacts
+just gc               # garbage-collect stale build artifacts (>14 days old, or e.g. `just gc 3`)
 just install          # install a release build to ~/.cargo/bin
 ```
 

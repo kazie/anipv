@@ -44,6 +44,9 @@ predicates = "3.1.4"
 proptest = "1.11.0"
 tempfile = "3.27.0"
 
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
