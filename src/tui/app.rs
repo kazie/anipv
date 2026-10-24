@@ -1330,8 +1330,9 @@ impl App {
     }
 
     /// `p`: play the queue, or, with nothing queued, the next episode of the
-    /// series under the cursor.
-    fn play_key(&mut self) {
+    /// series under the cursor; resuming started files, or (`P`) from the
+    /// beginning.
+    fn play_key(&mut self, resume: bool) {
         let before = self.queue.len();
         if self.queue.is_empty() && self.playing.is_none() {
             match self.focused_series().map(|s| s.key.clone()) {
@@ -1342,41 +1343,48 @@ impl App {
                 return;
             }
         }
-        if !self.play_queue() {
+        if !self.play_queue(resume) {
             // mpv did not start: take back what this press queued.
             self.queue.truncate(before);
         }
     }
 
-    /// Start mpv on the whole queue, in order. True if it started.
-    pub fn play_queue(&mut self) -> bool {
+    /// Start mpv on the whole queue, in order, resuming started files (or
+    /// not). True if it started.
+    pub fn play_queue(&mut self, resume: bool) -> bool {
         if self.queue.is_empty() && self.playing.is_none() {
             self.say("queue is empty");
             return false;
         }
         let files = self.ctx.play_files(&self.lib, &self.queue);
-        self.launch(&files)
+        self.launch(files, resume)
     }
 
     /// Start mpv on just this item, leaving the queue as it is.
-    fn play_item(&mut self, series: &str, item: &Item) {
+    fn play_item(&mut self, series: &str, item: &Item, resume: bool) {
         let Some(entry) = entry_for(series, item) else {
             self.say("not on disk");
             return;
         };
         let files = self.ctx.play_files(&self.lib, std::slice::from_ref(&entry));
-        self.launch(&files);
+        self.launch(files, resume);
     }
 
-    /// Spawn mpv on `files` and start tracking it, unless it is already
-    /// running. True if it started.
-    fn launch(&mut self, files: &[crate::mpv::PlayFile]) -> bool {
+    /// Spawn mpv on `files` (from where started ones stopped, or from the
+    /// beginning) and start tracking it, unless it is already running. True
+    /// if it started.
+    fn launch(&mut self, mut files: Vec<crate::mpv::PlayFile>, resume: bool) -> bool {
+        if !resume {
+            for f in &mut files {
+                f.start = None;
+            }
+        }
         if self.playing.is_some() {
             self.say("mpv is already running");
             return false;
         }
         let tx = self.tx.clone();
-        match crate::mpv::spawn_tracked(&self.ctx.cfg, self.ctx.socket_path(), files, move |e| {
+        match crate::mpv::spawn_tracked(&self.ctx.cfg, self.ctx.socket_path(), &files, move |e| {
             let _ = tx.send(Msg::Player(e));
         }) {
             Ok(()) => {
@@ -1538,9 +1546,10 @@ impl App {
                     p.dur = dur;
                 }
             }
-            PlayerEvent::Ended { path, pos, dur, eof } => {
-                match self.ctx.record_playback(&self.lib, &mut self.events, &path, pos, dur, eof) {
-                    Ok((label, outcome)) => match outcome {
+            PlayerEvent::Ended { path, pos, furthest, dur, eof } => {
+                let outcome = self.ctx.outcome(pos, furthest, dur, eof);
+                match self.ctx.record_playback(&self.lib, &mut self.events, &path, outcome) {
+                    Ok(label) => match outcome {
                         Outcome::Watched => {
                             // The queue cursor stays on its row as the rows above it go.
                             let at = self.selected_id(View::Queue);
@@ -1746,7 +1755,9 @@ impl App {
                 None => self.say("no series under the cursor"),
             },
             KeyCode::Char('o') => self.open_anilist(),
-            KeyCode::Char('p') => self.play_key(),
+            KeyCode::Char('p') => self.play_key(true),
+            // In Episodes, `P` plays the episode under the cursor (see `on_detail_key`).
+            KeyCode::Char('P') if self.view != View::Detail => self.play_key(false),
             KeyCode::Char('y') => {
                 self.yank();
             }
@@ -1834,7 +1845,7 @@ impl App {
 
     fn on_upnext_key(&mut self, key: KeyEvent) {
         // Works on an empty list too: that's when paused series are wanted most.
-        if key.code == KeyCode::Char('P') {
+        if key.code == KeyCode::Char('i') {
             self.include_paused = !self.include_paused;
             self.say(if self.include_paused { "showing paused series" } else { "hiding paused series" });
             self.refresh_rows();
@@ -2078,8 +2089,9 @@ impl App {
                 self.queue_state.select(Some(i + 1));
             }
             KeyCode::Char('c') => self.queue.clear(),
+            // Shift-⏎ (where the terminal tells it from ⏎) from the beginning.
             KeyCode::Enter => {
-                self.play_queue();
+                self.play_queue(!key.modifiers.contains(KeyModifiers::SHIFT));
             }
             _ => {}
         }
@@ -2149,7 +2161,9 @@ impl App {
             (KeyCode::Char('a'), _) => self.queue_next_of(&series, true),
             // Play from here: just this item, whatever is queued stays queued
             // (and an item not on disk says so rather than play something else).
-            (KeyCode::Enter, Some(it)) => self.play_item(&series, it),
+            // `P`, or shift-⏎ where the terminal tells it from ⏎, from the beginning.
+            (KeyCode::Enter, Some(it)) => self.play_item(&series, it, !key.modifiers.contains(KeyModifiers::SHIFT)),
+            (KeyCode::Char('P'), Some(it)) => self.play_item(&series, it, false),
             _ => self.series_actions(key, series),
         }
     }
@@ -3322,7 +3336,13 @@ mod tests {
         let path = next.best_file().unwrap().path.clone();
         app.playing = Some(NowPlaying::starting(1));
         let before = Arc::clone(&app.lib);
-        app.on_msg(Msg::Player(PlayerEvent::Ended { path, pos: 1400.0, dur: Some(1420.0), eof: true }));
+        app.on_msg(Msg::Player(PlayerEvent::Ended {
+            path,
+            pos: 1400.0,
+            furthest: 1400.0,
+            dur: Some(1420.0),
+            eof: true,
+        }));
         app.on_msg(Msg::Player(PlayerEvent::Exited { played: true, error: None }));
         assert!(Arc::ptr_eq(&before, &app.lib), "not yet");
         assert!(app.pump());

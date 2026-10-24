@@ -302,6 +302,15 @@ impl WatchState {
         }
     }
 
+    /// Where a started item resumes (s): not when it was stopped back at the
+    /// beginning.
+    pub fn resume_at(&self) -> Option<f64> {
+        match self {
+            Self::Started { pos, .. } if *pos > 0.0 => Some(*pos),
+            _ => None,
+        }
+    }
+
     /// `40%` for started items.
     pub fn percent(&self) -> Option<String> {
         self.fraction().map(|f| format!("{pct:.0}%", pct = f * 100.0))

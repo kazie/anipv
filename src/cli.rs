@@ -892,24 +892,27 @@ fn play_blocking(ctx: &Ctx, s: &mut Session, files: &[crate::mpv::PlayFile], out
                 let name = crate::library::file_name_lossy(&path);
                 writeln!(out, "{play} {name}", play = cyan("▶"))
             }
-            PlayerEvent::Ended { path, pos, dur, eof } => match ctx.record_playback(lib, log, &path, pos, dur, eof) {
-                Err(e) => {
-                    writeln!(out, "{fail} could not record {file}: {e:#}", fail = red("✗"), file = path.display())
+            PlayerEvent::Ended { path, pos, furthest, dur, eof } => {
+                let o = ctx.outcome(pos, furthest, dur, eof);
+                match ctx.record_playback(lib, log, &path, o) {
+                    Err(e) => {
+                        writeln!(out, "{fail} could not record {file}: {e:#}", fail = red("✗"), file = path.display())
+                    }
+                    Ok(what) => match o {
+                        Outcome::Watched => {
+                            writeln!(out, "  {mark} watched {what}", mark = state_glyph(&WatchState::Watched { at: 0 }))
+                        }
+                        Outcome::Partial { pos, .. } => {
+                            let (mark, at) =
+                                (state_glyph(&WatchState::Started { pos, dur: None, at: 0 }), crate::fmt::clock(pos));
+                            writeln!(out, "  {mark} stopped at {at} {what}")
+                        }
+                        Outcome::Nothing => {
+                            writeln!(out, "  {mark} skipped {what}", mark = state_glyph(&WatchState::Unwatched))
+                        }
+                    },
                 }
-                Ok((what, o)) => match o {
-                    Outcome::Watched => {
-                        writeln!(out, "  {mark} watched {what}", mark = state_glyph(&WatchState::Watched { at: 0 }))
-                    }
-                    Outcome::Partial { pos, .. } => {
-                        let (mark, at) =
-                            (state_glyph(&WatchState::Started { pos, dur: None, at: 0 }), crate::fmt::clock(pos));
-                        writeln!(out, "  {mark} stopped at {at} {what}")
-                    }
-                    Outcome::Nothing => {
-                        writeln!(out, "  {mark} skipped {what}", mark = state_glyph(&WatchState::Unwatched))
-                    }
-                },
-            },
+            }
             PlayerEvent::Error(e) => writeln!(out, "{fail} {e}", fail = red("✗")),
             PlayerEvent::Exited { played, error } => {
                 let res = match (played, error) {

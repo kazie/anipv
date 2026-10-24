@@ -366,7 +366,8 @@ mod tests {
         seen.extend(rx.iter().filter(|e| !matches!(e, PlayerEvent::Progress { .. })));
         assert!(seen.contains(&PlayerEvent::Paused(true)) && !seen.contains(&PlayerEvent::Paused(false)), "{seen:?}");
         assert!(seen.contains(&PlayerEvent::Started { path: "/a.mkv".into() }), "{seen:?}");
-        let ended = PlayerEvent::Ended { path: "/a.mkv".into(), pos: 60.0, dur: Some(DURATION), eof: false };
+        let ended =
+            PlayerEvent::Ended { path: "/a.mkv".into(), pos: 60.0, furthest: 60.0, dur: Some(DURATION), eof: false };
         assert_eq!(seen.last(), Some(&ended), "{seen:?}");
     }
 }

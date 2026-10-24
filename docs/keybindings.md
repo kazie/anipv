@@ -11,7 +11,8 @@ Press `?` in the TUI to see these at any time.
 | `1-5 / Tab` | switch view; again: other mode / next filter |
 | `j/k ↑/↓` | move |
 | `g/G` | top / bottom |
-| `p` | play queue (or the next episode here) |
+| `p` | play queue (or the next episode here), resuming |
+| `P` | the same, from the beginning |
 | `y` | copy mpv command for the queue |
 | `v` | while mpv plays: remote mode, keys go to mpv |
 | `s` | set series status (in the Inbox: skip) |
@@ -29,7 +30,7 @@ Press `?` in the TUI to see these at any time.
 | `space` | queue next new episode and move down |
 | `a` | queue all new episodes |
 | `w` | mark next episode watched without playing |
-| `P` | include paused series |
+| `i` | include paused series |
 | `⏎` | open series |
 
 ## Inbox
@@ -63,6 +64,7 @@ Press `?` in the TUI to see these at any time.
 | --- | --- |
 | `space` | add / remove from queue |
 | `⏎` | play this episode (or open a ▲ ▼ season) |
+| `P / shift-⏎` | play this episode from the beginning |
 | `[ ]` | previous / next season |
 | `w` | toggle watched |
 | `W` | mark everything up to here watched |
@@ -91,6 +93,7 @@ Press `?` in the TUI to see these at any time.
 | `d` | remove |
 | `c` | clear |
 | `⏎` | play |
+| `shift-⏎` | play from the beginning |
 
 ## Remote mode (while mpv plays)
 

@@ -400,9 +400,9 @@ fn paused_toggle_works_on_an_empty_up_next() {
     app.reload();
     app.press("1");
     assert!(app.upnext_rows_in(0..usize::MAX).is_empty());
-    app.press("P");
+    app.press("i");
     assert!(!app.upnext_rows_in(0..usize::MAX).is_empty(), "paused series show up");
-    app.press("P");
+    app.press("i");
     assert!(app.upnext_rows_in(0..usize::MAX).is_empty());
 }
 
@@ -420,7 +420,7 @@ fn queue_survives_a_player_that_exits_immediately() {
     // The demo's player is `true`: it exits without ever opening the IPC socket.
     let (_d, mut app) = app();
     app.press("  ");
-    app.play_queue();
+    app.play_queue(true);
     assert!(app.playing.is_some());
     wait_for_player(&mut app);
     assert_eq!(app.queue.len(), 2, "queue kept");
@@ -436,13 +436,19 @@ fn queue_is_consumed_once_watched() {
     let (_d, mut app) = app();
     app.press(" ");
     let path = app.queue[0].file.clone();
-    app.play_queue();
+    app.play_queue(true);
     app.on_msg(Msg::Player(PlayerEvent::Started { path: path.clone() }));
     assert_eq!(app.queue.len(), 1, "still queued while playing");
-    app.on_msg(Msg::Player(PlayerEvent::Ended { path: path.clone(), pos: 60.0, dur: Some(1420.0), eof: false }));
+    app.on_msg(Msg::Player(PlayerEvent::Ended {
+        path: path.clone(),
+        pos: 60.0,
+        furthest: 60.0,
+        dur: Some(1420.0),
+        eof: false,
+    }));
     assert_eq!(app.queue.len(), 1, "stopped partway");
     app.on_msg(Msg::Player(PlayerEvent::Started { path: path.clone() }));
-    app.on_msg(Msg::Player(PlayerEvent::Ended { path, pos: 1400.0, dur: Some(1420.0), eof: true }));
+    app.on_msg(Msg::Player(PlayerEvent::Ended { path, pos: 1400.0, furthest: 1400.0, dur: Some(1420.0), eof: true }));
     assert!(app.queue.is_empty(), "watched");
     wait_for_player(&mut app);
 }
@@ -458,17 +464,65 @@ fn only_watched_files_leave_the_queue() {
     app.press("   5");
     let [a, b, c] = [0, 1, 2].map(|i| app.queue[i].file.clone());
     app.press("jj");
-    app.play_queue();
+    app.play_queue(true);
     app.on_msg(Msg::Player(PlayerEvent::Started { path: a.clone() }));
     assert_eq!(app.playing_file(), Some(a.as_path()), "the playing entry");
-    app.on_msg(Msg::Player(PlayerEvent::Ended { path: a.clone(), pos: 0.0, dur: Some(1420.0), eof: false }));
+    app.on_msg(Msg::Player(PlayerEvent::Ended {
+        path: a.clone(),
+        pos: 0.0,
+        furthest: 0.0,
+        dur: Some(1420.0),
+        eof: false,
+    }));
     assert_eq!(app.playing_file(), None, "nothing playing between files");
     app.on_msg(Msg::Player(PlayerEvent::Started { path: b.clone() }));
-    app.on_msg(Msg::Player(PlayerEvent::Ended { path: b, pos: 1400.0, dur: Some(1420.0), eof: true }));
+    app.on_msg(Msg::Player(PlayerEvent::Ended {
+        path: b,
+        pos: 1400.0,
+        furthest: 1400.0,
+        dur: Some(1420.0),
+        eof: true,
+    }));
     let left: Vec<_> = app.queue.iter().map(|q| q.file.clone()).collect();
     assert_eq!(left, [a, c.clone()], "the skipped file stays");
     assert_eq!(app.queue_state.selected().map(|i| &app.queue[i].file), Some(&c), "cursor kept");
     wait_for_player(&mut app);
+}
+
+/// `p` and ⏎ resume a started episode where it stopped; `P` and shift-⏎ play
+/// it from the beginning.
+#[test]
+fn resume_or_play_from_the_beginning() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (d, mut app) = app();
+    // An "mpv" that writes down its arguments and exits.
+    let log = d.path().join("mpv-args");
+    app.ctx.cfg.mpv = "sh".into();
+    app.ctx.cfg.mpv_args =
+        vec!["-c".into(), format!("printf '%s\\n' \"$@\" > '{log}'", log = log.display()), "sh".into()];
+    let started_at = |app: &mut App, key: KeyEvent| {
+        let _ = std::fs::remove_file(&log);
+        app.on_key(key);
+        wait_for_player(app);
+        let args = std::fs::read_to_string(&log).unwrap();
+        args.lines().find_map(|a| a.strip_prefix("--start=")).map(str::to_owned)
+    };
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    // Ranma's episode 1 is 42% in.
+    app.press("3/ranma\n\n");
+    assert_eq!(selected_item(&app).map(|k| k.describe()).as_deref(), Some("01"));
+    let resume = started_at(&mut app, key(KeyCode::Enter));
+    assert!(resume.is_some(), "⏎ resumes");
+    assert_eq!(started_at(&mut app, key(KeyCode::Char('p'))), resume, "p resumes");
+    assert_eq!(started_at(&mut app, key(KeyCode::Char('P'))), None, "P from the beginning");
+    assert_eq!(started_at(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)), None, "shift-⏎ too");
+    // The queue (`p` queued the episode it played): `P` anywhere else,
+    // shift-⏎ in the Queue view.
+    app.press("5");
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(started_at(&mut app, key(KeyCode::Enter)), resume);
+    assert_eq!(started_at(&mut app, key(KeyCode::Char('P'))), None);
+    assert_eq!(started_at(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)), None);
 }
 
 /// A failed write must stay visible instead of being replaced by "Show → status".
@@ -766,7 +820,7 @@ fn p_queues_the_next_episode_when_the_queue_is_empty() {
 #[test]
 fn play_queue_with_nothing_queued_says_so() {
     let (_d, mut app) = app();
-    app.play_queue();
+    app.play_queue(true);
     assert!(app.playing.is_none());
     assert_eq!(app.current_message(), Some("queue is empty"));
 }

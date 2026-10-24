@@ -6,7 +6,8 @@
 //! file starts out with the last reported path and duration (the same file
 //! again, or one of the same length, gets no report); the file mpv may
 //! already be on when anipv connects is followed too. When a file ends (or
-//! mpv quits) the furthest position decides whether it counts as watched.
+//! mpv quits) the furthest position decides whether it counts as watched,
+//! and the last one is where it resumes.
 //! See <https://mpv.io/manual/stable/#json-ipc>.
 //!
 //! The same connection carries key presses the other way (see [`Remote`]).
@@ -216,8 +217,10 @@ pub enum PlayerEvent {
     Ended {
         /// File path.
         path: PathBuf,
-        /// Furthest position reached (s).
+        /// Last position (s): where it resumes.
         pos: f64,
+        /// Furthest position reached (s): decides whether it was watched.
+        furthest: f64,
         /// Duration (s).
         dur: Option<f64>,
         /// Reached the end of the file.
@@ -274,6 +277,8 @@ struct Current {
     started: bool,
     /// Furthest position reached: seeking back doesn't undo progress.
     max_pos: f64,
+    /// Last position reported: where to resume.
+    last_pos: f64,
     /// When the last `Progress` for this file was sent (throttled to two a
     /// second); `None` = none yet, so each file's first position goes out.
     last_sent: Option<Instant>,
@@ -296,6 +301,7 @@ impl Current {
                     && let Some(path) = &self.path
                 {
                     self.max_pos = self.max_pos.max(pos);
+                    self.last_pos = pos;
                     if !self.started {
                         self.started = true;
                         emit(PlayerEvent::Started { path: path.clone() });
@@ -317,7 +323,7 @@ fn close(cur: &mut Option<Current>, eof: bool, emit: &dyn Fn(PlayerEvent)) {
         && c.started
         && let Some(path) = c.path
     {
-        emit(PlayerEvent::Ended { path, pos: c.max_pos, dur: c.dur, eof });
+        emit(PlayerEvent::Ended { path, pos: c.last_pos, furthest: c.max_pos, dur: c.dur, eof });
     }
 }
 
@@ -457,6 +463,10 @@ pub enum Outcome {
 /// played to the end (see [`outcome`]).
 const END_SLACK: f64 = 5.0;
 
+/// Playback (s) that counts as started: less is ignored, and a file stopped
+/// before this resumes from the beginning.
+const MIN_PLAYED: f64 = 30.0;
+
 /// Decide what an `Ended` event means given the watched threshold.
 ///
 /// Reaching the end of the file only counts when playback got near the
@@ -469,11 +479,15 @@ const END_SLACK: f64 = 5.0;
 /// threshold (a threshold of `1.0` could never be reached otherwise), also
 /// without an end of file: with `keep-open`, mpv stays on the last frame and
 /// the file ends when mpv is quit.
-pub fn outcome(pos: f64, dur: Option<f64>, eof: bool, threshold: f64) -> Outcome {
+///
+/// How far playback got (`furthest`) decides that, so seeking back doesn't
+/// undo progress; a partly watched file resumes from where it stopped
+/// (`pos`), or from the beginning when that is near it.
+pub fn outcome(pos: f64, furthest: f64, dur: Option<f64>, eof: bool, threshold: f64) -> Outcome {
     match dur {
-        Some(d) if pos / d >= threshold || d - pos <= END_SLACK => Outcome::Watched,
+        Some(d) if furthest / d >= threshold || d - furthest <= END_SLACK => Outcome::Watched,
         None if eof => Outcome::Watched,
-        _ if pos >= 30.0 => Outcome::Partial { pos, dur },
+        _ if furthest >= MIN_PLAYED => Outcome::Partial { pos: if pos < MIN_PLAYED { 0.0 } else { pos }, dur },
         _ => Outcome::Nothing,
     }
 }
@@ -537,19 +551,33 @@ mod tests {
     #[test]
     fn outcomes() {
         // The end of a file whose duration is known counts only if we got there.
-        assert_eq!(outcome(1439.0, Some(1440.0), true, 0.85), Outcome::Watched);
+        assert_eq!(outcome(1439.0, 1439.0, Some(1440.0), true, 0.85), Outcome::Watched);
         // A partly downloaded file: mpv hits its end after 8 of 24 minutes.
-        assert_eq!(outcome(480.0, Some(1440.0), true, 0.85), Outcome::Partial { pos: 480.0, dur: Some(1440.0) });
-        assert_eq!(outcome(10.0, None, true, 0.85), Outcome::Watched, "no duration: trust the end");
-        assert_eq!(outcome(1300.0, Some(1440.0), false, 0.85), Outcome::Watched);
-        assert_eq!(outcome(600.0, Some(1440.0), false, 0.85), Outcome::Partial { pos: 600.0, dur: Some(1440.0) });
-        assert_eq!(outcome(5.0, Some(1440.0), false, 0.85), Outcome::Nothing);
-        assert_eq!(outcome(100.0, None, false, 0.85), Outcome::Partial { pos: 100.0, dur: None });
+        assert_eq!(outcome(480.0, 480.0, Some(1440.0), true, 0.85), Outcome::Partial { pos: 480.0, dur: Some(1440.0) });
+        assert_eq!(outcome(10.0, 10.0, None, true, 0.85), Outcome::Watched, "no duration: trust the end");
+        assert_eq!(outcome(1300.0, 1300.0, Some(1440.0), false, 0.85), Outcome::Watched);
+        assert_eq!(
+            outcome(600.0, 600.0, Some(1440.0), false, 0.85),
+            Outcome::Partial { pos: 600.0, dur: Some(1440.0) }
+        );
+        assert_eq!(outcome(5.0, 5.0, Some(1440.0), false, 0.85), Outcome::Nothing);
+        assert_eq!(outcome(100.0, 100.0, None, false, 0.85), Outcome::Partial { pos: 100.0, dur: None });
         // The last frame is a little short of the duration: a threshold of 1 is still reachable.
-        assert_eq!(outcome(1439.96, Some(1440.02), true, 1.0), Outcome::Watched);
+        assert_eq!(outcome(1439.96, 1439.96, Some(1440.02), true, 1.0), Outcome::Watched);
         // `keep-open`: quit on the last frame, no end of file.
-        assert_eq!(outcome(1439.96, Some(1440.02), false, 1.0), Outcome::Watched);
-        assert_eq!(outcome(1430.0, Some(1440.02), false, 1.0), Outcome::Partial { pos: 1430.0, dur: Some(1440.02) });
+        assert_eq!(outcome(1439.96, 1439.96, Some(1440.02), false, 1.0), Outcome::Watched);
+        assert_eq!(
+            outcome(1430.0, 1430.0, Some(1440.02), false, 1.0),
+            Outcome::Partial { pos: 1430.0, dur: Some(1440.02) }
+        );
+        // Seeking back resumes there, but doesn't undo progress: how far it got decides.
+        assert_eq!(
+            outcome(300.0, 900.0, Some(1440.0), false, 0.85),
+            Outcome::Partial { pos: 300.0, dur: Some(1440.0) }
+        );
+        assert_eq!(outcome(60.0, 1400.0, Some(1440.0), false, 0.85), Outcome::Watched);
+        // Seeking ahead to 4:20 and back to the start: resume from the beginning.
+        assert_eq!(outcome(5.0, 260.0, Some(1440.0), false, 0.85), Outcome::Partial { pos: 0.0, dur: Some(1440.0) });
     }
 
     /// Feed `lines` to [`follow`] as mpv would and collect everything it
@@ -601,11 +629,11 @@ mod tests {
             vec![
                 PlayerEvent::Started { path: "/a.mkv".into() },
                 PlayerEvent::Paused(false),
-                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 184.1, dur: Some(184.2), eof: true },
+                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 184.1, furthest: 184.1, dur: Some(184.2), eof: true },
                 PlayerEvent::Started { path: "/b.mkv".into() },
                 PlayerEvent::Paused(true),
                 // No duration reported for it: the same as the one before.
-                PlayerEvent::Ended { path: "/b.mkv".into(), pos: 700.0, dur: Some(184.2), eof: false },
+                PlayerEvent::Ended { path: "/b.mkv".into(), pos: 700.0, furthest: 700.0, dur: Some(184.2), eof: false },
             ]
         );
     }
@@ -625,7 +653,7 @@ mod tests {
             evs,
             vec![
                 PlayerEvent::Started { path: "/a.mkv".into() },
-                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 1439.0, dur: None, eof: true },
+                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 1439.0, furthest: 1439.0, dur: None, eof: true },
             ]
         );
     }
@@ -660,13 +688,19 @@ mod tests {
             evs,
             vec![
                 PlayerEvent::Started { path: "/a.mkv".into() },
-                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 184.1, dur: Some(184.2), eof: true },
+                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 184.1, furthest: 184.1, dur: Some(184.2), eof: true },
                 PlayerEvent::Started { path: "/a.mkv".into() },
-                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 600.0, dur: Some(184.2), eof: false },
+                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 600.0, furthest: 600.0, dur: Some(184.2), eof: false },
                 PlayerEvent::Started { path: "/b.mkv".into() },
-                PlayerEvent::Ended { path: "/b.mkv".into(), pos: 100.0, dur: Some(1440.0), eof: false },
+                PlayerEvent::Ended {
+                    path: "/b.mkv".into(),
+                    pos: 100.0,
+                    furthest: 100.0,
+                    dur: Some(1440.0),
+                    eof: false
+                },
                 PlayerEvent::Started { path: "/c.mkv".into() },
-                PlayerEvent::Ended { path: "/c.mkv".into(), pos: 50.0, dur: Some(1440.0), eof: false },
+                PlayerEvent::Ended { path: "/c.mkv".into(), pos: 50.0, furthest: 50.0, dur: Some(1440.0), eof: false },
             ]
         );
     }
@@ -703,9 +737,21 @@ mod tests {
             evs,
             vec![
                 PlayerEvent::Started { path: "/a.mkv".into() },
-                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 1439.0, dur: Some(1440.0), eof: true },
+                PlayerEvent::Ended {
+                    path: "/a.mkv".into(),
+                    pos: 1439.0,
+                    furthest: 1439.0,
+                    dur: Some(1440.0),
+                    eof: true
+                },
                 PlayerEvent::Started { path: "/b.mkv".into() },
-                PlayerEvent::Ended { path: "/b.mkv".into(), pos: 700.0, dur: Some(1400.0), eof: false },
+                PlayerEvent::Ended {
+                    path: "/b.mkv".into(),
+                    pos: 700.0,
+                    furthest: 700.0,
+                    dur: Some(1400.0),
+                    eof: false
+                },
                 PlayerEvent::Error("mpv could not play a file: unrecognized file format".into()),
             ]
         );
@@ -744,7 +790,7 @@ mod tests {
             evs,
             vec![
                 PlayerEvent::Started { path: "/b.mkv".into() },
-                PlayerEvent::Ended { path: "/b.mkv".into(), pos: 600.0, dur: None, eof: false },
+                PlayerEvent::Ended { path: "/b.mkv".into(), pos: 600.0, furthest: 600.0, dur: None, eof: false },
             ]
         );
     }
@@ -763,7 +809,13 @@ mod tests {
             evs,
             vec![
                 PlayerEvent::Started { path: "/a.mkv".into() },
-                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 300.0, dur: Some(1440.0), eof: false },
+                PlayerEvent::Ended {
+                    path: "/a.mkv".into(),
+                    pos: 300.0,
+                    furthest: 300.0,
+                    dur: Some(1440.0),
+                    eof: false
+                },
             ]
         );
     }
@@ -812,7 +864,9 @@ mod tests {
                 .borrow()
                 .iter()
                 .filter_map(|e| match e {
-                    PlayerEvent::Ended { path, pos, dur, eof } => Some((path.clone(), outcome(*pos, *dur, *eof, 0.85))),
+                    PlayerEvent::Ended { path, pos, furthest, dur, eof } => {
+                        Some((path.clone(), outcome(*pos, *furthest, *dur, *eof, 0.85)))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -840,7 +894,8 @@ mod tests {
     }
 
     /// A read error mid-stream still ends the open file (keeping its
-    /// progress) before the error is reported.
+    /// progress: the last position and the furthest) before the error is
+    /// reported.
     #[test]
     fn follow_ends_the_open_file_on_a_read_error() {
         let msgs = [
@@ -864,7 +919,13 @@ mod tests {
             evs,
             vec![
                 PlayerEvent::Started { path: "/a.mkv".into() },
-                PlayerEvent::Ended { path: "/a.mkv".into(), pos: 900.0, dur: Some(1440.0), eof: false },
+                PlayerEvent::Ended {
+                    path: "/a.mkv".into(),
+                    pos: 800.0,
+                    furthest: 900.0,
+                    dur: Some(1440.0),
+                    eof: false
+                },
             ]
         );
     }

@@ -707,10 +707,7 @@ impl Ctx {
             .iter()
             .filter(|q| seen.insert(&q.file))
             .map(|q| {
-                let start = lib.get(&q.series).and_then(|s| s.item(&q.item)).and_then(|i| match i.state {
-                    WatchState::Started { pos, .. } => Some(pos),
-                    _ => None,
-                });
+                let start = lib.get(&q.series).and_then(|s| s.item(&q.item)).and_then(|i| i.state.resume_at());
                 PlayFile { path: q.file.clone(), start }
             })
             .collect()
@@ -730,21 +727,17 @@ impl Ctx {
         short_socket_dir(&self.paths.runtime_dir, &name).map_or(path, |dir| dir.join(name))
     }
 
-    /// Record the result of a finished file, merging what is recorded into
-    /// `log`. Returns a label for what was played (see [`Library::label`])
-    /// and the outcome.
-    pub fn record_playback(
-        &self,
-        lib: &Library,
-        log: &mut CachedLog,
-        path: &Path,
-        pos: f64,
-        dur: Option<f64>,
-        eof: bool,
-    ) -> Result<(String, Outcome)> {
+    /// What a finished file means for the watch log (see [`outcome`]), by the
+    /// configured threshold.
+    pub fn outcome(&self, pos: f64, furthest: f64, dur: Option<f64>, eof: bool) -> Outcome {
+        outcome(pos, furthest, dur, eof, self.cfg.watched_threshold)
+    }
+
+    /// Record the outcome of a finished file, merging what is recorded into
+    /// `log`. Returns a label for what was played (see [`Library::label`]).
+    pub fn record_playback(&self, lib: &Library, log: &mut CachedLog, path: &Path, out: Outcome) -> Result<String> {
         let (series, items) = lib.identify(&self.cfg, path);
         let file = Some(crate::library::file_name_lossy(path)).filter(|f| !f.is_empty());
-        let out = outcome(pos, dur, eof, self.cfg.watched_threshold);
         let recorded = self.record(items.iter().filter_map(|i| {
             let (series, item, file) = (series.clone(), i.clone(), file.clone());
             match out {
@@ -754,7 +747,7 @@ impl Ctx {
             }
         }))?;
         self.log.merge(log, recorded);
-        Ok((lib.label(&series, &items), out))
+        Ok(lib.label(&series, &items))
     }
 }
 

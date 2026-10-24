@@ -11,7 +11,10 @@ pub mod ui;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use ratatui::crossterm::{execute, terminal};
 
 use crate::app::Ctx;
 pub use app::App;
@@ -25,6 +28,14 @@ pub fn run(ctx: Ctx) -> Result<()> {
     app.start_meta(app::STARTUP);
 
     let mut terminal = ratatui::init();
+    // Terminals with the kitty keyboard protocol tell shift-⏎ from ⏎ (it
+    // plays from the beginning); others send both as ⏎.
+    let enhanced = terminal::supports_keyboard_enhancement().unwrap_or(false)
+        && execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok();
     let res = (|| -> Result<()> {
         // Redraw on input, background messages, and once a second (relative
         // times, message expiry); otherwise stay idle.
@@ -48,6 +59,9 @@ pub fn run(ctx: Ctx) -> Result<()> {
         }
         Ok(())
     })();
+    if enhanced {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
     ratatui::restore();
     res
 }
