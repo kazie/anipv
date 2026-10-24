@@ -8,7 +8,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// mpv has no name for.
 ///
 /// A typed character already carries Shift (`Q`, `?`), so Shift is only
-/// named for other keys (`Shift+RIGHT`).
+/// named for other keys (`Shift+RIGHT`, and `Shift+BS` where the terminal
+/// reports it, as mpv's own window does).
 pub fn mpv_key(key: KeyEvent) -> Option<String> {
     let name = match key.code {
         KeyCode::Char(' ') => "SPACE".into(),
@@ -70,6 +71,10 @@ mod tests {
             (KeyCode::Char('>'), KeyModifiers::SHIFT, ">"),
             (KeyCode::Char('s'), KeyModifiers::CONTROL, "Ctrl+s"),
             (KeyCode::Char('x'), KeyModifiers::ALT, "Alt+x"),
+            // The kitty keyboard protocol: a shifted key comes as typed, without Shift.
+            (KeyCode::Char('P'), KeyModifiers::ALT, "Alt+P"),
+            (KeyCode::Enter, KeyModifiers::SHIFT, "Shift+ENTER"),
+            (KeyCode::Backspace, KeyModifiers::SHIFT, "Shift+BS"),
             (KeyCode::Enter, none, "ENTER"),
             (KeyCode::Esc, none, "ESC"),
             (KeyCode::Backspace, none, "BS"),

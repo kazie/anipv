@@ -697,20 +697,22 @@ pub struct QueueEntry {
 }
 
 impl Ctx {
-    /// mpv files for a queue, resuming started items.
+    /// mpv files for a queue, resuming started items (with `resume`; else
+    /// all from the beginning).
     ///
     /// Each file is played once, even if the queue holds several of its
     /// episodes (multi-episode files): watching it marks all of them.
-    pub fn play_files(&self, lib: &Library, queue: &[QueueEntry]) -> Vec<PlayFile> {
+    pub fn play_files(&self, lib: &Library, queue: &[QueueEntry], resume: bool) -> Vec<PlayFile> {
         let mut seen = HashSet::new();
         queue
             .iter()
             .filter(|q| seen.insert(&q.file))
             .map(|q| {
-                let start = lib.get(&q.series).and_then(|s| s.item(&q.item)).and_then(|i| match i.state {
-                    WatchState::Started { pos, .. } => Some(pos),
-                    _ => None,
-                });
+                let start = if resume {
+                    lib.get(&q.series).and_then(|s| s.item(&q.item)).and_then(|i| i.state.resume_at())
+                } else {
+                    None
+                };
                 PlayFile { path: q.file.clone(), start }
             })
             .collect()
@@ -730,21 +732,17 @@ impl Ctx {
         short_socket_dir(&self.paths.runtime_dir, &name).map_or(path, |dir| dir.join(name))
     }
 
-    /// Record the result of a finished file, merging what is recorded into
-    /// `log`. Returns a label for what was played (see [`Library::label`])
-    /// and the outcome.
-    pub fn record_playback(
-        &self,
-        lib: &Library,
-        log: &mut CachedLog,
-        path: &Path,
-        pos: f64,
-        dur: Option<f64>,
-        eof: bool,
-    ) -> Result<(String, Outcome)> {
+    /// What a finished file means for the watch log (see [`outcome`]), by the
+    /// configured threshold.
+    pub fn outcome(&self, pos: f64, furthest: f64, dur: Option<f64>, eof: bool) -> Outcome {
+        outcome(pos, furthest, dur, eof, self.cfg.watched_threshold)
+    }
+
+    /// Record the outcome of a finished file, merging what is recorded into
+    /// `log`. Returns a label for what was played (see [`Library::label`]).
+    pub fn record_playback(&self, lib: &Library, log: &mut CachedLog, path: &Path, out: Outcome) -> Result<String> {
         let (series, items) = lib.identify(&self.cfg, path);
         let file = Some(crate::library::file_name_lossy(path)).filter(|f| !f.is_empty());
-        let out = outcome(pos, dur, eof, self.cfg.watched_threshold);
         let recorded = self.record(items.iter().filter_map(|i| {
             let (series, item, file) = (series.clone(), i.clone(), file.clone());
             match out {
@@ -754,7 +752,7 @@ impl Ctx {
             }
         }))?;
         self.log.merge(log, recorded);
-        Ok((lib.label(&series, &items), out))
+        Ok(lib.label(&series, &items))
     }
 }
 
@@ -1177,7 +1175,7 @@ mod tests {
         let lib = ctx.library().unwrap();
         let file = PathBuf::from("/m/Show - 001&002.mkv");
         let entry = |n| QueueEntry { series: "show".into(), item: ItemKey::episode(EpNo::new(n)), file: file.clone() };
-        assert_eq!(ctx.play_files(&lib, &[entry(1), entry(2)]).len(), 1);
+        assert_eq!(ctx.play_files(&lib, &[entry(1), entry(2)], true).len(), 1);
     }
 
     // ---- keys from before kana voiced marks were kept (`バカ` was `ハカ`) ----

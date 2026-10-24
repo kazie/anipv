@@ -446,20 +446,23 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
     let len = app.queue.len();
     let window = Window::of_table(&app.queue_state, len, area, true);
+    let playing = app.playing_file();
     let rows: Vec<Row> = app.queue[window.range.clone()]
         .iter()
         .zip(window.range.clone())
         .map(|(q, i)| {
             let s = app.lib.get(&q.series);
             let st = s.and_then(|s| s.item(&q.item)).map(|i| i.state).unwrap_or_default();
-            let resume = st.percent().map(|p| format!("resume {p}")).unwrap_or_default();
-            Row::new(vec![
+            let resume = st.resume_at().and_then(|_| st.percent()).map(|p| format!("resume {p}")).unwrap_or_default();
+            let row = Row::new(vec![
                 Cell::from((i + 1).to_string()).dark_gray(),
                 Cell::from(app.lib.title_of(&q.series).to_string()),
                 Cell::from(q.item.describe()).bold(),
                 Cell::from(resume).yellow(),
                 Cell::from(crate::library::file_name_lossy(&q.file)).dark_gray(),
-            ])
+            ]);
+            // The file mpv is on stays queued until it is watched.
+            if playing == Some(q.file.as_path()) { row.style(Style::new().fg(ACCENT)) } else { row }
         })
         .collect();
     let widths = [
@@ -891,7 +894,7 @@ fn key_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("a", "queue all new"),
             ("⏎", "open"),
             ("w", "mark next seen"),
-            ("P", "paused"),
+            ("i", "paused"),
         ],
         View::Inbox => {
             vec![
@@ -985,7 +988,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("1-5 / Tab", "switch view; again: other mode / next filter"),
             ("j/k ↑/↓", "move"),
             ("g/G", "top / bottom"),
-            ("p", "play queue (or the next episode here)"),
+            ("p", "play queue (or the next episode here), resuming"),
+            ("P", "the same, from the beginning"),
             ("y", "copy mpv command for the queue"),
             ("v", "while mpv plays: remote mode, keys go to mpv"),
             ("s", "set series status (in the Inbox: skip)"),
@@ -1003,7 +1007,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("space", "queue next new episode and move down"),
             ("a", "queue all new episodes"),
             ("w", "mark next episode watched without playing"),
-            ("P", "include paused series"),
+            ("i", "include paused series"),
             ("⏎", "open series"),
         ],
     ),
@@ -1037,6 +1041,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("space", "add / remove from queue"),
             ("⏎", "play this episode (or open a ▲ ▼ season)"),
+            ("P / shift-⏎", "play this episode from the beginning"),
             ("[ ]", "previous / next season"),
             ("w", "toggle watched"),
             ("W", "mark everything up to here watched"),
@@ -1058,7 +1063,16 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("/", "search below here (⏎ keeps it, Esc clears)"),
         ],
     ),
-    ("Queue", &[("J/K", "move entry down / up"), ("d", "remove"), ("c", "clear"), ("⏎", "play")]),
+    (
+        "Queue",
+        &[
+            ("J/K", "move entry down / up"),
+            ("d", "remove"),
+            ("c", "clear"),
+            ("⏎", "play"),
+            ("shift-⏎", "play from the beginning"),
+        ],
+    ),
     (
         "Remote mode (while mpv plays)",
         &[("any key", "pressed in mpv, so your input.conf applies"), ("ctrl-c", "keys back to anipv (v: back to mpv)")],
@@ -1168,7 +1182,9 @@ fn draw_confirm(f: &mut Frame, playing: bool) {
         ["Quit anipv?", "q/y/Enter quits, any other key cancels"]
     };
     f.render_widget(
-        Paragraph::new(lines.map(Line::from).to_vec()).alignment(Alignment::Center).block(block(" Quit? ")),
+        Paragraph::new(lines.map(Line::from).to_vec())
+            .alignment(Alignment::Center)
+            .block(block(Span::styled(" Quit? ", Style::new().bold())).border_style(Style::new().fg(Color::Red))),
         area,
     );
 }

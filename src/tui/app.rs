@@ -338,6 +338,8 @@ enum RowId {
 pub struct NowPlaying {
     /// Display label for the current file.
     pub label: String,
+    /// The current file, once it has started playing.
+    pub path: Option<PathBuf>,
     /// Position (s).
     pub pos: f64,
     /// Duration (s).
@@ -743,7 +745,7 @@ impl App {
     /// rebuild the library, keeping selections on the same series where possible.
     pub fn reload(&mut self) {
         self.reload_due = false;
-        let keep: Vec<(View, RowId)> = View::ALL.iter().filter_map(|&v| Some((v, self.selected_id(v)?))).collect();
+        let keep = self.selections();
         if let Err(e) = self.ctx.log.refresh(&mut self.events) {
             self.fail(format!("reading the event log failed: {e:#}"));
         }
@@ -765,9 +767,7 @@ impl App {
         }
         self.resolve_held_keys();
         self.refresh_rows();
-        for (view, id) in &keep {
-            self.select_id(*view, id);
-        }
+        self.restore_selections(&keep);
         // The merge picker lists series of the old library: keep its cursor on
         // the same target. Other popups stay open as they are.
         match self.popup.take() {
@@ -818,6 +818,19 @@ impl App {
             View::Files => &self.files_state,
             View::Queue => &self.queue_state,
             View::Detail => &self.detail_state,
+        }
+    }
+
+    /// The row under each view's cursor, to put the cursors back on after the
+    /// lists change.
+    fn selections(&self) -> Vec<(View, RowId)> {
+        View::ALL.iter().filter_map(|&v| Some((v, self.selected_id(v)?))).collect()
+    }
+
+    /// Put each cursor back on the row it was on, where that row is still listed.
+    fn restore_selections(&mut self, keep: &[(View, RowId)]) {
+        for (view, id) in keep {
+            self.select_id(*view, id);
         }
     }
 
@@ -880,7 +893,7 @@ impl App {
                 })
             }
             (View::Files, RowId::File(p)) => self.files_ix.iter().position(|&i| lib.files[i].file.path == *p),
-            (View::Queue, RowId::File(p)) => self.queue.iter().position(|q| q.file == *p),
+            (View::Queue, RowId::File(p)) => self.queue_index_of(p),
             (View::Detail, id) => self.detail_row_of(id),
             _ => None,
         };
@@ -1237,6 +1250,21 @@ impl App {
         self.queue.iter().any(|q| q.series == series && &q.item == item)
     }
 
+    /// True if the file is queued.
+    fn is_file_queued(&self, path: &Path) -> bool {
+        self.queue_index_of(path).is_some()
+    }
+
+    /// Where the file is in the queue.
+    fn queue_index_of(&self, path: &Path) -> Option<usize> {
+        self.queue.iter().position(|q| q.file == path)
+    }
+
+    /// The file mpv is playing, once it has started.
+    pub fn playing_file(&self) -> Option<&Path> {
+        self.playing.as_ref()?.path.as_deref()
+    }
+
     // ---- actions ----------------------------------------------------------
 
     fn toggle_queue(&mut self, series: &str, item: &Item) {
@@ -1254,9 +1282,8 @@ impl App {
         let Some(s) = self.lib.get(key) else { return };
         let title = s.title.clone();
         // A multi-episode file is queued once: skip items whose file already is.
-        let queued_file = |item: &ItemKey| {
-            s.item(item).and_then(Item::best_file).is_some_and(|f| self.queue.iter().any(|q| q.file == f.path))
-        };
+        let queued_file =
+            |item: &ItemKey| s.item(item).and_then(Item::best_file).is_some_and(|f| self.is_file_queued(&f.path));
         let entries =
             queue_new(s, if all { usize::MAX } else { 1 }, |item| self.is_queued(key, item) || queued_file(item));
         if entries.is_empty() {
@@ -1303,8 +1330,9 @@ impl App {
     }
 
     /// `p`: play the queue, or, with nothing queued, the next episode of the
-    /// series under the cursor.
-    fn play_key(&mut self) {
+    /// series under the cursor; resuming started files, or (`P`) from the
+    /// beginning.
+    fn play_key(&mut self, resume: bool) {
         let before = self.queue.len();
         if self.queue.is_empty() && self.playing.is_none() {
             match self.focused_series().map(|s| s.key.clone()) {
@@ -1315,29 +1343,30 @@ impl App {
                 return;
             }
         }
-        if !self.play_queue() {
+        if !self.play_queue(resume) {
             // mpv did not start: take back what this press queued.
             self.queue.truncate(before);
         }
     }
 
-    /// Start mpv on the whole queue, in order. True if it started.
-    pub fn play_queue(&mut self) -> bool {
+    /// Start mpv on the whole queue, in order, resuming started files (or
+    /// not). True if it started.
+    pub fn play_queue(&mut self, resume: bool) -> bool {
         if self.queue.is_empty() && self.playing.is_none() {
             self.say("queue is empty");
             return false;
         }
-        let files = self.ctx.play_files(&self.lib, &self.queue);
+        let files = self.ctx.play_files(&self.lib, &self.queue, resume);
         self.launch(&files)
     }
 
     /// Start mpv on just this item, leaving the queue as it is.
-    fn play_item(&mut self, series: &str, item: &Item) {
+    fn play_item(&mut self, series: &str, item: &Item, resume: bool) {
         let Some(entry) = entry_for(series, item) else {
             self.say("not on disk");
             return;
         };
-        let files = self.ctx.play_files(&self.lib, std::slice::from_ref(&entry));
+        let files = self.ctx.play_files(&self.lib, std::slice::from_ref(&entry), resume);
         self.launch(&files);
     }
 
@@ -1354,9 +1383,9 @@ impl App {
         }) {
             Ok(()) => {
                 self.playing = Some(NowPlaying::starting(files.len()));
-                // Entries leave the queue once mpv is actually playing each file
-                // (see `on_player`), so an mpv that quits early or a file that
-                // fails to open loses nothing.
+                // Entries leave the queue once mpv has played each file through
+                // (see `on_player`), so quitting early, skipping a file, or a
+                // file that fails to open loses nothing.
                 true
             }
             Err(e) => {
@@ -1395,7 +1424,7 @@ impl App {
             self.say("queue is empty");
             return;
         }
-        let files = self.ctx.play_files(&self.lib, &self.queue);
+        let files = self.ctx.play_files(&self.lib, &self.queue, true);
         let cmd = crate::mpv::command_line(&self.ctx.cfg, &files);
         match copy_to_clipboard(&cmd) {
             Ok(()) => self.say("mpv command copied to clipboard"),
@@ -1477,7 +1506,7 @@ impl App {
             // Always followed by `Meta`, which ends the busy state.
             Msg::MetaError(e) => self.fail(e),
         }
-        // A file that started playing left the queue.
+        // Whatever the message changed (a reload, say), each cursor stays on a row.
         self.clamp_selections();
         true
     }
@@ -1496,11 +1525,11 @@ impl App {
                 }
             }
             PlayerEvent::Started { path } => {
-                self.queue.retain(|q| q.file != path);
                 let (series, items) = self.lib.identify(&self.ctx.cfg, &path);
                 let label = self.lib.label(&series, &items);
                 if let Some(p) = &mut self.playing {
                     p.label = label;
+                    p.path = Some(path);
                     p.pos = 0.0;
                     p.dur = None;
                 }
@@ -1511,19 +1540,33 @@ impl App {
                     p.dur = dur;
                 }
             }
-            PlayerEvent::Ended { path, pos, dur, eof } => {
-                match self.ctx.record_playback(&self.lib, &mut self.events, &path, pos, dur, eof) {
-                    Ok((label, outcome)) => match outcome {
-                        Outcome::Watched => self.say(format!("✓ watched {label}")),
+            PlayerEvent::Ended { path, pos, furthest, dur, eof } => {
+                let outcome = self.ctx.outcome(pos, furthest, dur, eof);
+                match self.ctx.record_playback(&self.lib, &mut self.events, &path, outcome) {
+                    Ok(label) => match outcome {
+                        Outcome::Watched => {
+                            // The queue cursor stays on its row as the rows above it go.
+                            let at = self.selected_id(View::Queue);
+                            self.queue.retain(|q| q.file != path);
+                            if let Some(id) = at {
+                                self.select_id(View::Queue, &id);
+                            }
+                            self.say(format!("✓ watched {label}"));
+                        }
                         Outcome::Partial { pos, .. } => {
                             self.say(format!("◐ {label} stopped at {clock}", clock = crate::fmt::clock(pos)));
                         }
                         Outcome::Nothing => {}
                     },
-                    Err(e) => self.fail(format!("could not record playback: {e:#}")),
+                    Err(e) => {
+                        // Not recorded as watched, so not taken out of the queue either.
+                        let kept = if self.is_file_queued(&path) { "; it stays queued" } else { "" };
+                        self.fail(format!("could not record playback: {e:#}{kept}"));
+                    }
                 }
                 if let Some(p) = &mut self.playing {
                     p.done += 1;
+                    p.path = None;
                 }
                 // mpv exiting usually follows at once: one reload for both.
                 self.reload_due = true;
@@ -1706,7 +1749,9 @@ impl App {
                 None => self.say("no series under the cursor"),
             },
             KeyCode::Char('o') => self.open_anilist(),
-            KeyCode::Char('p') => self.play_key(),
+            KeyCode::Char('p') => self.play_key(true),
+            // In Episodes, `P` plays the episode under the cursor (see `on_detail_key`).
+            KeyCode::Char('P') if self.view != View::Detail => self.play_key(false),
             KeyCode::Char('y') => {
                 self.yank();
             }
@@ -1794,7 +1839,7 @@ impl App {
 
     fn on_upnext_key(&mut self, key: KeyEvent) {
         // Works on an empty list too: that's when paused series are wanted most.
-        if key.code == KeyCode::Char('P') {
+        if key.code == KeyCode::Char('i') {
             self.include_paused = !self.include_paused;
             self.say(if self.include_paused { "showing paused series" } else { "hiding paused series" });
             self.refresh_rows();
@@ -1907,7 +1952,7 @@ impl App {
                 // its episodes. The file under the cursor is the one queued (not
                 // the item's best copy), and only its own entry is toggled off.
                 let path = f.file.path.clone();
-                if let Some(i) = self.queue.iter().position(|q| q.file == path) {
+                if let Some(i) = self.queue_index_of(&path) {
                     self.queue.remove(i);
                 } else if let Some(first) = items.first() {
                     self.queue.push(QueueEntry { series: series.clone(), item: first.key.clone(), file: path });
@@ -1971,7 +2016,7 @@ impl App {
         let lib = Arc::clone(&self.lib);
         let mut unwatched = self.folders.countable_under(&lib, dir);
         unwatched.retain(|f| !crate::folders::file_state(&lib, f).0);
-        let queued = |f: &crate::library::IndexedFile| self.queue.iter().any(|q| q.file == f.file.path);
+        let queued = |f: &crate::library::IndexedFile| self.is_file_queued(&f.file.path);
         let name = dir.name();
         if unwatched.is_empty() {
             self.say(format!("nothing unwatched in {name}"));
@@ -2038,8 +2083,9 @@ impl App {
                 self.queue_state.select(Some(i + 1));
             }
             KeyCode::Char('c') => self.queue.clear(),
+            // Shift-⏎ (where the terminal tells it from ⏎) from the beginning.
             KeyCode::Enter => {
-                self.play_queue();
+                self.play_queue(!key.modifiers.contains(KeyModifiers::SHIFT));
             }
             _ => {}
         }
@@ -2109,7 +2155,11 @@ impl App {
             (KeyCode::Char('a'), _) => self.queue_next_of(&series, true),
             // Play from here: just this item, whatever is queued stays queued
             // (and an item not on disk says so rather than play something else).
-            (KeyCode::Enter, Some(it)) => self.play_item(&series, it),
+            // `P`, or shift-⏎ where the terminal tells it from ⏎, from the beginning.
+            (KeyCode::Enter, Some(it)) => self.play_item(&series, it, !key.modifiers.contains(KeyModifiers::SHIFT)),
+            (KeyCode::Char('P'), Some(it)) => self.play_item(&series, it, false),
+            // On a ▲ ▼ season link, as everywhere else: the queue.
+            (KeyCode::Char('P'), None) => self.play_key(false),
             _ => self.series_actions(key, series),
         }
     }
@@ -3282,7 +3332,13 @@ mod tests {
         let path = next.best_file().unwrap().path.clone();
         app.playing = Some(NowPlaying::starting(1));
         let before = Arc::clone(&app.lib);
-        app.on_msg(Msg::Player(PlayerEvent::Ended { path, pos: 1400.0, dur: Some(1420.0), eof: true }));
+        app.on_msg(Msg::Player(PlayerEvent::Ended {
+            path,
+            pos: 1400.0,
+            furthest: 1400.0,
+            dur: Some(1420.0),
+            eof: true,
+        }));
         app.on_msg(Msg::Player(PlayerEvent::Exited { played: true, error: None }));
         assert!(Arc::ptr_eq(&before, &app.lib), "not yet");
         assert!(app.pump());

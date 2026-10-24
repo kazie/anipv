@@ -19,7 +19,7 @@ history. anipv replaces that:
 - **Up next**: every series you follow, with the next unwatched episode on disk, how many new ones arrived, and when the next one airs.
 - **Inbox**: new shows that appear in your download folder, newest first, with a new season of something you watch at the top. Follow (`f`), skip (`s`) or leave it for later (`z`).
 - **Queue & play**: mark episodes from several shows, press `p`, and they play in one mpv session, just like `mpv A B C`.
-- **Automatic tracking**: anipv follows mpv over its IPC socket. Finished episodes are marked watched; stop half-way and it resumes there next time.
+- **Automatic tracking**: anipv follows mpv over its IPC socket. Finished episodes are marked watched; stop half-way and it resumes there next time (`P` starts over).
 - **Remote control**: while mpv plays, keys typed in anipv go to mpv, so your `input.conf` bindings (pause, seek, quit, …) work from the terminal even when the video is fullscreen on another screen. `ctrl-c` takes the keys back, `v` hands them over again.
 - **Your library, understood**: bracketed (`[Group] Show - 07 (1080p)`), dotted (`Show.S01E07.1080p…`), underscored and numbered file names, `v2` versions, `S02E01` / `1x05` markers, season folders (inside an archive series folder, `Season 1` and `Season 2` stay separate seasons of the same title), OVAs, openings/endings, previews, multi-episode files. Parsed and grouped, with a test corpus covering each naming convention.
 - **Statuses**: following, paused ("dropped too early, might resume"), dropped (with a note), completed, skipped. A status you set on a series you've already finished stays, so you can follow it again for a rewatch.

@@ -279,6 +279,10 @@ pub enum WatchState {
     },
 }
 
+/// Playback (s) that counts: less is ignored, and an item stopped before
+/// this resumes from the beginning.
+pub const MIN_PLAYED: f64 = 30.0;
+
 impl WatchState {
     /// One-character marker: `✓` watched, `◐` started, `·` unwatched.
     pub fn glyph(&self) -> &'static str {
@@ -298,6 +302,15 @@ impl WatchState {
     pub fn fraction(&self) -> Option<f64> {
         match self {
             Self::Started { pos, dur: Some(d), .. } => Some((pos / d).clamp(0.0, 1.0)),
+            _ => None,
+        }
+    }
+
+    /// Where a started item resumes (s): from the beginning (`None`) when it
+    /// was stopped near it.
+    pub fn resume_at(&self) -> Option<f64> {
+        match self {
+            Self::Started { pos, .. } if *pos >= MIN_PLAYED => Some(*pos),
             _ => None,
         }
     }

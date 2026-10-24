@@ -8,6 +8,11 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `P` plays from the beginning: the queue (or the next episode here), and
+  in the episode list the episode under the cursor. Shift-⏎ does too in the
+  episode list and the Queue view, on terminals with the kitty keyboard
+  protocol (kitty, foot, WezTerm, Ghostty); elsewhere it is plain ⏎.
+- The quit prompt has a red border, so it stands out.
 - The episode list links the franchise entries around it: a `▲` row first
   and a `▼` row last open the one before or after (⏎), and `[` / `]` do from
   any row. `g` / `G` still go to the first and last episode (the links are
@@ -82,6 +87,18 @@ project uses [Semantic Versioning](https://semver.org/).
 - Ctrl-C and Ctrl-R work with Caps Lock on.
 
 ### Changed
+
+- A partly watched episode resumes where you stopped, not at the furthest
+  point you reached: seek ahead, back to the start and quit, and it starts
+  from the beginning next time. How far you got still decides whether it
+  counts as watched.
+
+- Up next: `i` (was `P`) includes paused series.
+
+- A queued episode stays in the queue until it is watched (played to the
+  end, or past `watched_threshold`), not just until it starts. One started
+  by mistake, stopped partway or skipped in mpv is still queued, and `p`
+  resumes it. The Queue view highlights the file mpv is on.
 
 - How you set a status, when not by hand, is recorded on the event (`via`:
   `fish_import`, `catch_up`) instead of in its note, so a note is always
