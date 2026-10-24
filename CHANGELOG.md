@@ -83,6 +83,11 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A queued episode stays in the queue until it is watched (played to the
+  end, or past `watched_threshold`), not just until it starts. One started
+  by mistake, stopped partway or skipped in mpv is still queued, and `p`
+  resumes it. The Queue view highlights the file mpv is on.
+
 - How you set a status, when not by hand, is recorded on the event (`via`:
   `fish_import`, `catch_up`) instead of in its note, so a note is always
   yours and shows as such, whatever it says. A log written before this

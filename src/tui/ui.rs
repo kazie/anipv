@@ -446,6 +446,7 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
     let len = app.queue.len();
     let window = Window::of_table(&app.queue_state, len, area, true);
+    let playing = app.playing_file();
     let rows: Vec<Row> = app.queue[window.range.clone()]
         .iter()
         .zip(window.range.clone())
@@ -453,13 +454,15 @@ fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
             let s = app.lib.get(&q.series);
             let st = s.and_then(|s| s.item(&q.item)).map(|i| i.state).unwrap_or_default();
             let resume = st.percent().map(|p| format!("resume {p}")).unwrap_or_default();
-            Row::new(vec![
+            let row = Row::new(vec![
                 Cell::from((i + 1).to_string()).dark_gray(),
                 Cell::from(app.lib.title_of(&q.series).to_string()),
                 Cell::from(q.item.describe()).bold(),
                 Cell::from(resume).yellow(),
                 Cell::from(crate::library::file_name_lossy(&q.file)).dark_gray(),
-            ])
+            ]);
+            // The file mpv is on stays queued until it is watched.
+            if playing == Some(q.file.as_path()) { row.style(Style::new().fg(ACCENT)) } else { row }
         })
         .collect();
     let widths = [

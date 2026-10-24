@@ -202,25 +202,32 @@ fn main() -> anyhow::Result<()> {
         Ok(app)
     };
 
-    // Up next with two episodes queued and one playing, keys going to mpv
-    // (remote mode, as every playback starts).
+    // Up next with two episodes queued and the first playing (it stays
+    // queued until watched), keys going to mpv (remote mode, as every
+    // playback starts).
     let mut app = fresh(home.path())?;
     app.press("j  ");
     let (ours, _mpv) = std::os::unix::net::UnixStream::pair()?;
+    let first = &app.queue[0];
     app.playing = Some(NowPlaying {
-        label: "Sousou no Frieren 29".into(),
+        label: app.lib.label(&first.series, std::slice::from_ref(&first.item)),
+        path: Some(first.file.clone()),
         pos: 802.0,
         dur: Some(1420.0),
-        total: 3,
+        total: 2,
         remote: Some(anipv::mpv::Remote::new(ours)),
         remote_on: true,
         ..NowPlaying::default()
     });
     write("up-next.svg", &shot(&mut app, 14), "anipv — up next")?;
-    app.playing = None;
 
+    // Keys back to anipv, to show the queue (the playing entry highlighted).
+    if let Some(p) = &mut app.playing {
+        p.remote_on = false;
+    }
     app.press("5");
     write("queue.svg", &shot(&mut app, 10), "anipv — queue")?;
+    app.playing = None;
 
     let home2 = tempfile::tempdir()?;
     let mut app = fresh(home2.path())?;

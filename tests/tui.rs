@@ -427,16 +427,47 @@ fn queue_survives_a_player_that_exits_immediately() {
     assert!(app.current_message().unwrap_or_default().contains("exited before playing"));
 }
 
+/// A queued file stays queued while it plays and when it is stopped
+/// partway (started by mistake, say); it leaves once it has been watched.
 #[test]
-fn queue_is_consumed_once_playback_starts() {
+fn queue_is_consumed_once_watched() {
     use anipv::mpv::PlayerEvent;
     use anipv::tui::app::Msg;
     let (_d, mut app) = app();
     app.press(" ");
     let path = app.queue[0].file.clone();
     app.play_queue();
-    app.on_msg(Msg::Player(PlayerEvent::Started { path }));
-    assert!(app.queue.is_empty());
+    app.on_msg(Msg::Player(PlayerEvent::Started { path: path.clone() }));
+    assert_eq!(app.queue.len(), 1, "still queued while playing");
+    app.on_msg(Msg::Player(PlayerEvent::Ended { path: path.clone(), pos: 60.0, dur: Some(1420.0), eof: false }));
+    assert_eq!(app.queue.len(), 1, "stopped partway");
+    app.on_msg(Msg::Player(PlayerEvent::Started { path: path.clone() }));
+    app.on_msg(Msg::Player(PlayerEvent::Ended { path, pos: 1400.0, dur: Some(1420.0), eof: true }));
+    assert!(app.queue.is_empty(), "watched");
+    wait_for_player(&mut app);
+}
+
+/// Of a session's files, only those watched leave the queue: one skipped
+/// (or failed) stays. The playing file is known (and highlighted), and the
+/// cursor stays on its row as the rows above it go.
+#[test]
+fn only_watched_files_leave_the_queue() {
+    use anipv::mpv::PlayerEvent;
+    use anipv::tui::app::Msg;
+    let (_d, mut app) = app();
+    app.press("   5");
+    let [a, b, c] = [0, 1, 2].map(|i| app.queue[i].file.clone());
+    app.press("jj");
+    app.play_queue();
+    app.on_msg(Msg::Player(PlayerEvent::Started { path: a.clone() }));
+    assert_eq!(app.playing_file(), Some(a.as_path()), "the playing entry");
+    app.on_msg(Msg::Player(PlayerEvent::Ended { path: a.clone(), pos: 0.0, dur: Some(1420.0), eof: false }));
+    assert_eq!(app.playing_file(), None, "nothing playing between files");
+    app.on_msg(Msg::Player(PlayerEvent::Started { path: b.clone() }));
+    app.on_msg(Msg::Player(PlayerEvent::Ended { path: b, pos: 1400.0, dur: Some(1420.0), eof: true }));
+    let left: Vec<_> = app.queue.iter().map(|q| q.file.clone()).collect();
+    assert_eq!(left, [a, c.clone()], "the skipped file stays");
+    assert_eq!(app.queue_state.selected().map(|i| &app.queue[i].file), Some(&c), "cursor kept");
     wait_for_player(&mut app);
 }
 
