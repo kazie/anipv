@@ -388,7 +388,7 @@ fn merge_from_detail_keeps_a_cursor() {
     assert_eq!(app.lib.get("sousou no frieren").unwrap().aliases, vec!["kusuriya no hitorigoto s3"]);
 }
 
-/// `P` shows paused series even when nothing is being followed.
+/// `i` shows paused series even when nothing is being followed.
 #[test]
 fn paused_toggle_works_on_an_empty_up_next() {
     use anipv::model::SeriesStatus;
@@ -404,6 +404,11 @@ fn paused_toggle_works_on_an_empty_up_next() {
     assert!(!app.upnext_rows_in(0..usize::MAX).is_empty(), "paused series show up");
     app.press("i");
     assert!(app.upnext_rows_in(0..usize::MAX).is_empty());
+}
+
+/// mpv's report of a file that ended where it got furthest (no seeking back).
+fn ended(path: std::path::PathBuf, pos: f64, dur: Option<f64>, eof: bool) -> anipv::mpv::PlayerEvent {
+    anipv::mpv::PlayerEvent::Ended { path, pos, furthest: pos, dur, eof }
 }
 
 /// Run until the (fake) player has exited.
@@ -439,13 +444,7 @@ fn queue_is_consumed_once_watched() {
     app.play_queue(true);
     app.on_msg(Msg::Player(PlayerEvent::Started { path: path.clone() }));
     assert_eq!(app.queue.len(), 1, "still queued while playing");
-    app.on_msg(Msg::Player(PlayerEvent::Ended {
-        path: path.clone(),
-        pos: 60.0,
-        furthest: 60.0,
-        dur: Some(1420.0),
-        eof: false,
-    }));
+    app.on_msg(Msg::Player(ended(path.clone(), 60.0, Some(1420.0), false)));
     assert_eq!(app.queue.len(), 1, "stopped partway");
     app.on_msg(Msg::Player(PlayerEvent::Started { path: path.clone() }));
     app.on_msg(Msg::Player(PlayerEvent::Ended { path, pos: 1400.0, furthest: 1400.0, dur: Some(1420.0), eof: true }));
@@ -467,22 +466,10 @@ fn only_watched_files_leave_the_queue() {
     app.play_queue(true);
     app.on_msg(Msg::Player(PlayerEvent::Started { path: a.clone() }));
     assert_eq!(app.playing_file(), Some(a.as_path()), "the playing entry");
-    app.on_msg(Msg::Player(PlayerEvent::Ended {
-        path: a.clone(),
-        pos: 0.0,
-        furthest: 0.0,
-        dur: Some(1420.0),
-        eof: false,
-    }));
+    app.on_msg(Msg::Player(ended(a.clone(), 0.0, Some(1420.0), false)));
     assert_eq!(app.playing_file(), None, "nothing playing between files");
     app.on_msg(Msg::Player(PlayerEvent::Started { path: b.clone() }));
-    app.on_msg(Msg::Player(PlayerEvent::Ended {
-        path: b,
-        pos: 1400.0,
-        furthest: 1400.0,
-        dur: Some(1420.0),
-        eof: true,
-    }));
+    app.on_msg(Msg::Player(ended(b, 1400.0, Some(1420.0), true)));
     let left: Vec<_> = app.queue.iter().map(|q| q.file.clone()).collect();
     assert_eq!(left, [a, c.clone()], "the skipped file stays");
     assert_eq!(app.queue_state.selected().map(|i| &app.queue[i].file), Some(&c), "cursor kept");
@@ -508,6 +495,7 @@ fn resume_or_play_from_the_beginning() {
         args.lines().find_map(|a| a.strip_prefix("--start=")).map(str::to_owned)
     };
     let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
     // Ranma's episode 1 is 42% in.
     app.press("3/ranma\n\n");
     assert_eq!(selected_item(&app).map(|k| k.describe()).as_deref(), Some("01"));
@@ -515,14 +503,17 @@ fn resume_or_play_from_the_beginning() {
     assert!(resume.is_some(), "⏎ resumes");
     assert_eq!(started_at(&mut app, key(KeyCode::Char('p'))), resume, "p resumes");
     assert_eq!(started_at(&mut app, key(KeyCode::Char('P'))), None, "P from the beginning");
-    assert_eq!(started_at(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)), None, "shift-⏎ too");
-    // The queue (`p` queued the episode it played): `P` anywhere else,
-    // shift-⏎ in the Queue view.
+    assert_eq!(started_at(&mut app, shift_enter), None, "shift-⏎ too");
+    // The queue (`p` queued the episode it played): `P` anywhere else (a
+    // season link included), shift-⏎ in the Queue view.
+    app.press("3\x1b/nisemono\n\ngk");
+    assert_eq!(selected_item(&app), None, "on the ▲ link");
+    assert_eq!(started_at(&mut app, key(KeyCode::Char('P'))), None);
     app.press("5");
     assert_eq!(app.queue.len(), 1);
     assert_eq!(started_at(&mut app, key(KeyCode::Enter)), resume);
     assert_eq!(started_at(&mut app, key(KeyCode::Char('P'))), None);
-    assert_eq!(started_at(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)), None);
+    assert_eq!(started_at(&mut app, shift_enter), None);
 }
 
 /// A failed write must stay visible instead of being replaced by "Show → status".

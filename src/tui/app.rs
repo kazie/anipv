@@ -1356,8 +1356,8 @@ impl App {
             self.say("queue is empty");
             return false;
         }
-        let files = self.ctx.play_files(&self.lib, &self.queue);
-        self.launch(files, resume)
+        let files = self.ctx.play_files(&self.lib, &self.queue, resume);
+        self.launch(&files)
     }
 
     /// Start mpv on just this item, leaving the queue as it is.
@@ -1366,25 +1366,19 @@ impl App {
             self.say("not on disk");
             return;
         };
-        let files = self.ctx.play_files(&self.lib, std::slice::from_ref(&entry));
-        self.launch(files, resume);
+        let files = self.ctx.play_files(&self.lib, std::slice::from_ref(&entry), resume);
+        self.launch(&files);
     }
 
-    /// Spawn mpv on `files` (from where started ones stopped, or from the
-    /// beginning) and start tracking it, unless it is already running. True
-    /// if it started.
-    fn launch(&mut self, mut files: Vec<crate::mpv::PlayFile>, resume: bool) -> bool {
-        if !resume {
-            for f in &mut files {
-                f.start = None;
-            }
-        }
+    /// Spawn mpv on `files` and start tracking it, unless it is already
+    /// running. True if it started.
+    fn launch(&mut self, files: &[crate::mpv::PlayFile]) -> bool {
         if self.playing.is_some() {
             self.say("mpv is already running");
             return false;
         }
         let tx = self.tx.clone();
-        match crate::mpv::spawn_tracked(&self.ctx.cfg, self.ctx.socket_path(), &files, move |e| {
+        match crate::mpv::spawn_tracked(&self.ctx.cfg, self.ctx.socket_path(), files, move |e| {
             let _ = tx.send(Msg::Player(e));
         }) {
             Ok(()) => {
@@ -1430,7 +1424,7 @@ impl App {
             self.say("queue is empty");
             return;
         }
-        let files = self.ctx.play_files(&self.lib, &self.queue);
+        let files = self.ctx.play_files(&self.lib, &self.queue, true);
         let cmd = crate::mpv::command_line(&self.ctx.cfg, &files);
         match copy_to_clipboard(&cmd) {
             Ok(()) => self.say("mpv command copied to clipboard"),
@@ -2164,6 +2158,8 @@ impl App {
             // `P`, or shift-⏎ where the terminal tells it from ⏎, from the beginning.
             (KeyCode::Enter, Some(it)) => self.play_item(&series, it, !key.modifiers.contains(KeyModifiers::SHIFT)),
             (KeyCode::Char('P'), Some(it)) => self.play_item(&series, it, false),
+            // On a ▲ ▼ season link, as everywhere else: the queue.
+            (KeyCode::Char('P'), None) => self.play_key(false),
             _ => self.series_actions(key, series),
         }
     }

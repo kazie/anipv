@@ -697,17 +697,22 @@ pub struct QueueEntry {
 }
 
 impl Ctx {
-    /// mpv files for a queue, resuming started items.
+    /// mpv files for a queue, resuming started items (with `resume`; else
+    /// all from the beginning).
     ///
     /// Each file is played once, even if the queue holds several of its
     /// episodes (multi-episode files): watching it marks all of them.
-    pub fn play_files(&self, lib: &Library, queue: &[QueueEntry]) -> Vec<PlayFile> {
+    pub fn play_files(&self, lib: &Library, queue: &[QueueEntry], resume: bool) -> Vec<PlayFile> {
         let mut seen = HashSet::new();
         queue
             .iter()
             .filter(|q| seen.insert(&q.file))
             .map(|q| {
-                let start = lib.get(&q.series).and_then(|s| s.item(&q.item)).and_then(|i| i.state.resume_at());
+                let start = if resume {
+                    lib.get(&q.series).and_then(|s| s.item(&q.item)).and_then(|i| i.state.resume_at())
+                } else {
+                    None
+                };
                 PlayFile { path: q.file.clone(), start }
             })
             .collect()
@@ -1170,7 +1175,7 @@ mod tests {
         let lib = ctx.library().unwrap();
         let file = PathBuf::from("/m/Show - 001&002.mkv");
         let entry = |n| QueueEntry { series: "show".into(), item: ItemKey::episode(EpNo::new(n)), file: file.clone() };
-        assert_eq!(ctx.play_files(&lib, &[entry(1), entry(2)]).len(), 1);
+        assert_eq!(ctx.play_files(&lib, &[entry(1), entry(2)], true).len(), 1);
     }
 
     // ---- keys from before kana voiced marks were kept (`バカ` was `ハカ`) ----

@@ -866,7 +866,7 @@ fn play(ctx: &Ctx, s: &mut Session, queries: &[String], count: usize, print: boo
     if queue.is_empty() {
         bail!("nothing to play");
     }
-    let files = ctx.play_files(lib, &queue);
+    let files = ctx.play_files(lib, &queue, true);
     if print {
         out.write_all(&crate::mpv::command_line(&ctx.cfg, &files))?;
         writeln!(out)?;
