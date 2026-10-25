@@ -333,7 +333,18 @@ impl Series {
     /// would let a query match across the two copies.) Made once, when first
     /// asked for.
     pub fn search_text(&self) -> &str {
-        self.search.get_or_init(|| search_text(&self.title, &self.key, &self.aliases))
+        self.search.get_or_init(|| search_text(&self.title, &self.key, &self.aliases, &self.other_names()))
+    }
+
+    /// What its metadata calls it (`AniList`'s romaji, English and native
+    /// titles) other than its title, key and the names merged into it.
+    pub fn other_names(&self) -> Vec<&str> {
+        let title = self.title.to_lowercase();
+        let known = |name: &str| {
+            let key = crate::identity::series_key(name);
+            name.to_lowercase() == title || key == self.key || self.aliases.contains(&key)
+        };
+        self.meta.iter().flat_map(SeriesMeta::names).filter(|n| !known(n)).collect()
     }
 
     /// Every key the series goes by: its own, then the merged-away ones.
@@ -1455,7 +1466,7 @@ fn path_order(a: &Path, b: &Path) -> std::cmp::Ordering {
 }
 
 /// Title and merged-in names, plus the key when it differs from the title's own.
-fn search_text(title: &str, key: &str, aliases: &[String]) -> String {
+fn search_text(title: &str, key: &str, aliases: &[String], others: &[&str]) -> String {
     let mut text = title.to_string();
     if crate::identity::series_key(title) != key {
         text.push(' ');
@@ -1464,6 +1475,10 @@ fn search_text(title: &str, key: &str, aliases: &[String]) -> String {
     for alias in aliases {
         text.push(' ');
         text.push_str(alias);
+    }
+    for name in others {
+        text.push(' ');
+        text.push_str(name);
     }
     text
 }
@@ -2051,6 +2066,48 @@ mod tests {
         let lib = build(&files, &events, &[]);
         let s = lib.get("kusuriya").unwrap();
         assert_eq!(s.search_text(), "The Apothecary Diaries kusuriya apothecary");
+    }
+
+    /// Every title AniList has for a series is searchable, each once.
+    #[test]
+    fn search_text_has_the_anilist_titles() {
+        let files = [row("dl", "[A] Kusuriya no Hitorigoto - 01.mkv", true, 1)];
+        let meta = SeriesMeta {
+            series: "kusuriya no hitorigoto".into(),
+            anilist: Some(5),
+            title: Some("Kusuriya no Hitorigoto".into()),
+            titles: Some(vec![
+                "Kusuriya no Hitorigoto".into(),
+                "The Apothecary Diaries".into(),
+                "薬屋のひとりごと".into(),
+            ]),
+            ..SeriesMeta::default()
+        };
+        let lib = build(&files, &[], &[meta]);
+        let s = lib.get("kusuriya no hitorigoto").unwrap();
+        assert_eq!(s.search_text(), "Kusuriya no Hitorigoto The Apothecary Diaries 薬屋のひとりごと");
+        assert_eq!(s.other_names(), ["The Apothecary Diaries", "薬屋のひとりごと"]);
+    }
+
+    /// An AniList title that is already the key or a merged-away name isn't
+    /// added again.
+    #[test]
+    fn search_text_has_each_name_once() {
+        let files =
+            [row("dl", "[A] Kusuriya - 01.mkv", true, 1), row("dl", "[A] Apothecary Diaries - 01.mkv", true, 1)];
+        let events = vec![
+            ev(1, EventBody::Title { series: "kusuriya".into(), title: "Kusuriya no Hitorigoto".into() }),
+            ev(2, EventBody::Alias { from: "apothecary diaries".into(), to: "kusuriya".into() }),
+        ];
+        let meta = SeriesMeta {
+            series: "kusuriya".into(),
+            anilist: Some(5),
+            titles: Some(vec!["Kusuriya".into(), "Apothecary Diaries".into(), "薬屋のひとりごと".into()]),
+            ..SeriesMeta::default()
+        };
+        let lib = build(&files, &events, &[meta]);
+        let s = lib.get("kusuriya").unwrap();
+        assert_eq!(s.search_text(), "Kusuriya no Hitorigoto kusuriya apothecary diaries 薬屋のひとりごと");
     }
 
     // ---- keys from before kana voiced marks were kept (`バカ` was `ハカ`) ----

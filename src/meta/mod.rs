@@ -244,6 +244,10 @@ fn stale_id(s: &Series, m: Option<&SeriesMeta>, checks: &Checks, ts: i64, max_ag
     // Offline-database data can predate the show airing (or finishing),
     // so a row that never came from AniList is always refreshed once.
     let Some(refreshed) = m.refreshed_at else { return Some(id) };
+    // Refreshed before titles, studios and hashtags were kept: once more.
+    if m.titles.is_none() {
+        return Some(id);
+    }
     if !watching {
         return None;
     }
@@ -914,6 +918,7 @@ mod tests {
                 anilist: Some(21),
                 status: Some("RELEASING".into()),
                 refreshed_at: Some(0),
+                titles: Some(Vec::new()),
                 ..SeriesMeta::default()
             },
             SeriesMeta {
@@ -921,6 +926,7 @@ mod tests {
                 anilist: Some(199_111),
                 status: Some("FINISHED".into()),
                 refreshed_at: Some(0),
+                titles: Some(Vec::new()),
                 ..SeriesMeta::default()
             },
         ];
@@ -943,6 +949,7 @@ mod tests {
             status: Some("RELEASING".into()),
             next_airing: Some(50),
             refreshed_at: Some(1000),
+            titles: Some(Vec::new()),
             ..SeriesMeta::default()
         };
         let l = lib(&[follow], &[meta]);
@@ -961,8 +968,24 @@ mod tests {
         let offline = db.by_anilist(21).unwrap().to_meta("one piece");
         let l = lib(std::slice::from_ref(&done), std::slice::from_ref(&offline));
         assert_eq!(stale_ids(&l, &Checks::new(), 5, 43_200).len(), 1);
-        let refreshed = SeriesMeta { refreshed_at: Some(1), status: Some("RELEASING".into()), ..offline };
+        let refreshed = SeriesMeta {
+            refreshed_at: Some(1),
+            status: Some("RELEASING".into()),
+            titles: Some(vec!["ONE PIECE".into()]),
+            ..offline
+        };
         assert!(stale_ids(&lib(&[done], &[refreshed]), &Checks::new(), 999_999, 43_200).is_empty());
+    }
+
+    /// A row refreshed before titles, studios and hashtags were kept is
+    /// refreshed once more, completed series too; then it is fresh again.
+    #[test]
+    fn rows_without_titles_get_one_refresh() {
+        let done = Event::new(1, "d", EventBody::status("one piece", SeriesStatus::Completed, None));
+        let old = SeriesMeta { titles: None, ..row("one piece", 21, Some(1)) };
+        assert_eq!(stale_ids(&lib(std::slice::from_ref(&done), &[old]), &Checks::new(), 2, 43_200).len(), 1);
+        let new = SeriesMeta { titles: Some(vec!["ONE PIECE".into()]), ..row("one piece", 21, Some(1)) };
+        assert!(stale_ids(&lib(&[done], &[new]), &Checks::new(), 2, 43_200).is_empty());
     }
 
     /// Skipped series are left alone like dropped ones (no automatic or
@@ -1268,6 +1291,7 @@ mod tests {
             episodes: Some(12),
             status: Some("FINISHED".into()),
             refreshed_at: refreshed,
+            titles: refreshed.map(|_| Vec::new()),
             ..SeriesMeta::default()
         }
     }

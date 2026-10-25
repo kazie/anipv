@@ -16,7 +16,7 @@ use super::scan::ScannedFile;
 
 /// Bump on any schema change; older caches are dropped and rebuilt (unless
 /// listed in `UPGRADABLE`).
-pub const SCHEMA_VERSION: i32 = 8;
+pub const SCHEMA_VERSION: i32 = 9;
 
 /// Older schema versions brought up to date in place rather than rebuilt:
 /// [`SCHEMA`] only adds to them (`CREATE … IF NOT EXISTS`), and [`upgrade`]
@@ -26,7 +26,9 @@ pub const SCHEMA_VERSION: i32 = 8;
 /// * 5 → 6: `series_meta.search_linked`.
 /// * 6 → 7: `series_meta.score` and `series_meta.popularity`.
 /// * 7 → 8: the `sequels` table (filled as series are asked about again).
-const UPGRADABLE: [i32; 4] = [4, 5, 6, 7];
+/// * 8 → 9: `series_meta.titles`, `hashtags`, `studios` and `season` (filled
+///   by one refresh, see [`SeriesMeta::titles`]).
+const UPGRADABLE: [i32; 5] = [4, 5, 6, 7, 8];
 
 /// `kv` key prefix (followed by the root name) remembering whether the root
 /// directory was a mount point at its last non-empty scan, and which
@@ -148,7 +150,11 @@ CREATE TABLE IF NOT EXISTS series_meta(
     refreshed_at INTEGER,
     search_linked INTEGER NOT NULL DEFAULT 0,
     score       INTEGER,
-    popularity  INTEGER
+    popularity  INTEGER,
+    titles      TEXT,
+    hashtags    TEXT,
+    studios     TEXT,
+    season      TEXT
 );
 ";
 
@@ -218,6 +224,22 @@ impl SeriesMeta {
     pub fn is_finished(&self) -> bool {
         self.status.as_deref() == Some("FINISHED") && self.next_ep.is_none()
     }
+
+    /// Every name it has: the canonical title, then the `AniList` titles.
+    pub fn names(&self) -> Vec<&str> {
+        distinct(self.title.iter().chain(self.titles.iter().flatten()).map(String::as_str))
+    }
+}
+
+/// `names` without repeats, ignoring case: the first spelling stays.
+pub fn distinct<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for name in names {
+        if !out.iter().any(|n| n.to_lowercase() == name.to_lowercase()) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 /// Cached facts about a series from metadata providers.
@@ -254,6 +276,16 @@ pub struct SeriesMeta {
     pub score: Option<u8>,
     /// Users with the anime on their `AniList` list (from `AniList` only).
     pub popularity: Option<u32>,
+    /// Every title `AniList` has for it (romaji, English, native), distinct;
+    /// `None` until refreshed from `AniList` since these were kept, which
+    /// makes the row due for one refresh.
+    pub titles: Option<Vec<String>>,
+    /// Official hashtags, with their `#` (from `AniList` only).
+    pub hashtags: Vec<String>,
+    /// Main animation studios (from `AniList` only).
+    pub studios: Vec<String>,
+    /// Airing season: `WINTER`, `SPRING`, `SUMMER`, `FALL` (from `AniList` only).
+    pub season: Option<String>,
 }
 
 /// "Matching ran for this series and found nothing to link": against the
@@ -798,7 +830,7 @@ impl Db {
     pub fn all_meta(&self) -> Result<Vec<SeriesMeta>> {
         let mut st = self.conn.prepare_cached(
             "SELECT series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked,
-                    score, popularity
+                    score, popularity, titles, hashtags, studios, season
              FROM series_meta",
         )?;
         let rows = st.query_map([], |r| {
@@ -816,6 +848,10 @@ impl Db {
                 search_linked: r.get(10)?,
                 score: r.get(11)?,
                 popularity: r.get(12)?,
+                titles: r.get::<_, Option<String>>(13)?.map(|j| json_list(&j)),
+                hashtags: r.get::<_, Option<String>>(14)?.map(|j| json_list(&j)).unwrap_or_default(),
+                studios: r.get::<_, Option<String>>(15)?.map(|j| json_list(&j)).unwrap_or_default(),
+                season: r.get(16)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -844,7 +880,17 @@ fn upgrade(conn: &Connection, version: i32) -> Result<()> {
         add_meta_column(conn, "score", "INTEGER")?;
         add_meta_column(conn, "popularity", "INTEGER")?;
     }
+    if version <= 8 {
+        for name in ["titles", "hashtags", "studios", "season"] {
+            add_meta_column(conn, name, "TEXT")?;
+        }
+    }
     Ok(())
+}
+
+/// A JSON list of strings from the cache; unreadable reads as empty.
+fn json_list(json: &str) -> Vec<String> {
+    serde_json::from_str(json).unwrap_or_default()
 }
 
 /// Add a column to `series_meta` unless it is there already.
@@ -904,8 +950,8 @@ fn write_kv(conn: &Connection, k: &str, v: &str) -> Result<()> {
 fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
     let mut put = conn.prepare_cached(
         "INSERT OR REPLACE INTO series_meta(series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked,
-                                            score, popularity)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                            score, popularity, titles, hashtags, studios, season)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
     )?;
     for m in rows {
         put.execute(params![
@@ -921,7 +967,11 @@ fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
             m.refreshed_at,
             m.search_linked,
             m.score,
-            m.popularity
+            m.popularity,
+            m.titles.as_ref().map(serde_json::to_string).transpose()?,
+            serde_json::to_string(&m.hashtags)?,
+            serde_json::to_string(&m.studios)?,
+            m.season
         ])?;
     }
     Ok(())
@@ -1176,7 +1226,24 @@ mod tests {
             ..SeriesMeta::default()
         };
         db.put_metas(std::slice::from_ref(&m)).unwrap();
-        assert_eq!(db.all_meta().unwrap(), vec![m]);
+        assert_eq!(db.all_meta().unwrap(), vec![m.clone()]);
+        // Titles: none fetched yet, fetched but none, and some; lists keep their order.
+        let fetched_none = SeriesMeta { titles: Some(Vec::new()), ..m.clone() };
+        db.put_metas(std::slice::from_ref(&fetched_none)).unwrap();
+        assert_eq!(db.all_meta().unwrap(), vec![fetched_none]);
+        let full = SeriesMeta {
+            titles: Some(vec![
+                "Kusuriya no Hitorigoto".into(),
+                "The Apothecary Diaries".into(),
+                "薬屋のひとりごと".into(),
+            ]),
+            hashtags: vec!["#薬屋のひとりごと".into(), "#kusuriya".into()],
+            studios: vec!["Studio A".into(), "Studio B".into()],
+            season: Some("FALL".into()),
+            ..m
+        };
+        db.put_metas(std::slice::from_ref(&full)).unwrap();
+        assert_eq!(db.all_meta().unwrap(), vec![full]);
         db.delete_meta("one piece").unwrap();
         assert!(db.all_meta().unwrap().is_empty());
     }
@@ -1323,6 +1390,46 @@ mod tests {
         assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
         let b = SeriesMeta { series: "b".into(), score: Some(78), popularity: Some(123_456), ..SeriesMeta::default() };
         db.put_match_results(std::slice::from_ref(&b), &[]).unwrap();
+        assert!(db.all_meta().unwrap().contains(&b));
+    }
+
+    /// A version 8 cache gets the `titles`, `hashtags`, `studios` and `season`
+    /// columns and keeps its rows, without titles (so they are refreshed once).
+    #[test]
+    fn version_8_caches_are_upgraded_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE series_meta;
+                     CREATE TABLE series_meta(series TEXT PRIMARY KEY, anilist INTEGER, title TEXT, episodes INTEGER,
+                         status TEXT, format TEXT, year INTEGER, next_ep INTEGER, next_airing INTEGER, refreshed_at INTEGER,
+                         search_linked INTEGER NOT NULL DEFAULT 0, score INTEGER, popularity INTEGER);
+                     INSERT INTO series_meta(series, anilist, refreshed_at, score) VALUES ('a', 5, 9, 80);",
+                )
+                .unwrap();
+            db.conn.pragma_update(None, "user_version", 8).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(!db.was_rebuilt());
+        let a = SeriesMeta {
+            series: "a".into(),
+            anilist: Some(5),
+            refreshed_at: Some(9),
+            score: Some(80),
+            ..SeriesMeta::default()
+        };
+        assert_eq!(db.all_meta().unwrap(), vec![a]);
+        assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
+        let b = SeriesMeta {
+            series: "b".into(),
+            titles: Some(vec!["B".into()]),
+            studios: vec!["Studio B".into()],
+            ..SeriesMeta::default()
+        };
+        db.put_metas(std::slice::from_ref(&b)).unwrap();
         assert!(db.all_meta().unwrap().contains(&b));
     }
 

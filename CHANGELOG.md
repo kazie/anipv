@@ -8,6 +8,21 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Search a series by any of its AniList titles: romaji, English or native
+  (`/apothecary` and `/薬屋` find Kusuriya no Hitorigoto). A row found by
+  another name shows that name, and the series header lists them, with the
+  season, studios and official hashtags.
+- The Series search filters on AniList data with `field:value` tokens,
+  alone or with words: `studio:madhouse`, `year:2023` (or `2020..2023`,
+  `>=2020`), `season:fall`, `score>80`, `#hashtag`; `"…"` quotes a value or
+  a phrase with spaces, and `"#Compass"` or `\#Compass` searches a title
+  that starts with `#`. The search box lists the fields while there's room;
+  a filter it leaves out (`season:autum`, `year:2023..2020`) is named there
+  in yellow, with what the field takes.
+- Titles, studios, season and hashtags come with the AniList refresh. Tracked
+  series refreshed before this are asked about once more; others get them
+  with their monthly refresh (with `refresh_untracked = true`).
+
 - `P` plays from the beginning: the queue (or the next episode here), and
   in the episode list the episode under the cursor. Shift-⏎ does too in the
   episode list and the Queue view, on terminals with the kitty keyboard

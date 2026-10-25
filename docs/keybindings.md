@@ -49,6 +49,7 @@ Press `?` in the TUI to see these at any time.
 | Key | Action |
 | --- | --- |
 | `/` | fuzzy search (⏎ keeps it, Esc clears) |
+| `/ filters` | studio:x year:2023 season:fall score>80 #tag |
 | `f / 3` | next status filter (works with a search) |
 | `m` | merge into another series |
 | `U` | undo merges into this series |

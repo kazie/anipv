@@ -11,6 +11,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
+use super::query::SeriesQuery;
 use crate::app::{Ctx, Index, QueueEntry, fuzzy_rank, queue_new};
 use crate::events::{CachedLog, EventBody, Recorded, now};
 use crate::folders::{Dir, Entry, Folders};
@@ -979,21 +980,24 @@ impl App {
     /// so typing in the search box stays cheap on a big library.
     fn refresh_series_rows(&mut self) {
         let lib = &self.lib;
-        // The status filter and the search work together.
-        let candidates: Vec<(usize, &Series)> =
-            lib.series.iter().enumerate().filter(|(_, s)| self.filter.accepts(s)).collect();
-        self.series_ix = if self.query.is_empty() {
-            franchise_order(lib, candidates.iter().map(|c| c.0), self.fold_franchises)
+        // The status filter and the search's words and filters work together.
+        let query = SeriesQuery::parse(&self.query);
+        let accepts = |s: &Series| self.filter.accepts(s) && query.accepts(s);
+        let candidates: Vec<(usize, &Series)> = lib.series.iter().enumerate().filter(|(_, s)| accepts(s)).collect();
+        self.series_ix = if query.words.is_empty() {
+            // Filters alone list every match, franchises unfolded.
+            let fold = self.fold_franchises && !query.has_filters();
+            franchise_order(lib, candidates.iter().map(|c| c.0), fold)
         } else {
-            let mut hits: Vec<usize> = fuzzy_rank(candidates.iter(), &self.query, |(_, s)| s.search_text().into())
+            let mut hits: Vec<usize> = fuzzy_rank(candidates.iter(), &query.words, |(_, s)| s.search_text().into())
                 .into_iter()
                 .map(|(c, _)| c.0)
                 .collect();
-            // Then every entry of a franchise the query names.
-            let q = self.query.to_lowercase();
+            // Then every entry of a franchise the words name.
+            let q = query.words.to_lowercase();
             for f in lib.franchises.iter().filter(|f| f.name.to_lowercase().contains(&q)) {
                 for i in f.series() {
-                    if !hits.contains(&i) && self.filter.accepts(&lib.series[i]) {
+                    if !hits.contains(&i) && accepts(&lib.series[i]) {
                         hits.push(i);
                     }
                 }
@@ -3138,6 +3142,36 @@ mod tests {
         assert_eq!((app.query.as_str(), app.filter), ("", SeriesFilter::Only(SeriesStatus::Untracked)));
         app.press("13");
         assert_eq!(app.view, View::Series, "from another tab, 3 just switches");
+    }
+
+    /// The search finds a series by any `AniList` title, and `field:value`
+    /// tokens filter on studio, year, season, score and hashtag, with or
+    /// without words.
+    #[test]
+    fn search_finds_anilist_titles_and_filters_on_metadata() {
+        let (_dir, mut app) = demo_app();
+        let keys = |app: &mut App, query: &str| -> Vec<String> {
+            app.query = query.into();
+            app.refresh_series_rows();
+            app.series_ix.iter().map(|&i| app.lib.series[i].key.clone()).collect()
+        };
+        assert_eq!(keys(&mut app, "delicious in dungeon"), ["dungeon meshi"], "English title");
+        assert_eq!(keys(&mut app, "\"in dungeon\""), ["dungeon meshi"], "a quoted phrase");
+        assert_eq!(keys(&mut app, "葬送"), ["sousou no frieren"], "native title");
+        assert_eq!(keys(&mut app, "studio:madhouse"), ["sousou no frieren"]);
+        assert_eq!(keys(&mut app, "studio:\"studio trig\""), ["dungeon meshi"]);
+        assert_eq!(keys(&mut app, "year:2023 season:fall"), ["sousou no frieren"]);
+        assert_eq!(keys(&mut app, "year<2000"), ["cowboy bebop"]);
+        assert_eq!(keys(&mut app, "#ダンジョン"), ["dungeon meshi"]);
+        let good = keys(&mut app, "score>=86");
+        assert!(good.contains(&"dungeon meshi".to_string()) && good.contains(&"cowboy bebop".to_string()), "{good:?}");
+        assert!(good.iter().all(|k| app.lib.get(k).unwrap().meta.as_ref().unwrap().score >= Some(86)));
+        // Words and filters together; a filter no series passes leaves nothing.
+        assert_eq!(keys(&mut app, "dungeon season:winter"), ["dungeon meshi"]);
+        assert!(keys(&mut app, "dungeon season:summer").is_empty());
+        // A filter still being typed hides nothing.
+        let all = keys(&mut app, "");
+        assert_eq!(keys(&mut app, "studio:"), all);
     }
 
     /// Without a query, the merge picker lists similarly named series first,

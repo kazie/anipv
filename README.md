@@ -94,7 +94,7 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 | | |
 | --- | --- |
 | <img src="assets/img/series.svg" alt="series list"> | <img src="assets/img/detail.svg" alt="episode list with extras"> |
-| **Series**: everything on disk, filterable by status and fuzzy-searchable. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. The seasons around it are a row away (`▲`/`▼`, or `[`/`]`). |
+| **Series**: everything on disk, filterable by status and fuzzy-searchable by any of its titles (romaji, English, native). Filter on AniList data too: `studio:madhouse`, `year:2023`, `season:fall`, `score>80`, `#hashtag`. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. The seasons around it are a row away (`▲`/`▼`, or `[`/`]`). |
 | <img src="assets/img/queue.svg" alt="play queue"> | <img src="assets/img/status.svg" alt="status picker"> |
 | **Queue**: reorder with `J`/`K`, play with `p`, or `y` to copy the plain `mpv …` command. | **Status**: `s`, then a letter. Dropping or pausing asks for an optional note. |
 
@@ -183,7 +183,8 @@ anipv makes two kinds of network requests by default, both optional, and a third
 
 1. `anipv meta update` downloads the public [anime-offline-database] JSON from GitHub. The original [manami-project] dataset was archived in July 2026, so by default this comes from its community continuation (the archived original is the fallback when nothing is cached yet). Set `offline_db_url` to use another source.
 2. For series you *follow*, it asks [AniList]'s public API about the anime by id
-   (`next airing episode`, `episode count`, `average score`, `popularity`). No account or token is involved, and
+   (`next airing episode`, `episode count`, `average score`, `popularity`, its titles, studios,
+   season and hashtags). No account or token is involved, and
    nothing is ever sent about what you watched. Set `anilist = false` to turn it off.
 3. **Off by default**: with `anilist_search = true` (or `anipv meta match --search`),
    series the offline database can't match (all of them while none is

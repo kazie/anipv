@@ -13,6 +13,8 @@ use ratatui::widgets::{
 };
 
 use super::app::{App, DetailRow, FilesMode, MergePicker, NowPlaying, Popup, Severity, View};
+use super::query::SeriesQuery;
+use crate::app::fuzzy_rank;
 use crate::fmt::{ago, ago_opt, clock};
 use crate::folders::Entry;
 use crate::library::Hint;
@@ -78,7 +80,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Some(Popup::Help { scroll, fits }) => draw_help(f, scroll, fits),
         Some(Popup::Status { series, idx }) => draw_status_popup(f, &app.lib, series, *idx),
         Some(Popup::Merge(picker)) => draw_merge(f, &app.lib, picker),
-        Some(Popup::Search) => draw_search(f, app.search_query()),
+        Some(Popup::Search) => {
+            let hint = (app.view == View::Series).then(|| SeriesQuery::parse(&app.query).hint());
+            draw_search(f, app.search_query(), hint);
+        }
         Some(Popup::Input { purpose, text, .. }) => draw_input(f, &purpose.prompt(), text),
         Some(Popup::ConfirmQuit) => draw_confirm(f, app.playing.is_some()),
         Some(Popup::CatchUp { prompt, .. }) => draw_catch_up(f, prompt),
@@ -357,13 +362,18 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
     let ts = app.now();
     let len = app.rows_len(View::Series);
     let window = Window::of_table(&app.series_state, len, area, true);
+    let words = SeriesQuery::parse(&app.query).words;
     let rows: Vec<Row> = app
         .series_rows_in(window.range.clone())
         .iter()
         .map(|s| {
             let latest = s.latest_on_disk().map(|e| e.to_string()).unwrap_or_default();
             let disk_style = if s.present() { Style::new() } else { Style::new().dark_gray() };
-            let title = titled(app, s, Style::new());
+            let mut title = titled(app, s, Style::new());
+            // Found by another name: which one.
+            if let Some(name) = matched_name(s, &words) {
+                title.push_span(Span::styled(format!(" · {name}"), Style::new().dark_gray()));
+            }
             Row::new(vec![
                 Cell::from(title),
                 Cell::from(s.status.as_str()).fg(status_color(s.status)),
@@ -514,11 +524,9 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         st => Style::new().fg(status_color(st)),
     };
     let title = vec![Span::styled(s.title.clone(), title_style.bold())];
-    let alt = s.meta.as_ref().and_then(|m| m.title.as_ref()).filter(|t| {
-        let key = crate::identity::series_key(t);
-        !t.eq_ignore_ascii_case(&s.title) && key != s.key && !s.aliases.contains(&key)
-    });
-    let alt = alt.map(|t| vec![Span::styled(format!("{ANILIST_MARK} {t}"), dim)]);
+    let alt = s.other_names();
+    let alt =
+        (!alt.is_empty()).then(|| vec![Span::styled(format!("{ANILIST_MARK} {names}", names = alt.join(" · ")), dim)]);
     // (rank, spans): the lowest rank goes first when the line is too narrow.
     let mut right: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
     if !s.aliases.is_empty() {
@@ -547,9 +555,16 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         facts.push(vec![Span::styled(format!("{new} new"), Style::new().green())]);
     }
     if let Some(m) = &s.meta {
-        let fmt_year = [m.format.clone(), m.year.map(|y| y.to_string())].into_iter().flatten().collect::<Vec<_>>();
-        if !fmt_year.is_empty() {
-            facts.push(vec![Span::styled(fmt_year.join(" "), dim)]);
+        let season = m.season.as_deref().map(season_name);
+        let aired = [m.format.clone(), season, m.year.map(|y| y.to_string())].into_iter().flatten().collect::<Vec<_>>();
+        if !aired.is_empty() {
+            facts.push(vec![Span::styled(aired.join(" "), dim)]);
+        }
+        if !m.studios.is_empty() {
+            facts.push(vec![Span::styled(m.studios.join(", "), dim)]);
+        }
+        if !m.hashtags.is_empty() {
+            facts.push(vec![Span::styled(m.hashtags.join(" "), Style::new().fg(ANILIST))]);
         }
     }
     let mut facts = join_spans(facts, " · ");
@@ -1026,6 +1041,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "Series",
         &[
             ("/", "fuzzy search (⏎ keeps it, Esc clears)"),
+            ("/ filters", "studio:x year:2023 season:fall score>80 #tag"),
             ("f / 3", "next status filter (works with a search)"),
             ("m", "merge into another series"),
             ("U", "undo merges into this series"),
@@ -1153,18 +1169,22 @@ fn draw_merge(f: &mut Frame, lib: &Library, picker: &mut MergePicker) {
     window.render(f, table, list, &mut picker.state);
 }
 
-/// The search box, over the footer.
-fn draw_search(f: &mut Frame, query: &str) {
+/// The search box, over the footer, with a hint at the right while it fits
+/// (`warn`: about what is typed).
+fn draw_search(f: &mut Frame, query: &str, hint: Option<(String, bool)>) {
     let area = Rect { y: f.area().bottom().saturating_sub(1), height: 1, ..f.area() };
     f.render_widget(Clear, area);
-    f.render_widget(
-        Line::from(vec![
-            Span::styled(" / ", Style::new().fg(ACCENT).bold()),
-            Span::raw(query.to_string()),
-            Span::raw("▏"),
-        ]),
-        area,
-    );
+    let mut line =
+        vec![Span::styled(" / ", Style::new().fg(ACCENT).bold()), Span::raw(query.to_string()), Span::raw("▏")];
+    if let Some((hint, warn)) = hint {
+        let hint = Span::styled(hint, if warn { Style::new().fg(Color::Yellow) } else { Style::new().dark_gray() });
+        let gap = usize::from(area.width).saturating_sub(spans_width(&line) + hint.width() + 1);
+        if gap >= 3 {
+            line.push(Span::raw(" ".repeat(gap)));
+            line.push(hint);
+        }
+    }
+    f.render_widget(Line::from(line), area);
 }
 
 fn draw_input(f: &mut Frame, prompt: &str, text: &str) {
@@ -1297,6 +1317,23 @@ fn draw_unmerge(f: &mut Frame, names: &[String]) {
 fn draw_catch_up(f: &mut Frame, prompt: &str) {
     let (question, keys) = ("Seen all of it? Mark watched and completed:", "y/Enter confirms, any other key cancels");
     draw_yes_no(f, "Catch up", question, prompt, keys);
+}
+
+/// `FALL` → `Fall`.
+fn season_name(season: &str) -> String {
+    let lower = season.to_lowercase();
+    let mut c = lower.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+/// The name of `s` the search's `words` found it by, when that isn't its
+/// title: an `AniList` title or a merged-away name.
+fn matched_name<'a>(s: &'a Series, words: &str) -> Option<&'a str> {
+    if words.is_empty() || !fuzzy_rank(std::iter::once(&s.title), words, |t| t.as_str().into()).is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = s.other_names().into_iter().chain(s.aliases.iter().map(String::as_str)).collect();
+    fuzzy_rank(names.iter(), words, |n| (*n).into()).first().map(|(n, _)| **n)
 }
 
 /// A series' title with its place in its franchise, dimmed:

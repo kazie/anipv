@@ -1168,3 +1168,37 @@ fn files_tree_shows_folders_with_what_is_watched() {
     assert!(s.contains("queued 8 from 02 - Nisemonogatari"), "{s}");
     insta::assert_snapshot!("files_tree", s);
 }
+
+/// A series found by another of its names says which; the search box lists
+/// the filters while there's room.
+#[test]
+fn search_shows_the_name_a_series_was_found_by() {
+    let (_d, mut app) = app();
+    app.press("3/delicious");
+    let s = render(&mut app);
+    let row = s.lines().find(|l| l.contains("Dungeon Meshi")).unwrap_or_else(|| panic!("{s}"));
+    assert!(row.contains("· Delicious in Dungeon"), "{row}");
+    assert!(s.lines().last().is_some_and(|l| l.contains("studio:") && l.contains("#tag")), "{s}");
+    // Found by its title: nothing more to say.
+    app.press("\x1b/dungeon");
+    let s = render(&mut app);
+    let row = s.lines().find(|l| l.contains("Dungeon Meshi")).unwrap_or_else(|| panic!("{s}"));
+    assert!(!row.contains("Delicious"), "{row}");
+    // A filter left out says so, and what it takes.
+    app.press(" season:autum");
+    let s = render(&mut app);
+    let last = s.lines().last().unwrap_or_default();
+    assert!(last.contains("ignored season:autum · season: winter spring summer fall"), "{s}");
+}
+
+/// The series header shows its other AniList titles, when and by whom it
+/// was made, and its hashtag.
+#[test]
+fn detail_shows_anilist_titles_studio_season_and_hashtag() {
+    let (_d, mut app) = app();
+    app.press("3/frieren\n\n");
+    let s = render_sized(&mut app, 160, 28);
+    // The test buffer pads each wide character with a space.
+    assert!(s.contains("ⓐ Frieren: Beyond Journey's End · 葬 送 の フ リ ー レ ン"), "{s}");
+    assert!(s.contains("TV Fall 2023 · MADHOUSE · #フ リ ー レ ン"), "{s}");
+}
