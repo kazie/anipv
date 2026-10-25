@@ -138,7 +138,10 @@ pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<us
     } else if let (RootKind::Archive, Some(top)) = (kind, dirs.first()) {
         // The folder names the show; a later season inside it (`S02E01` in the
         // file name, or a `Season 2` folder) must not collapse into season 1.
-        (clean_dir_name(top), parsed.season.or_else(|| season_from_dirs(&dirs[1..])))
+        // A named folder inside it may hold a season or a show of its own.
+        let top = clean_dir_name(top);
+        sub_series(cfg, &top, &dirs[1..], &parsed)
+            .unwrap_or_else(|| (top, parsed.season.or_else(|| season_from_dirs(&dirs[1..]))))
     } else {
         let mut title = parsed.title.clone();
         let mut season = parsed.season;
@@ -191,6 +194,50 @@ pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<us
     // Only a key that differs from today's is worth remembering.
     let earlier = earlier.filter(|k| *k != series);
     Classified { series, legacy_series, title, parsed, entry, earlier }
+}
+
+/// The name and season of a file in a named folder (not a season or kind
+/// folder) inside the series folder `top`, when it isn't simply `top`'s:
+/// - a later season of `top` by its own title (or the folder's name):
+///   `Kusuriya no Hitorigoto/Kusuriya no Hitorigoto 2nd Season (BD) [Group]/
+///   Kusuriya no Hitorigoto 2nd Season - 01.mkv` is season 2;
+/// - another show, when the folder is named after it too:
+///   `Kusuriya no Hitorigoto/MaomaoNoHitorigoto/S2/Maomao no Hitorigoto -
+///   S02E01.mkv` is Maomao no Hitorigoto's season 2.
+///
+/// A release in a folder of its own (an English title of the same show, a
+/// batch, omake) stays with `top`.
+fn sub_series(cfg: &Config, top: &str, inner: &[&str], parsed: &Parsed) -> Option<(String, Option<u32>)> {
+    let at = inner.iter().position(|d| !is_generic_dir(cfg, d))?;
+    let sub = clean_dir_name(inner[at]);
+    let title = if parsed.title.is_empty() { sub.clone() } else { parsed.title.clone() };
+    let season = parsed.season.or_else(|| season_from_dirs(inner));
+    let (top_key, key) = (series_key(top), series_name(&title, season).0);
+    if crate::identity::season_suffix(&key).is_some_and(|(base, n)| base == top_key && n >= 2) {
+        return Some((title, season));
+    }
+    let compact = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    // Named alike: one name starts with the other (a special's title runs on
+    // past the show's name), and that takes more than a word or two.
+    // Only a show folder of its own: one holding folders (`S1`, `S2`,
+    // `USJ Special`), with files titled like it. A flat folder of one
+    // release (`[Group] Mobile Fighter G Gundam COMPLETE`, an English title
+    // of the same show) stays with the series folder's show.
+    let nested = inner.len() > at + 1;
+    let (sub, base) = (compact(&sub), compact(crate::identity::base_key(&key)));
+    let alike = sub.len().min(base.len()) >= 8 && (sub.starts_with(&base) || base.starts_with(&sub));
+    // And a show of the franchise, sharing a word of its name (Maomao no
+    // Hitorigoto beside Kusuriya no Hitorigoto), not the same show by its
+    // English title (The Apothecary Diaries), which shares none.
+    let shares = key.split(' ').any(|w| w.chars().count() >= 3 && top_key.split(' ').any(|t| t == w));
+    if !nested || parsed.title.is_empty() || !alike || !shares || key.starts_with(&top_key) {
+        return None;
+    }
+    // A title running on past the folder's name (`Maomao no Hitorigoto -
+    // USJ Special Part 1`): the show is the words that spell the name.
+    let words: Vec<&str> = title.split_whitespace().collect();
+    let named = (1..=words.len()).map(|n| words[..n].join(" ")).find(|w| compact(w) == sub);
+    Some((named.unwrap_or(title), season))
 }
 
 /// A numbered entry folder (`Monogatari Series/03 - Nisemonogatari`, see
@@ -470,6 +517,62 @@ mod tests {
         assert_eq!(key("Show/Season 2/01 - Title.mkv"), "show s2");
         assert_eq!(key("Show/Season 1/01 - Title.mkv"), "show");
         assert_eq!(key("Show S2/Show S2 - S02E01.mkv"), "show s2", "no doubled marker");
+    }
+
+    /// A named folder inside a series folder holds a later season of the show
+    /// by its own title, or another show named like the folder; anything
+    /// else in it stays the folder's show.
+    #[test]
+    fn named_folders_inside_a_series_folder() {
+        let key = |rel: &str| c(RootKind::Archive, rel).series;
+        let top = "Kusuriya no Hitorigoto";
+        let s2 = "Kusuriya no Hitorigoto 2nd Season (BD 1080p HEVC Opus) [GroupK]";
+        assert_eq!(
+            key(&format!("{top}/{s2}/Kusuriya no Hitorigoto 2nd Season - 01 (BD 1080p) [GroupK].mkv")),
+            "kusuriya no hitorigoto s2"
+        );
+        assert_eq!(
+            key(&format!("{top}/MaomaoNoHitorigoto/S1/[GroupB] Maomao no Hitorigoto - S01E01.mkv")),
+            "maomao no hitorigoto"
+        );
+        assert_eq!(
+            key(&format!("{top}/MaomaoNoHitorigoto/S2/[GroupB] Maomao no Hitorigoto - S02E01.mkv")),
+            "maomao no hitorigoto s2"
+        );
+        let usj = c(
+            RootKind::Archive,
+            &format!("{top}/MaomaoNoHitorigoto/USJ Special/[GroupB] Maomao no Hitorigoto - USJ Special Part 1.mkv"),
+        );
+        assert_eq!(usj.series, "maomao no hitorigoto");
+        // The show's own files, whatever they are titled, and anything else.
+        assert_eq!(
+            key(&format!("{top}/[GroupM] The Apothecary Diaries - 01 (BD 1080p) [AB12CD34].mkv")),
+            "kusuriya no hitorigoto"
+        );
+        assert_eq!(
+            key(&format!("{top}/Apothecary S2 BD/[GroupE] The Apothecary Diaries S2 - 01.mkv")),
+            "kusuriya no hitorigoto",
+            "as before: no other show, no season of its own"
+        );
+        assert_eq!(key(&format!("{top}/Bonus/[GroupE] The Apothecary Diaries - 01.mkv")), "kusuriya no hitorigoto");
+        assert_eq!(
+            key(&format!("{top}/NC/[GroupR] Kusuriya no Hitorigoto (Creditless ED 01).mkv")),
+            "kusuriya no hitorigoto"
+        );
+        // Release folders of the same show by another title, untitled files.
+        let gundam = "Kidou Butouden G Gundam/[GroupJ] Mobile Fighter G Gundam COMPLETE (1994)/Mobile.Fighter.G.Gundam.S01E01.mkv";
+        assert_eq!(key(gundam), "kidou butouden g gundam");
+        let nadia =
+            "Nadia - Secret of Blue Water/Fushigi no Umi no Nadia Omake/[GroupK] Fushigi no Umi no Nadia Omake 01.avi";
+        assert_eq!(key(nadia), "nadia secret of blue water");
+        assert_eq!(key("Cowboy Bebop/Remastered/01 - Asteroid Blues.mkv"), "cowboy bebop");
+        let english = format!("{top}/The Apothecary Diaries/Season 2/[GroupE] The Apothecary Diaries S2 - 01.mkv");
+        assert_eq!(key(&english), "kusuriya no hitorigoto s2", "the same show by its English title");
+        assert_eq!(key("Bubblegum Crisis/Extras/Promo Videos/Promo Video (Bubblegum crisis).mkv"), "bubblegum crisis");
+        // History of these files follows them from the folder's key.
+        let m =
+            c(RootKind::Archive, &format!("{top}/MaomaoNoHitorigoto/S1/[GroupB] Maomao no Hitorigoto - S01E01.mkv"));
+        assert_eq!(m.earlier.as_deref(), Some("kusuriya no hitorigoto"));
     }
 
     #[test]

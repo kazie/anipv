@@ -32,6 +32,9 @@ pub struct Node<'a> {
     pub title: &'a str,
     /// Linked `AniList` id.
     pub anilist: Option<u64>,
+    /// The other `AniList` entries it covers (its episodes run through them,
+    /// see [`crate::split`]): links to them are links to it.
+    pub also: &'a [u64],
     /// `AniList` ids of its prequels.
     pub prequels: &'a [u64],
     /// `AniList` ids of its sequels.
@@ -42,6 +45,12 @@ pub struct Node<'a> {
     pub parts: Vec<(Part, Vec<ItemKey>)>,
     /// Year it started airing.
     pub year: Option<i32>,
+    /// Only on `AniList` (see [`crate::library::Library::remote`]): joins a
+    /// franchise by its `AniList` links alone, not by title or folder.
+    pub remote: bool,
+    /// `AniList` has it as an entry related to another (a film, a special),
+    /// not as a season: it doesn't join by title's season marker either.
+    pub branch: bool,
 }
 
 /// A franchise folder: an archive series folder of numbered entry folders
@@ -57,12 +66,17 @@ pub struct Folder {
 }
 
 /// An entry folder of a franchise folder: its number and name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Part {
     /// The entry's number (`3`).
     pub no: u32,
     /// The folder's name without its number (`Nisemonogatari`).
     pub name: String,
+    /// The `AniList` entry it is, for a part of a split series (see
+    /// [`crate::split`]); `None` for an entry folder.
+    pub anilist: Option<u64>,
+    /// That entry's prequels: the stops it comes after.
+    pub after: Vec<u64>,
 }
 
 /// One step of a franchise's watch order.
@@ -207,6 +221,9 @@ pub fn group(nodes: &[Node<'_>]) -> Vec<Franchise> {
 
     let mut by_base: BTreeMap<&str, Vec<(u32, usize)>> = BTreeMap::new();
     for (i, node) in nodes.iter().enumerate() {
+        if node.remote || node.branch {
+            continue;
+        }
         let (base, season) = crate::identity::season_suffix(node.key).unwrap_or((node.key, 1));
         by_base.entry(base).or_default().push((season, i));
     }
@@ -222,8 +239,12 @@ pub fn group(nodes: &[Node<'_>]) -> Vec<Franchise> {
         }
     }
 
-    let by_anilist: HashMap<u64, usize> =
-        nodes.iter().enumerate().filter_map(|(i, node)| Some((node.anilist?, i))).collect();
+    let mut by_anilist: HashMap<u64, usize> = HashMap::new();
+    for (i, node) in nodes.iter().enumerate() {
+        for &id in node.anilist.iter().chain(node.also) {
+            by_anilist.entry(id).or_insert(i);
+        }
+    }
     for (i, node) in nodes.iter().enumerate() {
         edges.extend(node.prequels.iter().filter_map(|id| by_anilist.get(id)).map(|&p| (p, i)));
         edges.extend(node.sequels.iter().filter_map(|id| by_anilist.get(id)).map(|&s| (i, s)));
@@ -245,14 +266,24 @@ pub fn group(nodes: &[Node<'_>]) -> Vec<Franchise> {
     for i in 0..n {
         members.entry(groups.find(i)).or_default().push(i);
     }
+    // A series alone is a franchise when it runs through several AniList
+    // entries (see `Node::also`) and has a part in more than one.
+    let several = |m: &Vec<usize>| m.len() > 1 || (!nodes[m[0]].also.is_empty() && nodes[m[0]].parts.len() > 1);
     let mut out: Vec<Franchise> = members
         .into_values()
-        .filter(|m| m.len() > 1)
+        .filter(several)
         .map(|m| {
             let order = watch_order(nodes, &m, inside.get(&groups.find(m[0])).map_or(&[][..], Vec::as_slice));
             let folder = order.iter().find_map(|&i| nodes[i].folder.map(|f| f.name.as_str()));
-            let name = folder.map_or_else(|| base_title(&nodes[order[0]]), str::to_string);
-            Franchise { name, stops: stops(nodes, &order) }
+            // Named after a series you have, rather than what is only on AniList.
+            let first = order.iter().copied().find(|&i| !nodes[i].remote).unwrap_or(order[0]);
+            let name = folder.map_or_else(|| base_title(&nodes[first]), str::to_string);
+            let mut stops = stops(nodes, &order);
+            // A split series' parts with another series' season between them.
+            if order.iter().any(|&i| !nodes[i].also.is_empty()) {
+                stops = chain_order(nodes, stops);
+            }
+            Franchise { name, stops }
         })
         .collect();
     out.sort_by_key(|f| f.stops.iter().map(|s| s.series).min());
@@ -293,6 +324,44 @@ fn stops(nodes: &[Node<'_>], order: &[usize]) -> Vec<Stop> {
         }
     }
     out
+}
+
+/// `stops` reordered so each comes after its `AniList` prequels: a part of a
+/// split series after its entry's prequels ([`Part::after`]), a whole series
+/// after its node's. Kahn's algorithm, the earliest stop first among those
+/// free to go, so stops that `AniList` doesn't order keep their order; on a
+/// cycle, the earliest left. Kusuriya's S1 and S3 (one series) around its S2
+/// (another) read S1, S2, S3.
+fn chain_order(nodes: &[Node<'_>], stops: Vec<Stop>) -> Vec<Stop> {
+    let id = |s: &Stop| s.folder.as_ref().and_then(|p| p.anilist).or(nodes[s.series].anilist);
+    // Whether stop `s` comes after `AniList` entry `x`.
+    let after = |s: &Stop, x: u64| match s.folder.as_ref().filter(|p| p.anilist.is_some()) {
+        Some(p) => p.after.contains(&x),
+        None => nodes[s.series].prequels.contains(&x),
+    };
+    let n = stops.len();
+    let mut incoming = vec![0usize; n];
+    let mut next: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for b in 0..n {
+        for a in (0..n).filter(|&a| a != b) {
+            if id(&stops[a]).is_some_and(|x| after(&stops[b], x)) {
+                next[a].push(b);
+                incoming[b] += 1;
+            }
+        }
+    }
+    let mut left: Vec<usize> = (0..n).collect();
+    let mut order = Vec::with_capacity(n);
+    while !left.is_empty() {
+        let free = left.iter().copied().find(|&i| incoming[i] == 0).unwrap_or(left[0]);
+        left.retain(|&i| i != free);
+        order.push(free);
+        for &b in &next[free] {
+            incoming[b] = incoming[b].saturating_sub(1);
+        }
+    }
+    let mut stops: Vec<Option<Stop>> = stops.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| stops[i].take()).collect()
 }
 
 /// `members` ordered so every edge between them (`edges`, all inside the
@@ -428,7 +497,7 @@ mod tests {
     }
 
     fn part(no: u32) -> Part {
-        Part { no, name: format!("{no:02}") }
+        Part { no, name: format!("{no:02}"), ..Part::default() }
     }
 
     #[test]

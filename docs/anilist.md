@@ -74,3 +74,17 @@ then the code and the tests.
 | Rule | What happens | Why | Tests |
 | --- | --- | --- | --- |
 | R18 | Waits of 2 s or more are announced before they start: a countdown in the TUI header, a line on stderr from commands (the journal, under systemd). Seconds are rounded up everywhere, so the last fraction of one shows as 1 s. | A pause should never look like a hang, and the TUI and the CLI should agree. | `rate_limit_waits_show_in_the_header`, `secs_round_up` |
+
+### Franchise walks
+
+anipv walks the franchise of every series you engage with (follow, pause,
+complete, or have watched an episode of): from its AniList relations to
+theirs, so seasons and spin-offs you don't have show up in its franchise
+(see `chain_frontier` in `src/meta/mod.rs`). Only ids AniList itself returned
+as related are sent, never a title.
+
+| Rule | What happens | Why | Tests |
+| --- | --- | --- | --- |
+| R19 | The walk follows prequels, sequels, side stories, spin-offs, summaries, alternatives, parents, compilations and what an entry contains. An `OTHER` entry is fetched (its data, to show it) but not followed; `CHARACTER` links aren't kept. | Those lead out of the franchise: music videos, crossovers. | `franchises_are_walked_with_their_branches`, `relations_are_parsed` |
+| R20 | An entry walked to is cached and asked about again after a month; one AniList doesn't know is recorded too (an empty list). An automatic update walks only when an entry is due. | Franchises change slowly; the cache holds them. | `franchises_are_walked_with_their_branches`, `unknown_franchise_entries_get_an_empty_row`, `walks_are_planned_when_due` |
+| R21 | One sync walks to at most 500 entries; the rest are left for the next. | A backstop against a runaway walk, not a pace: the limiter (R1–R4) paces requests. | `a_long_walk_is_left_for_the_next_sync` |

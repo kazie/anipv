@@ -3,8 +3,10 @@
 //! * `app` — state, key handling and background work (scan, metadata, mpv)
 //! * `ui`  — rendering
 //! * `remote` — key names for remote mode (keys sent to mpv)
+//! * `query` — the Series view's search: words and `field:value` filters
 
 pub mod app;
+mod query;
 mod remote;
 pub mod ui;
 

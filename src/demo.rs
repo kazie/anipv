@@ -188,20 +188,48 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
             _ => return None,
         })
     };
+    // Titles, studio, season, year and hashtag for a few, to search and show.
+    let about = |id: u64| -> Option<(&[&str], &str, &str, i32, &str)> {
+        Some(match id {
+            182_255 => (
+                &["Sousou no Frieren", "Frieren: Beyond Journey's End", "葬送のフリーレン"],
+                "MADHOUSE",
+                "FALL",
+                2023,
+                "#フリーレン",
+            ),
+            153_518 => (
+                &["Dungeon Meshi", "Delicious in Dungeon", "ダンジョン飯"],
+                "Studio Trigger",
+                "WINTER",
+                2024,
+                "#ダンジョン飯",
+            ),
+            1 => (&["Cowboy Bebop", "カウボーイビバップ"], "Sunrise", "SPRING", 1998, ""),
+            _ => return None,
+        })
+    };
+    let strings = |v: &[&str]| v.iter().map(|t| (*t).to_string()).collect::<Vec<_>>();
     let meta = |series: &str, id: u64, eps: Option<u32>, status: &str, next: Option<(u32, i64)>| SeriesMeta {
         series: series.into(),
         anilist: Some(id),
-        title: None,
+        title: about(id).map(|a| a.0[0].to_string()),
         episodes: eps,
         status: Some(status.into()),
         format: Some("TV".into()),
-        year: None,
+        year: about(id).map(|a| a.3),
         next_ep: next.map(|n| n.0),
         next_airing: next.map(|n| n.1),
         refreshed_at: Some(ts),
         search_linked: false,
         score: score(id).map(|s| s.0),
         popularity: score(id).map(|s| s.1),
+        titles: Some(about(id).map(|a| strings(a.0)).unwrap_or_default()),
+        hashtags: about(id)
+            .map(|a| strings(&[a.4]).into_iter().filter(|h| !h.is_empty()).collect())
+            .unwrap_or_default(),
+        studios: about(id).map(|a| vec![a.1.to_string()]).unwrap_or_default(),
+        season: about(id).map(|a| a.2.to_string()),
     };
     ctx.db.put_metas(&[
         meta("sousou no frieren", 182_255, Some(38), "RELEASING", Some((32, ts + 3 * DAY + 5 * 3600))),
@@ -219,6 +247,30 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         meta("dungeon meshi", 153_518, Some(24), "FINISHED", None),
         meta("meitantei precure", 195_000, Some(48), "RELEASING", Some((4, ts + 4 * DAY))),
     ])?;
+    // Dandadan's first season is only on AniList (nothing on disk, nothing
+    // watched here), as a franchise walk finds it, with a film of it.
+    let remote = |id: u64, title: &str, format: &str, year: i32, episodes: u32| SeriesMeta {
+        anilist: Some(id),
+        title: Some(title.into()),
+        titles: Some(vec![title.into()]),
+        episodes: Some(episodes),
+        status: Some("FINISHED".into()),
+        format: Some(format.into()),
+        year: Some(year),
+        studios: vec!["Science SARU".into()],
+        score: Some(84),
+        refreshed_at: Some(ts),
+        ..SeriesMeta::default()
+    };
+    let media = [remote(171_018, "Dandadan", "TV", 2024, 12), remote(990_001, "Dandadan: Evil Eye", "MOVIE", 2025, 1)];
+    let fetched = crate::index::db::Fetched {
+        prequels: &[(185_660, vec![171_018]), (171_018, vec![])],
+        sequels: &[(185_660, vec![]), (171_018, vec![185_660]), (990_001, vec![])],
+        related: &[(185_660, vec![("compilation".into(), 990_001)])],
+        media: &media,
+        checks: &[],
+    };
+    ctx.db.store_sync(&[], &[], None, &fetched, ts)?;
     Ok(ctx)
 }
 

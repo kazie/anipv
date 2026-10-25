@@ -13,6 +13,8 @@ use ratatui::widgets::{
 };
 
 use super::app::{App, DetailRow, FilesMode, MergePicker, NowPlaying, Popup, Severity, View};
+use super::query::SeriesQuery;
+use crate::app::fuzzy_rank;
 use crate::fmt::{ago, ago_opt, clock};
 use crate::folders::Entry;
 use crate::library::Hint;
@@ -78,7 +80,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Some(Popup::Help { scroll, fits }) => draw_help(f, scroll, fits),
         Some(Popup::Status { series, idx }) => draw_status_popup(f, &app.lib, series, *idx),
         Some(Popup::Merge(picker)) => draw_merge(f, &app.lib, picker),
-        Some(Popup::Search) => draw_search(f, app.search_query()),
+        Some(Popup::Search) => {
+            let hint = (app.view == View::Series).then(|| SeriesQuery::parse(&app.query).hint());
+            draw_search(f, app.search_query(), hint);
+        }
         Some(Popup::Input { purpose, text, .. }) => draw_input(f, &purpose.prompt(), text),
         Some(Popup::ConfirmQuit) => draw_confirm(f, app.playing.is_some()),
         Some(Popup::CatchUp { prompt, .. }) => draw_catch_up(f, prompt),
@@ -201,7 +206,12 @@ fn queued_set(app: &App) -> HashSet<(&str, &ItemKey)> {
 /// Audience score (0–100) for a table cell: green when well liked, dim when
 /// not, a dash when unknown.
 fn score_span(s: &Series) -> Span<'static> {
-    match s.meta.as_ref().and_then(|m| m.score) {
+    score_of(s.meta.as_ref().and_then(|m| m.score))
+}
+
+/// [`score_span`] of a score.
+fn score_of(score: Option<u8>) -> Span<'static> {
+    match score {
         Some(n) if n >= 75 => Span::styled(n.to_string(), Style::new().fg(Color::Green)),
         Some(n) if n < 60 => Span::styled(n.to_string(), Style::new().dark_gray()),
         Some(n) => Span::raw(n.to_string()),
@@ -226,7 +236,12 @@ fn short_count(n: u32) -> String {
 }
 
 fn airing_span(s: &Series, ts: i64) -> Span<'static> {
-    match s.airing(ts) {
+    airing_style(s.airing(ts))
+}
+
+/// An airing summary (see [`Series::airing`]) styled: blue while airing.
+fn airing_style(airing: Option<(String, bool)>) -> Span<'static> {
+    match airing {
         Some((text, true)) => Span::styled(text, Style::new().fg(Color::Blue)),
         Some((text, false)) => Span::styled(text, Style::new().fg(Color::DarkGray)),
         None => Span::raw(""),
@@ -357,13 +372,18 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
     let ts = app.now();
     let len = app.rows_len(View::Series);
     let window = Window::of_table(&app.series_state, len, area, true);
+    let words = SeriesQuery::parse(&app.query).words;
     let rows: Vec<Row> = app
         .series_rows_in(window.range.clone())
         .iter()
         .map(|s| {
             let latest = s.latest_on_disk().map(|e| e.to_string()).unwrap_or_default();
             let disk_style = if s.present() { Style::new() } else { Style::new().dark_gray() };
-            let title = titled(app, s, Style::new());
+            let mut title = titled(app, s, Style::new());
+            // Found by another name: which one.
+            if let Some(name) = matched_name(s, &words) {
+                title.push_span(Span::styled(format!(" · {name}"), Style::new().dark_gray()));
+            }
             Row::new(vec![
                 Cell::from(title),
                 Cell::from(s.status.as_str()).fg(status_color(s.status)),
@@ -503,8 +523,9 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let ts = app.now();
     let width = usize::from(area.width.saturating_sub(2));
     let lib = &app.lib;
-    let franchise = lib.index_of(&s.key).and_then(|at| Some((lib.franchise_pos(at)?.0, at)));
+    let franchise = lib.index_any(&s.key).and_then(|at| Some((lib.franchise_pos(at)?, at)));
     let dim = Style::new().dark_gray();
+    let shown = Shown::of(s, app.detail_part(), ts);
 
     // Line 1: the title, coloured by status, and what AniList calls it when
     // that's another name; at the right, the small facts.
@@ -513,12 +534,10 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         SeriesStatus::Untracked => Style::new(),
         st => Style::new().fg(status_color(st)),
     };
-    let title = vec![Span::styled(s.title.clone(), title_style.bold())];
-    let alt = s.meta.as_ref().and_then(|m| m.title.as_ref()).filter(|t| {
-        let key = crate::identity::series_key(t);
-        !t.eq_ignore_ascii_case(&s.title) && key != s.key && !s.aliases.contains(&key)
-    });
-    let alt = alt.map(|t| vec![Span::styled(format!("{ANILIST_MARK} {t}"), dim)]);
+    let title = vec![Span::styled(shown.title.clone(), title_style.bold())];
+    let alt = &shown.names;
+    let alt =
+        (!alt.is_empty()).then(|| vec![Span::styled(format!("{ANILIST_MARK} {names}", names = alt.join(" · ")), dim)]);
     // (rank, spans): the lowest rank goes first when the line is too narrow.
     let mut right: Vec<(u8, Vec<Span<'static>>)> = Vec::new();
     if !s.aliases.is_empty() {
@@ -526,34 +545,45 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         let n = s.aliases.len();
         right.push((0, vec![Span::styled(format!("+{n} name{s}", s = if n == 1 { "" } else { "s" }), dim)]));
     }
-    if let Some(m) = &s.meta {
+    if let Some(m) = shown.meta {
         if m.score.is_some() {
-            right.push((3, vec![Span::styled("★ ", dim), score_span(s)]));
+            right.push((3, vec![Span::styled("★ ", dim), score_of(m.score)]));
         }
         if let Some(p) = m.popularity {
             right.push((1, vec![Span::styled(short_count(p), dim)]));
         }
     }
-    if let Some(id) = s.anilist_id() {
+    if let Some(id) = shown.id {
         right.push((2, vec![Span::styled(format!("{ANILIST_MARK}{id}"), Style::new().fg(ANILIST))]));
     }
     let mut info = vec![fit_line(title, alt, right, width)];
 
     // Line 2: how far you are, and a note of your own; at the right, the
     // franchise's entries (on a line of their own when there's no room).
-    let mut facts: Vec<Vec<Span<'static>>> = vec![progress_spans(s)];
-    let new = s.new_count();
+    let mut facts: Vec<Vec<Span<'static>>> = vec![shown.progress.clone()];
+    let new = shown.new;
     if new > 0 {
         facts.push(vec![Span::styled(format!("{new} new"), Style::new().green())]);
     }
-    if let Some(m) = &s.meta {
-        let fmt_year = [m.format.clone(), m.year.map(|y| y.to_string())].into_iter().flatten().collect::<Vec<_>>();
-        if !fmt_year.is_empty() {
-            facts.push(vec![Span::styled(fmt_year.join(" "), dim)]);
+    if let Some(m) = shown.meta {
+        let season = m.season.as_deref().map(season_name);
+        let aired = [m.format.clone(), season, m.year.map(|y| y.to_string())].into_iter().flatten().collect::<Vec<_>>();
+        if !aired.is_empty() {
+            facts.push(vec![Span::styled(aired.join(" "), dim)]);
+        }
+        if !m.studios.is_empty() {
+            facts.push(vec![Span::styled(m.studios.join(", "), dim)]);
+        }
+        if !m.hashtags.is_empty() {
+            facts.push(vec![Span::styled(m.hashtags.join(" "), Style::new().fg(ANILIST))]);
         }
     }
     let mut facts = join_spans(facts, " · ");
-    let chain = franchise.map(|(fr, at)| franchise_chain(fr, at));
+    // The stop of the part the cursor is in, else where the series is at.
+    let chain = franchise.map(|((fr, pos), at)| {
+        let part = shown.part.and_then(|n| lib.part_stop(fr, at, n));
+        franchise_chain(lib, fr, at, part.unwrap_or(pos))
+    });
     let chain_w = chain.as_ref().map_or(0, |(stops, _)| chain_width(stops));
     let chain_inline = chain.is_some() && spans_width(&facts) + 3 + chain_w <= width;
     let room = if chain_inline { width - chain_w - 3 } else { width };
@@ -577,6 +607,23 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         }
         None => info.push(Line::from(facts)),
     }
+    if s.remote {
+        let text = "Only on AniList: nothing here yet. s sets a status (completed if watched elsewhere), o opens it.";
+        info.push(Line::from(cut_spans(vec![Span::styled(text, dim)], width)));
+    }
+    // History that may be another series' (see `Library::merge_hint`).
+    if let Some(i) = lib.index_of(&s.key) {
+        let hint =
+            lib.merge_hint(i).map(|j| format!("maybe part of {title} (m to merge)", title = lib.series[j].title));
+        let hinted = lib.merge_hinted(i);
+        let names = (!hinted.is_empty()).then(|| {
+            let names: Vec<&str> = hinted.iter().map(|&k| lib.series[k].title.as_str()).collect();
+            format!("may also be in your history as: {names} (m there merges)", names = names.join(", "))
+        });
+        for text in hint.into_iter().chain(names) {
+            info.push(Line::from(cut_spans(vec![Span::styled(text, Style::new().fg(ACCENT))], width)));
+        }
+    }
     // A few at most: the episode list below needs the room.
     let shared = s.shared_dirs(&app.ctx.cfg);
     let warn = |text: String| Line::from(cut_spans(vec![Span::styled(text, Style::new().fg(Color::Yellow))], width));
@@ -591,13 +638,13 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
 
     // The border: the franchise's name, the fish (statuses from fish history),
     // and when the next episode airs.
-    let name = franchise.map_or_else(|| " Series ".to_string(), |(fr, _)| format!(" {name} ", name = fr.name));
+    let name = franchise.map_or_else(|| " Series ".to_string(), |((fr, _), _)| format!(" {name} ", name = fr.name));
     let mut header = block(name);
     if s.status_via == Some(crate::events::StatusVia::FishImport) {
         let fish = Span::styled(" ϵ( 'Θ' )϶ ", Style::new().fg(Color::Cyan));
         header = header.title_top(Line::from(vec![fish, Span::styled("─", Style::new().dark_gray())]).right_aligned());
     }
-    let airing = airing_span(s, ts);
+    let airing = airing_style(shown.airing.clone());
     if !airing.content.is_empty() {
         header = header.title_bottom(Line::from(vec![Span::raw(" "), airing, Span::raw(" ")]).centered());
     }
@@ -614,6 +661,8 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
             let it = match row {
                 DetailRow::Item(it) => it,
                 DetailRow::Season { series, index, next } => return season_row(&app.lib, series, index, next),
+                DetailRow::Related { series, relation, .. } => return related_row(series, relation),
+                DetailRow::Divider(d) => return divider_row(app, s, d, ts),
             };
             let (kind, kind_style) = match it.key.kind {
                 ItemKind::Episode | ItemKind::Unknown => ("", Style::new()),
@@ -621,7 +670,9 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
                 ItemKind::Extra => ("extra", Style::new().dark_gray()),
                 ItemKind::Movie => ("movie", Style::new().fg(Color::Cyan)),
             };
+            let pending = app.pending_reset.as_ref().is_some_and(|(k, item)| *k == s.key && *item == it.key);
             let when = match it.state {
+                _ if pending => Span::styled("⌫ again", Style::new().yellow().bold()),
                 WatchState::Watched { at } => Span::styled(ago(at, ts), Style::new().dark_gray()),
                 WatchState::Started { pos, dur, .. } => Span::styled(position_text(pos, dur), Style::new().yellow()),
                 WatchState::Unwatched => Span::raw(""),
@@ -634,9 +685,18 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
             let attached = it.key.kind == ItemKind::Extra && it.key.ep.is_some();
             let label = if attached { format!("  {key}", key = it.key.label) } else { it.key.describe() };
             let style = if it.present() { Style::new() } else { Style::new().dark_gray() };
+            let mut label = vec![Span::styled(label, style.bold())];
+            // Past a split series' first part, the episode's number in its own part too, dim.
+            if let (Some(split), Some(ep), ItemKind::Episode) = (&s.split, it.key.ep, it.key.kind) {
+                let part = s.part_of_item(it).and_then(|n| split.parts.get(n));
+                if let Some(part) = part.filter(|p| p.first > 1) {
+                    let own = part.own_number(ep.whole());
+                    label.push(Span::styled(format!(" ({own:02})"), Style::new().dark_gray()));
+                }
+            }
             Row::new(vec![
                 Cell::from(Line::from(mark_span(queued_set.contains(&(s.key.as_str(), &it.key)), &it.state))),
-                Cell::from(label).style(style.bold()),
+                Cell::from(Line::from(label)),
                 Cell::from(kind).style(kind_style),
                 Cell::from(Line::from(when)),
                 Cell::from(Line::from(file)),
@@ -662,6 +722,61 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Fill(1),
     ];
     window.render(f, list_table(rows, widths, None, title), list, &mut app.detail_state);
+}
+
+/// What the Detail header tells about: the series, or in a split series
+/// the part the cursor is in (see [`App::detail_part`]).
+struct Shown<'a> {
+    title: String,
+    names: Vec<String>,
+    meta: Option<&'a crate::index::db::SeriesMeta>,
+    id: Option<u64>,
+    progress: Vec<Span<'static>>,
+    new: usize,
+    airing: Option<(String, bool)>,
+    /// The part, when it is one.
+    part: Option<usize>,
+}
+
+impl<'a> Shown<'a> {
+    fn of(s: &'a Series, part: Option<usize>, ts: i64) -> Self {
+        let whole = || Self {
+            title: s.title.clone(),
+            names: s.other_names().into_iter().map(String::from).collect(),
+            meta: s.meta.as_ref(),
+            id: s.anilist_id(),
+            progress: progress_spans(s),
+            new: s.new_count(),
+            airing: s.airing(ts),
+            part: None,
+        };
+        let Some((n, split)) = part.zip(s.split.as_ref()) else { return whole() };
+        let Some(p) = split.parts.get(n) else { return whole() };
+        let title = s.part_title(n).to_string();
+        let names = p
+            .meta
+            .names()
+            .into_iter()
+            .filter(|name| !name.eq_ignore_ascii_case(&title) && crate::identity::series_key(name) != s.key)
+            .map(String::from)
+            .collect();
+        let (text, done) = part_progress_text(s, n);
+        let mut progress = vec![Span::raw(text)];
+        if done {
+            progress.push(Span::styled(" ✓", Style::new().green()));
+        }
+        let in_part = |i: &&&Item| s.part_of_item(i) == Some(n);
+        Self {
+            title,
+            names,
+            meta: Some(&p.meta),
+            id: Some(p.id()),
+            progress,
+            new: s.new_episodes().iter().filter(in_part).count(),
+            airing: p.airing(ts),
+            part: Some(n),
+        }
+    }
 }
 
 /// `watched/total` for the Detail header, `✓` once all are watched. When
@@ -698,19 +813,30 @@ fn user_note(s: &Series) -> Option<&str> {
 }
 
 /// The franchise's entries for the Detail header, one span group per stop:
-/// the one shown (`at`) marked `▸ ◂`, the ones watched `✓`; and which group
-/// is the first of the one shown.
-fn franchise_chain(fr: &crate::franchise::Franchise, at: usize) -> (Vec<Vec<Span<'static>>>, usize) {
-    let mut current = None;
+/// the one at `pos` (of series `at`: its first not watched, or the part the
+/// cursor is in) marked `▸ ◂`, its other stops bold, the ones watched `✓`;
+/// and where the marked one is.
+fn franchise_chain(
+    lib: &Library,
+    fr: &crate::franchise::Franchise,
+    at: usize,
+    pos: usize,
+) -> (Vec<Vec<Span<'static>>>, usize) {
     let stops = fr
         .stops
         .iter()
         .enumerate()
         .map(|(i, stop)| {
-            let style = if stop.watched { Style::new().green() } else { Style::new() };
-            let mut spans = if stop.series == at {
-                current.get_or_insert(i);
+            // Entries only on AniList dimmed: nothing of them is here.
+            let style = match (stop.watched, lib.entry(stop.series).remote) {
+                (true, _) => Style::new().green(),
+                (false, true) => Style::new().dark_gray(),
+                (false, false) => Style::new(),
+            };
+            let mut spans = if i == pos {
                 vec![Span::styled(format!("▸{short}◂", short = stop.short), style.bold().reversed())]
+            } else if stop.series == at {
+                vec![Span::styled(stop.short.clone(), style.bold())]
             } else {
                 vec![Span::styled(stop.short.clone(), style)]
             };
@@ -720,7 +846,7 @@ fn franchise_chain(fr: &crate::franchise::Franchise, at: usize) -> (Vec<Vec<Span
             spans
         })
         .collect();
-    (stops, current.unwrap_or(0))
+    (stops, pos)
 }
 
 /// The `stops` around the one at `current`, joined by arrows, in `width`:
@@ -847,11 +973,12 @@ fn season_row<'a>(lib: &Library, series: &Series, at: usize, next: bool) -> Row<
     let label = lib.short_series_label(at).unwrap_or(&series.title);
     let watched = lib.franchise_pos(at).is_some_and(|(f, _)| f.series_watched(at));
     let style = if watched { Style::new().green() } else { Style::new() };
-    let about = format!(
-        "{which} · watched {progress} · ⏎ or {key}",
-        progress = series.progress(),
-        key = if next { "]" } else { "[" }
-    );
+    let key = if next { "]" } else { "[" };
+    let about = if series.remote {
+        format!("on AniList · {facts} · ⏎ or {key}", facts = remote_facts(series))
+    } else {
+        format!("{which} · watched {progress} · ⏎ or {key}", progress = series.progress())
+    };
     Row::new(vec![
         Cell::from(""),
         // Cut with `…` to the label column, as a long name would be cut anyway.
@@ -861,6 +988,116 @@ fn season_row<'a>(lib: &Library, series: &Series, at: usize, next: bool) -> Row<
         Cell::from(""),
         Cell::from(about).style(Style::new().dark_gray()),
     ])
+}
+
+/// A Detail row linking to an entry related on `AniList`:
+/// `↳ side story   Kishibe Rohan wa Ugokanai · OVA 2017`.
+fn related_row<'a>(series: &Series, relation: &str) -> Row<'a> {
+    let label = format!("↳ {relation}", relation = relation.replace('_', " "));
+    let facts = remote_facts(series);
+    let mut about = vec![Span::raw(series.title.clone())];
+    if !facts.is_empty() {
+        about.push(Span::styled(format!(" · {facts}"), Style::new().dark_gray()));
+    }
+    let style = if series.remote { Style::new().dark_gray() } else { Style::new().fg(status_color(series.status)) };
+    Row::new(vec![
+        Cell::from(""),
+        Cell::from(crate::fmt::trunc(&label, usize::from(EPISODE_LABEL_WIDTH))).style(style),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(Line::from(about)),
+    ])
+}
+
+/// The heading band of a Detail section (a part of a split series, or
+/// Related): a background across the row, the gaps between columns too;
+/// `▾`/`▸` for open or collapsed, its short name bold, its facts beside.
+fn divider_row<'a>(app: &App, s: &Series, d: crate::tui::app::Divider, ts: i64) -> Row<'a> {
+    let dim = Style::new().fg(Color::Gray);
+    let fold = if app.detail_collapsed(d) { "▸" } else { "▾" };
+    let (name, facts, done) = match d {
+        crate::tui::app::Divider::Related => ("Related".to_string(), related_facts(&app.lib, s), false),
+        crate::tui::app::Divider::Part(n) => {
+            let Some(part) = s.split.as_ref().and_then(|sp| sp.parts.get(n)) else {
+                return Row::new(Vec::<Cell>::new());
+            };
+            let m = &part.meta;
+            let (progress, done) = part_progress_text(s, n);
+            let mut facts = vec![part.title().to_string()];
+            facts.extend(Some(format_year(m)).filter(|a| !a.is_empty()));
+            facts.extend(m.episodes.map(|e| format!("{e} eps")));
+            facts.push(format!("watched {progress}{tick}", tick = if done { " ✓" } else { "" }));
+            // Its episodes the list hides (not on disk), so an empty part says why.
+            let missing = s.part_items(n).filter(|i| i.key.kind == ItemKind::Episode && !i.present()).count();
+            if missing > 0 && !app.episodes_shown.missing {
+                facts.push(format!("{missing} not on disk (d)"));
+            }
+            if let Some((text, true)) = part.airing(ts) {
+                facts.push(text);
+            }
+            facts.extend(m.score.map(|sc| format!("★ {sc}")));
+            (part_short(&app.lib, s, n).unwrap_or_else(|| part.title().to_string()), facts.join(" · "), done)
+        }
+    };
+    let mark = Style::new().fg(if done { Color::Green } else { ANILIST }).bold();
+    Row::new(vec![
+        Cell::from(fold).style(mark),
+        Cell::from(crate::fmt::trunc(&name, usize::from(EPISODE_LABEL_WIDTH))).style(Style::new().bold()),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(facts).style(dim),
+    ])
+    .style(Style::new().bg(Color::Indexed(236)))
+}
+
+/// The short name of part `n` of split series `s`: its franchise stop's
+/// (`2nd Season`, see [`crate::franchise::Stop::short`]).
+fn part_short(lib: &Library, s: &Series, n: usize) -> Option<String> {
+    let at = lib.index_any(&s.key)?;
+    let (f, _) = lib.franchise_pos(at)?;
+    let stop = &f.stops[lib.part_stop(f, at, n)?];
+    Some(stop.short.clone()).filter(|short| !short.is_empty())
+}
+
+/// `19 · films, specials, OVAs`: how many related entries, and of what kinds.
+fn related_facts(lib: &Library, s: &Series) -> String {
+    let mut kinds: Vec<&str> = Vec::new();
+    for &(_, i) in &s.related {
+        let format = lib.get_entry(i).and_then(|e| e.meta.as_ref()).and_then(|m| m.format.as_deref());
+        let kind = match format {
+            Some("MOVIE") => "films",
+            Some("SPECIAL") => "specials",
+            Some("OVA") => "OVAs",
+            Some("ONA") => "ONAs",
+            Some("TV" | "TV_SHORT") => "series",
+            Some("MUSIC") => "music videos",
+            _ => "others",
+        };
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    format!("{n} · {kinds}", n = s.related.len(), kinds = kinds.join(", "))
+}
+
+/// `5/24` for part `n` of split series `s` (`?` for an unknown length), and
+/// whether it is all watched: what its heading and the header both say.
+fn part_progress_text(s: &Series, n: usize) -> (String, bool) {
+    let (watched, total, done) = s.part_progress(n);
+    (format!("{watched}/{total}", total = total.map_or_else(|| "?".to_string(), |t| t.to_string())), done)
+}
+
+/// `TV 2018`: an entry's format and year, those known.
+fn format_year(m: &crate::index::db::SeriesMeta) -> String {
+    [m.format.clone(), m.year.map(|y| y.to_string())].into_iter().flatten().collect::<Vec<_>>().join(" ")
+}
+
+/// `TV 2018 · 39 eps`: what an entry is, from its `AniList` data.
+fn remote_facts(s: &Series) -> String {
+    let Some(m) = &s.meta else { return String::new() };
+    let aired = format_year(m);
+    let eps = m.episodes.map(|n| format!("{n} ep{s}", s = if n == 1 { "" } else { "s" }));
+    [Some(aired).filter(|a| !a.is_empty()), eps].into_iter().flatten().collect::<Vec<_>>().join(" · ")
 }
 
 fn draw_playing(f: &mut Frame, app: &App, area: Rect) {
@@ -1026,6 +1263,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "Series",
         &[
             ("/", "fuzzy search (⏎ keeps it, Esc clears)"),
+            ("/ filters", "studio:x year:2023 season:fall score>80 #tag"),
             ("f / 3", "next status filter (works with a search)"),
             ("m", "merge into another series"),
             ("U", "undo merges into this series"),
@@ -1040,9 +1278,14 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "Episodes",
         &[
             ("space", "add / remove from queue"),
-            ("⏎", "play this episode (or open a ▲ ▼ season)"),
+            ("⏎", "play this episode (or open a ▲ ▼ ↳ link)"),
+            ("o", "on a ▲ ▼ ↳ link: open that one on AniList"),
             ("P / shift-⏎", "play this episode from the beginning"),
-            ("[ ]", "previous / next season"),
+            ("[ ]", "previous / next season (or part of this one)"),
+            ("⏎ / space", "on a heading: collapse / expand it"),
+            ("← / →", "on a heading: collapse / expand it"),
+            ("backspace ×2", "episode back to unwatched (resume too)"),
+            ("N", "this episode starts the linked AniList entry"),
             ("w", "toggle watched"),
             ("W", "mark everything up to here watched"),
             ("C", "catch up: this and earlier entries watched"),
@@ -1140,31 +1383,42 @@ fn draw_merge(f: &mut Frame, lib: &Library, picker: &mut MergePicker) {
         input,
     );
     let window = Window::of(&picker.state, picker.targets.len(), usize::from(list.height));
+    let hint = lib.index_of(&picker.from).and_then(|i| lib.merge_hint(i)).map(|j| lib.series[j].key.as_str());
     let rows: Vec<Row> = picker.targets[window.range.clone()]
         .iter()
         .map(|key| match lib.get(key) {
             Some(s) => {
-                Row::new(vec![Cell::from(s.title.clone()), Cell::from(s.status.as_str()).fg(status_color(s.status))])
+                let mark = if hint == Some(key.as_str()) { "suggested" } else { "" };
+                Row::new(vec![
+                    Cell::from(s.title.clone()),
+                    Cell::from(mark).fg(ACCENT),
+                    Cell::from(s.status.as_str()).fg(status_color(s.status)),
+                ])
             }
             None => Row::new(vec![Cell::from(key.clone())]),
         })
         .collect();
-    let table = highlighted(Table::new(rows, [Constraint::Fill(1), Constraint::Length(10)]));
+    let widths = [Constraint::Fill(1), Constraint::Length(9), Constraint::Length(10)];
+    let table = highlighted(Table::new(rows, widths));
     window.render(f, table, list, &mut picker.state);
 }
 
-/// The search box, over the footer.
-fn draw_search(f: &mut Frame, query: &str) {
+/// The search box, over the footer, with a hint at the right while it fits
+/// (`warn`: about what is typed).
+fn draw_search(f: &mut Frame, query: &str, hint: Option<(String, bool)>) {
     let area = Rect { y: f.area().bottom().saturating_sub(1), height: 1, ..f.area() };
     f.render_widget(Clear, area);
-    f.render_widget(
-        Line::from(vec![
-            Span::styled(" / ", Style::new().fg(ACCENT).bold()),
-            Span::raw(query.to_string()),
-            Span::raw("▏"),
-        ]),
-        area,
-    );
+    let mut line =
+        vec![Span::styled(" / ", Style::new().fg(ACCENT).bold()), Span::raw(query.to_string()), Span::raw("▏")];
+    if let Some((hint, warn)) = hint {
+        let hint = Span::styled(hint, if warn { Style::new().fg(Color::Yellow) } else { Style::new().dark_gray() });
+        let gap = usize::from(area.width).saturating_sub(spans_width(&line) + hint.width() + 1);
+        if gap >= 3 {
+            line.push(Span::raw(" ".repeat(gap)));
+            line.push(hint);
+        }
+    }
+    f.render_widget(Line::from(line), area);
 }
 
 fn draw_input(f: &mut Frame, prompt: &str, text: &str) {
@@ -1297,6 +1551,21 @@ fn draw_unmerge(f: &mut Frame, names: &[String]) {
 fn draw_catch_up(f: &mut Frame, prompt: &str) {
     let (question, keys) = ("Seen all of it? Mark watched and completed:", "y/Enter confirms, any other key cancels");
     draw_yes_no(f, "Catch up", question, prompt, keys);
+}
+
+/// `FALL` → `Fall`.
+fn season_name(season: &str) -> String {
+    crate::library::title_case(&season.to_lowercase())
+}
+
+/// The name of `s` the search's `words` found it by, when that isn't its
+/// title: an `AniList` title or a merged-away name.
+fn matched_name<'a>(s: &'a Series, words: &str) -> Option<&'a str> {
+    if words.is_empty() || !fuzzy_rank(std::iter::once(&s.title), words, |t| t.as_str().into()).is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = s.other_names().into_iter().chain(s.aliases.iter().map(String::as_str)).collect();
+    fuzzy_rank(names.iter(), words, |n| (*n).into()).first().map(|(n, _)| **n)
 }
 
 /// A series' title with its place in its franchise, dimmed:

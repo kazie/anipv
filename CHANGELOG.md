@@ -8,6 +8,72 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Episodes numbered on through several seasons (Kusuriya no Hitorigoto
+  01–52, Stardust Crusaders 01–48) are split among the AniList entries they
+  belong to: each season is its own stop in the franchise chain, the episode
+  list has a divider per season and shows each episode's number in its
+  season (`25 (01)`), and the airing season gives the next episode (`ep 53
+  in 2d`), the total and when it's finished. A short lead-in entry counts
+  too: Steel Ball Run's 1st STAGE holds episode 1. Nothing is recorded; the
+  event log keeps the numbers as they are.
+- In such a series, `[` / `]` step season by season inside the episode list
+  and on through the franchise, whichever series holds each season (landing
+  on the right part of a split one), and the header shows the
+  season the cursor is in: its title, score, AniList link, studios, airing
+  and progress. Each season is a heading band you can collapse or expand
+  (⏎ or Space on it); only the season you're on is open at first.
+- `anipv scan --forget-gone` forgets files deleted since they were indexed
+  that your history doesn't name, so episodes you deleted unwatched (an
+  airing release replaced by a BD) aren't listed as "not on disk". Only the
+  cache changes; it refuses while part of the event log can't be read.
+- A series the anime database and the title search found nothing for (a
+  folder name cut short: `JoJo no Kimyou na Bouken - Diamond wa Kudakena`)
+  whose files spell an entry of your franchises
+  (`Jojo's_Bizarre_Adventure_Diamond_is_Unbreakable_01…`) is linked to that
+  entry, instead of an empty entry only on AniList beside it.
+- A season released numbered by itself (`S2 - 01…24`, or `S02E01`) of a
+  series numbered on through it (01–24, 49–52) is folded in at its place:
+  its episodes are 25–48 there (`25 (01)`), a part like any other, and its
+  watch state comes along. Either way groups number seasons, they end up in
+  one series. Nothing is recorded.
+- In the episode list, ← on an open season heading collapses it and → on a
+  collapsed one opens it (elsewhere ← still goes back); Backspace takes an
+  episode back to unwatched, a started one's resume point too.
+- `N` on an episode says the linked AniList entry starts there, when anipv
+  guessed wrong (recorded as a `numbering` event, so it syncs).
+- History scattered over other release names (`JoJos.Bizarre.Adventure.2012.
+  S06E01.STEEL.BALL.RUN…`) is hinted to be the series it names: the episode
+  list says "maybe part of …", and the merge picker (`m`) lists it first.
+  Nothing is merged until you do.
+- A watched special known only from your history, named as a season of a
+  show (`One.Piece.S36E00.ONE.PIECE.FAN.LETTER…`), is matched to the entry
+  AniList relates to that show by the title in its file name, instead of
+  being a stray "S36" in the franchise.
+- Related entries (films, specials) are listed under a `Related` divider,
+  by year, whatever the episode filters hide; one you have on disk opens
+  your series.
+- Franchises reach past what is on disk: anipv walks AniList's relations of
+  the series you engage with, so the seasons you haven't got are in the
+  chain (dimmed), and `▲`/`▼` open them. Side stories, spin-offs and films
+  are listed after the episodes (`↳ side story · …`) and open with ⏎;
+  their own sequels are walked too. On an entry only on AniList, `s` sets a
+  status (completed if you watched it elsewhere) and makes it a series, `o`
+  opens it, and `C` from a later season completes it with the rest.
+- Search a series by any of its AniList titles: romaji, English or native
+  (`/apothecary` and `/薬屋` find Kusuriya no Hitorigoto). A row found by
+  another name shows that name, and the series header lists them, with the
+  season, studios and official hashtags.
+- The Series search filters on AniList data with `field:value` tokens,
+  alone or with words: `studio:madhouse`, `year:2023` (or `2020..2023`,
+  `>=2020`), `season:fall`, `score>80`, `#hashtag`; `"…"` quotes a value or
+  a phrase with spaces, and `"#Compass"` or `\#Compass` searches a title
+  that starts with `#`. The search box lists the fields while there's room;
+  a filter it leaves out (`season:autum`, `year:2023..2020`) is named there
+  in yellow, with what the field takes.
+- Titles, studios, season and hashtags come with the AniList refresh. Tracked
+  series refreshed before this are asked about once more; others get them
+  with their monthly refresh (with `refresh_untracked = true`).
+
 - `P` plays from the beginning: the queue (or the next episode here), and
   in the episode list the episode under the cursor. Shift-⏎ does too in the
   episode list and the Queue view, on terminals with the kitty keyboard
@@ -67,6 +133,21 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- In an archive series folder, a named folder holding a later season by its
+  own title (`Kusuriya no Hitorigoto/Kusuriya no Hitorigoto 2nd Season
+  (BD)/… 2nd Season - 01.mkv`) is that season, and one named after another
+  show (`…/MaomaoNoHitorigoto/S1/Maomao no Hitorigoto - S01E01.mkv`) is that
+  show: their episodes no longer land on the first season's 01–24. History
+  follows the files.
+- A series numbered on past a season released by itself (Kusuriya 01–24
+  and 49–52, the second season a BD numbered 01–24) keeps its third season,
+  with the second folded in between.
+- In a split series, `[` from a later part reaches a part whose episodes
+  are all hidden (not on disk): every part keeps its heading, which says how
+  many are hidden.
+- Relations fetched before related entries were kept are fetched again,
+  instead of a month later: a franchise's films and specials (One Piece's)
+  were missing until then.
 - The first file of a playback session was often not tracked: mpv had
   usually started it before anipv connected to its IPC socket, so that
   episode was neither marked watched nor counted in the playing bar. anipv

@@ -71,6 +71,7 @@ impl EventBody {
             | Self::SeriesStatus { series, .. }
             | Self::Title { series, .. }
             | Self::Meta { series, .. }
+            | Self::Numbering { series, .. }
             | Self::Unlink { series } => Some(series),
             Self::Alias { .. } | Self::Unalias { .. } | Self::Split { .. } | Self::Unsplit { .. } | Self::Unknown => {
                 None
@@ -215,6 +216,20 @@ pub enum EventBody {
     Unlink {
         /// Series key.
         series: String,
+    },
+    /// Where the linked `AniList` entry starts in the series' episode
+    /// numbers: its episode 1 is the series' episode `first` (the episodes
+    /// before go to the entries before it, see [`crate::split`]). `1` says
+    /// it starts the series.
+    Numbering {
+        /// Series key.
+        series: String,
+        /// The series' number of the linked entry's first episode.
+        first: u32,
+        /// The entry it was set for: it applies while the series is linked
+        /// to that one (relinked or rematched to another, it doesn't).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anilist: Option<u64>,
     },
     /// An event kind this version does not know.
     #[serde(other)]
@@ -638,6 +653,9 @@ pub struct SeriesState {
     pub status_via: Option<StatusVia>,
     /// Manual episode total.
     pub episodes: Option<u32>,
+    /// Where the linked entry starts in its episode numbers (see
+    /// [`EventBody::Numbering`]).
+    pub numbering: Option<(u32, Option<u64>)>,
 }
 
 /// How the user set a status, when not by hand: the status event's `via`.
@@ -845,6 +863,9 @@ impl State {
                 EventBody::Unlink { .. } => {
                     state.series.entry(key).or_default().link = Link::Off;
                 }
+                EventBody::Numbering { first, anilist, .. } => {
+                    state.series.entry(key).or_default().numbering = Some((*first, *anilist));
+                }
                 EventBody::Alias { .. }
                 | EventBody::Unalias { .. }
                 | EventBody::Split { .. }
@@ -960,6 +981,22 @@ mod tests {
 
     /// A status's `via` is written only when there is one, and one from a
     /// newer version reads as `Unknown` instead of failing the line.
+    /// A numbering is written as `numbering` with its `first` and the entry
+    /// it was set for, read back (an older line without the entry too), and
+    /// the last one for a series is its numbering.
+    #[test]
+    fn numbering_round_trips_and_the_last_wins() {
+        let e = ev(1, "a", EventBody::Numbering { series: "sbr".into(), first: 2, anilist: Some(5) });
+        let j = serde_json::to_string(&e).unwrap();
+        assert!(j.contains(r#""e":"numbering","series":"sbr","first":2,"anilist":5"#), "{j}");
+        assert_eq!(serde_json::from_str::<Event>(&j).unwrap(), e);
+        let old: Event =
+            serde_json::from_str(r#"{"ts":1,"dev":"a","e":"numbering","series":"sbr","first":3}"#).unwrap();
+        assert_eq!(State::replay(&[old]).series["sbr"].numbering, Some((3, None)));
+        let later = ev(2, "a", EventBody::Numbering { series: "sbr".into(), first: 1, anilist: Some(5) });
+        assert_eq!(State::replay(&[e, later]).series["sbr"].numbering, Some((1, Some(5))));
+    }
+
     #[test]
     fn status_via_round_trips() {
         let body = |via| EventBody::SeriesStatus {
@@ -1068,6 +1105,7 @@ mod tests {
                 EventBody::Alias { from: k.into(), to: "y".into() },
                 EventBody::Unalias { from: "x".into() },
                 EventBody::Unlink { series: k.into() },
+                EventBody::Numbering { series: k.into(), first: 2, anilist: None },
             ]
         };
         let log = |k: &str| -> Vec<Event> {

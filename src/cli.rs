@@ -46,6 +46,11 @@ enum Cmd {
     Scan {
         /// Only scan this root.
         root: Option<String>,
+        /// Then forget the files found gone (deleted since they were indexed)
+        /// that your history doesn't name, so episodes you deleted unwatched
+        /// aren't listed as "not on disk". Only the cache changes.
+        #[arg(long)]
+        forget_gone: bool,
     },
     /// Scan every media folder, then update metadata as the TUI does on start
     /// (and the offline database weekly). Made to run unattended, from a
@@ -238,9 +243,10 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command.unwrap_or(Cmd::Tui) {
         Cmd::Tui => crate::tui::run(Ctx::load()?),
         Cmd::Init(a) => init(a, &mut out),
-        Cmd::Scan { root } => {
+        Cmd::Scan { root, forget_gone } => {
             let mut ctx = Ctx::load()?;
-            scan(&mut ctx, root.as_deref(), &mut out)
+            scan(&mut ctx, root.as_deref(), &mut out)?;
+            if forget_gone { forget_gone_files(&ctx, root.as_deref(), &mut out) } else { Ok(()) }
         }
         Cmd::Update { no_meta } => {
             let mut ctx = Ctx::load()?;
@@ -587,6 +593,19 @@ fn scan(ctx: &mut Ctx, only: Option<&str>, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
+/// `scan --forget-gone`: forget the files found gone that no event names.
+/// Refused while part of the event log can't be read (it may name some).
+fn forget_gone_files(ctx: &Ctx, root: Option<&str>, out: &mut impl Write) -> Result<()> {
+    let loaded = ctx.log.load_all()?;
+    if !loaded.errors.is_empty() {
+        bail!("part of the event log can't be read ({e}); nothing forgotten", e = loaded.errors.join("; "));
+    }
+    let named: HashSet<&str> = loaded.events.iter().filter_map(|e| e.body.file()).collect();
+    let n = ctx.db.forget_gone(crate::app::root_picker(&ctx.cfg, root), |name| named.contains(name))?;
+    writeln!(out, "{ok} forgot {n} file(s) no longer on disk that your history doesn't name", ok = green("✓"))?;
+    Ok(())
+}
+
 /// One line per scanned root. Returns how many failed; with `lenient`, a
 /// root that could not be reached (unmounted) is a warning instead.
 fn print_scans(res: Vec<crate::app::RootScan>, lenient: bool, out: &mut impl Write) -> Result<usize> {
@@ -807,7 +826,7 @@ fn show(ctx: &Ctx, query: &str, all: bool, out: &mut impl Write) -> Result<()> {
             .map(|stop| {
                 let label = lib.stop_label(stop);
                 let label = if stop.watched { format!("{label} ✓") } else { label.to_string() };
-                if lib.series[stop.series].key == s.key { bold(&label) } else { label }
+                if lib.entry(stop.series).key == s.key { bold(&label) } else { label }
             })
             .collect();
         let label = dim(&format!("{name} {at}/{stops}:", name = f.name, at = pos + 1, stops = f.stops.len()));

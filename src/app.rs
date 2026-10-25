@@ -56,12 +56,42 @@ pub struct MetaCache {
     /// The current offline database version (`lastUpdate`, `""` without one):
     /// an attempt made with another version is not current.
     pub db_version: String,
-    /// `AniList` prequel ids by `AniList` id.
-    pub prequels: HashMap<u64, Vec<u64>>,
-    /// `AniList` sequel ids by `AniList` id, with when they were fetched.
-    pub sequels: HashMap<u64, (Vec<u64>, i64)>,
+    /// What `AniList` said about how anime relate, by id: shared, not copied,
+    /// by the libraries built from it.
+    pub graph: std::sync::Arc<Graph>,
     /// When `AniList` was last asked about each id, and whether it knew it.
     pub anilist_checks: HashMap<u64, AnilistCheck>,
+}
+
+impl Graph {
+    /// The entries a franchise walk goes on to from `id`: its prequels,
+    /// sequels and related entries of the kinds in
+    /// [`crate::meta::anilist::BRANCHES`] (followed), and its related entries
+    /// of other kinds (reached, not followed further). The one place that
+    /// decides the walk, for what is fetched and what is shown.
+    pub fn walk_edges(&self, id: u64) -> (Vec<u64>, Vec<u64>) {
+        let prequels = self.prequels.get(&id).into_iter().flatten().copied();
+        let sequels = self.sequels.get(&id).into_iter().flat_map(|(ids, _)| ids).copied();
+        let related = self.related.get(&id).into_iter().flatten();
+        let branch = |kind: &str| crate::meta::anilist::BRANCHES.contains(&kind);
+        let branches = related.clone().filter(|(kind, _)| branch(kind)).map(|e| e.1);
+        let listed = related.filter(|(kind, _)| !branch(kind)).map(|e| e.1).collect();
+        (prequels.chain(sequels).chain(branches).collect(), listed)
+    }
+}
+
+/// What `AniList` said about how anime relate, by `AniList` id, as cached.
+#[derive(Debug, Clone, Default)]
+pub struct Graph {
+    /// Prequel ids.
+    pub prequels: HashMap<u64, Vec<u64>>,
+    /// Sequel ids, with when they were fetched (when the relations were).
+    pub sequels: HashMap<u64, (Vec<u64>, i64)>,
+    /// Other related ids, with the relation (see
+    /// [`crate::meta::anilist::Relations::related`]).
+    pub related: HashMap<u64, Vec<(String, u64)>>,
+    /// Data on anime no series links (franchise entries not in the library).
+    pub media: HashMap<u64, SeriesMeta>,
 }
 
 impl Index {
@@ -84,6 +114,15 @@ impl Index {
     pub fn classified(&self) -> impl Iterator<Item = (&FileRow, crate::config::RootKind, &Classified)> {
         self.files.iter().zip(&self.classes).filter_map(|(row, c)| c.as_ref().map(|(kind, c)| (row, *kind, c)))
     }
+}
+
+/// Which roots `only` (a `scan ROOT` argument) names, as `scan` and
+/// `scan --forget-gone` both take it: any case, but an exact name wins
+/// (roots named `Anime` and `anime` in a hand-written config). Every root
+/// without one.
+pub fn root_picker<'a>(cfg: &Config, only: Option<&'a str>) -> impl Fn(&str) -> bool + 'a {
+    let exact = only.is_some_and(|o| cfg.roots.iter().any(|r| r.name == o));
+    move |name: &str| only.is_none_or(|o| if exact { o == name } else { o.eq_ignore_ascii_case(name) })
 }
 
 /// What [`Ctx::auto_complete`] recorded.
@@ -237,8 +276,12 @@ impl Ctx {
             Ok(MetaCache {
                 rows: db.all_meta()?,
                 attempts: db.match_attempts()?,
-                prequels: db.prequels()?,
-                sequels: db.sequels()?,
+                graph: std::sync::Arc::new(Graph {
+                    prequels: db.prequels()?,
+                    sequels: db.sequels()?,
+                    related: db.related()?,
+                    media: db.anilist_media()?,
+                }),
                 anilist_checks: db.anilist_checks()?,
                 db_version: db.get_kv(OFFLINE_DB_VERSION)?.unwrap_or_default(),
             })
@@ -343,7 +386,14 @@ impl Ctx {
     pub fn store_sync(&self, res: &crate::meta::SyncResult) -> Result<()> {
         let ts = crate::events::now();
         let (rows, attempts, version) = (&res.rows, &res.attempts, res.db_version.as_deref());
-        self.db.store_sync(rows, attempts, version, &res.prequels, &res.sequels, &res.checked, ts)
+        let fetched = crate::index::db::Fetched {
+            prequels: &res.prequels,
+            sequels: &res.sequels,
+            related: &res.related,
+            media: &res.media,
+            checks: &res.checked,
+        };
+        self.db.store_sync(rows, attempts, version, &fetched, ts)
     }
 
     /// Scan all configured roots (or only `only`), calling `progress(root, count)`.
@@ -393,7 +443,17 @@ impl Ctx {
         note: Option<String>,
     ) -> Result<Recorded> {
         let keep = status != SeriesStatus::Completed && lib.get(series).is_some_and(Series::is_done);
-        self.record([EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep, via: None }])
+        let mut bodies = Vec::new();
+        // An entry only on AniList is recorded with its link, so it becomes
+        // a series of that anime.
+        if let Some(s) = lib.get_any(series).filter(|s| s.remote) {
+            if status == SeriesStatus::Untracked {
+                bail!("{title} is only on AniList: it is untracked already", title = s.title);
+            }
+            bodies.push(remote_link(s));
+        }
+        bodies.push(EventBody::SeriesStatus { series: series.into(), status, note, auto: false, keep, via: None });
+        self.record(bodies)
     }
 
     /// Mark followed series that are finished and fully watched as completed,
@@ -414,8 +474,9 @@ impl Ctx {
         let mut bodies = Vec::new();
         if !lib.partial_history {
             // Statuses as they will be once what is decided here is recorded.
-            let mut status: Vec<SeriesStatus> = lib.series.iter().map(|s| s.status).collect();
-            let mut by: Vec<SetBy> = lib.series.iter().map(|s| s.status_by).collect();
+            // Over every entry franchise stops name (see `Library::entry`).
+            let mut status: Vec<SeriesStatus> = lib.series.iter().chain(&lib.remote).map(|s| s.status).collect();
+            let mut by: Vec<SetBy> = lib.series.iter().chain(&lib.remote).map(|s| s.status_by).collect();
             loop {
                 let mut changed = false;
                 for (i, s) in lib.series.iter().enumerate() {
@@ -437,8 +498,11 @@ impl Ctx {
                         _ => false,
                     };
                     let Some(last) = f.stops.iter().rposition(behind) else { continue };
-                    let Some(next) = f.stops.get(last + 1).map(|stop| stop.series) else { continue };
-                    let s = &lib.series[next];
+                    // Entries only on AniList are passed over: S3 on disk
+                    // follows S1 without S2.
+                    let after = f.stops[last + 1..].iter().find(|stop| !lib.entry(stop.series).remote);
+                    let Some(next) = after.map(|stop| stop.series) else { continue };
+                    let s = lib.entry(next);
                     // Undecided: not left untracked by the user, nor followed by anipv before.
                     let undecided = status[next] == SeriesStatus::Untracked && by[next] != SetBy::User;
                     if undecided && !s.auto_followed && s.present() {
@@ -504,6 +568,10 @@ pub struct CatchUp {
     pub entries: Vec<String>,
     /// Episodes it marks watched.
     pub episodes: usize,
+    /// How many of the entries are only on `AniList` (completed with their
+    /// link, nothing marked watched): a franchise's chain has its movies and
+    /// OVAs too.
+    pub remote: usize,
     /// The events to record.
     pub events: Vec<EventBody>,
 }
@@ -511,8 +579,8 @@ pub struct CatchUp {
 /// Catch up to the series `key`: all of it and everything before it in its
 /// franchise (see [`Library::franchises`]); see [`catch_up_to`].
 pub fn catch_up(lib: &Library, key: &str) -> Result<CatchUp> {
-    let i = lib.index_of(key).with_context(|| format!("no series {key:?}"))?;
-    let s = &lib.series[i];
+    let i = lib.index_any(key).with_context(|| format!("no series {key:?}"))?;
+    let s = lib.entry(i);
     let Some((f, _)) = lib.franchise_pos(i) else {
         // A series of its own: a franchise of one stop.
         let stop =
@@ -536,9 +604,25 @@ pub fn catch_up(lib: &Library, key: &str) -> Result<CatchUp> {
 pub fn catch_up_to(lib: &Library, f: &crate::franchise::Franchise, pos: usize) -> CatchUp {
     let upto = &f.stops[..=pos.min(f.stops.len().saturating_sub(1))];
     let mut events = Vec::new();
-    let mut episodes = 0;
+    let (mut episodes, mut remote) = (0, 0);
     for i in f.series().into_iter().filter(|i| upto.iter().any(|s| s.series == *i)) {
-        let s = &lib.series[i];
+        let s = lib.entry(i);
+        // Completed with nothing on disk or in history (an entry only on
+        // AniList caught up before): nothing to mark.
+        if s.items.is_empty() && s.status == SeriesStatus::Completed {
+            continue;
+        }
+        if s.remote {
+            // Nothing on disk or watched here: its link and status only.
+            remote += 1;
+            events.push(remote_link(s));
+            events.push(EventBody::status_via(
+                s.key.clone(),
+                SeriesStatus::Completed,
+                crate::events::StatusVia::CatchUp,
+            ));
+            continue;
+        }
         let mine: Vec<&crate::franchise::Stop> = upto.iter().filter(|stop| stop.series == i).collect();
         let items: Vec<ItemKey> = if mine.iter().any(|stop| stop.items.is_empty()) {
             whole_series_items(s)
@@ -559,7 +643,13 @@ pub fn catch_up_to(lib: &Library, f: &crate::franchise::Franchise, pos: usize) -
         }
     }
     let entries = upto.iter().map(|stop| lib.stop_label(stop).to_string()).collect();
-    CatchUp { entries, episodes, events }
+    CatchUp { entries, episodes, remote, events }
+}
+
+/// The link that makes an entry only on `AniList` (see
+/// [`Library::remote`]) a series of its anime, once a status is recorded.
+fn remote_link(s: &Series) -> EventBody {
+    EventBody::Meta { series: s.key.clone(), anilist: s.anilist_id(), episodes: None }
 }
 
 /// A status change of `s` anipv makes on its own (`auto`), saying why.
@@ -591,10 +681,7 @@ pub fn scan_all(
         bail!("no media roots configured; run `anipv init` first");
     }
     let names: Vec<&str> = cfg.roots.iter().map(|r| r.name.as_str()).collect();
-    // `--root` names a root in any case, but an exact name wins (roots named
-    // `Anime` and `anime` in a hand-written config).
-    let exact = only.is_some_and(|o| names.contains(&o));
-    let picked = |name: &str| only.is_none_or(|o| if exact { o == name } else { o.eq_ignore_ascii_case(name) });
+    let picked = root_picker(cfg, only);
     db.retain_roots(&names)?;
     let mut out = Vec::new();
     for root in &cfg.roots {
@@ -880,6 +967,21 @@ mod tests {
     use super::*;
     use crate::model::EpNo;
 
+    /// `scan ROOT` (and `--forget-gone`) names a root in any case, an exact
+    /// name first.
+    #[test]
+    fn roots_are_picked_exactly_first() {
+        use crate::config::{Root, RootKind};
+        let cfg = Config {
+            roots: vec![Root::test("Anime", "/a", RootKind::Archive), Root::test("anime", "/b", RootKind::Archive)],
+            ..Config::default()
+        };
+        let picked = |only| ["Anime", "anime"].into_iter().filter(|n| root_picker(&cfg, only)(n)).collect::<Vec<_>>();
+        assert_eq!(picked(Some("anime")), ["anime"]);
+        assert_eq!(picked(Some("ANIME")), ["Anime", "anime"]);
+        assert_eq!(picked(None), ["Anime", "anime"]);
+    }
+
     #[test]
     fn episode_lists() {
         let e = |n| ItemKey::episode(EpNo::new(n));
@@ -1134,6 +1236,83 @@ mod tests {
         ctx.mark(lib.get("nisemonogatari").unwrap(), &parse_episode_list("1-11").unwrap(), true).unwrap();
         let (_, done) = ctx.auto_complete(&ctx.library().unwrap()).unwrap();
         assert_eq!((done.completed, done.followed), (vec!["Nisemonogatari".to_string()], vec![]));
+    }
+
+    /// Catching up to Dandadan S2 completes S1, which is only on AniList,
+    /// with its link and no episodes marked.
+    #[test]
+    fn catching_up_completes_remote_entries_with_their_link() {
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        assert!(lib.get_any("dandadan").is_some_and(|s| s.remote));
+        let plan = catch_up(&lib, "dandadan s2").unwrap();
+        assert_eq!((plan.entries.clone(), plan.remote), (vec!["Dandadan".to_string(), "Dandadan S2".to_string()], 1));
+        let mine: Vec<&EventBody> = plan.events.iter().filter(|e| e.series() == Some("dandadan")).collect();
+        assert_eq!(
+            mine,
+            [
+                &EventBody::Meta { series: "dandadan".into(), anilist: Some(171_018), episodes: None },
+                &EventBody::status_via("dandadan", SeriesStatus::Completed, crate::events::StatusVia::CatchUp),
+            ]
+        );
+        ctx.catch_up(plan).unwrap();
+        let lib = ctx.library().unwrap();
+        let s1 = lib.get("dandadan").unwrap();
+        assert_eq!((s1.remote, s1.status, s1.title.as_str()), (false, SeriesStatus::Completed, "Dandadan"));
+        assert!(s1.items.is_empty(), "nothing marked watched");
+    }
+
+    /// Caught up once, an entry that was only on AniList is a completed
+    /// series without items: catching up again records nothing for it.
+    #[test]
+    fn catching_up_again_marks_nothing_for_completed_entries_without_items() {
+        let (_dir, ctx) = crate::demo::ctx();
+        ctx.catch_up(catch_up(&ctx.library().unwrap(), "dandadan s2").unwrap()).unwrap();
+        let again = catch_up(&ctx.library().unwrap(), "dandadan s2").unwrap();
+        assert!(again.events.iter().all(|e| e.series() != Some("dandadan")), "{events:?}", events = again.events);
+    }
+
+    /// A status set on a remote entry links it; untracking one does nothing.
+    #[test]
+    fn statuses_on_remote_entries_link_them() {
+        let (_dir, ctx) = crate::demo::ctx();
+        let lib = ctx.library().unwrap();
+        assert!(ctx.set_status(&lib, "dandadan", SeriesStatus::Untracked, None).is_err());
+        assert!(ctx.library().unwrap().get("dandadan").is_none());
+        ctx.set_status(&lib, "dandadan", SeriesStatus::Completed, None).unwrap();
+        let lib = ctx.library().unwrap();
+        let s1 = lib.get("dandadan").unwrap();
+        assert_eq!((s1.anilist_id(), s1.status), (Some(171_018), SeriesStatus::Completed));
+        assert!(lib.remote.iter().all(|r| r.key != "dandadan"));
+    }
+
+    /// Roll-on passes over an entry only on AniList: the next one on disk is
+    /// followed.
+    #[test]
+    fn roll_on_crosses_a_remote_entry() {
+        let (_dir, ctx) = crate::demo::ctx();
+        // Nisemonogatari → (only on AniList) → Nekomonogatari.
+        let media = [SeriesMeta {
+            anilist: Some(990_002),
+            title: Some("Nisemonogatari Gaiden".into()),
+            refreshed_at: Some(1),
+            ..SeriesMeta::default()
+        }];
+        let fetched = crate::index::db::Fetched {
+            prequels: &[(990_002, vec![11597]), (15689, vec![990_002])],
+            sequels: &[(11597, vec![990_002]), (990_002, vec![15689])],
+            media: &media,
+            ..crate::index::db::Fetched::default()
+        };
+        ctx.db.store_sync(&[], &[], None, &fetched, 1).unwrap();
+        let lib = ctx.library().unwrap();
+        let (f, _) = lib.franchise_of("nisemonogatari").unwrap();
+        let labels: Vec<&str> = f.stops.iter().map(|s| lib.stop_label(s)).collect();
+        let at = labels.iter().position(|l| *l == "Nisemonogatari Gaiden").unwrap();
+        assert_eq!(labels[at + 1], "Nekomonogatari (Black)", "{labels:?}");
+        ctx.mark(lib.get("nisemonogatari").unwrap(), &parse_episode_list("1-11").unwrap(), true).unwrap();
+        let (_, done) = ctx.auto_complete(&ctx.library().unwrap()).unwrap();
+        assert_eq!(done.followed, vec![("Nekomonogatari".to_string(), "Nisemonogatari".to_string())]);
     }
 
     /// A fully watched next entry is followed and completed in one go, and

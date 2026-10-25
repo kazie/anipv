@@ -347,7 +347,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                                        desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│▌Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│▌Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8        3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -376,7 +376,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                                        desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│▌Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│▌Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8        3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -405,7 +405,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                                        desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │▌Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8        3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -434,7 +434,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                                        desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │▌Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8        3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -463,7 +463,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                                        desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │▌Monogatari Series 2/3 · Nisemonogatari                       04           8        3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -492,7 +492,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue                                                        desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │▌Monogatari Series 2/3 · Nisemonogatari                       04           8        3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -521,7 +521,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(1)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │▌Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -550,7 +550,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(1)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │▌Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │ One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -579,7 +579,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(1)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -608,7 +608,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(1)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2        11/?       10d    ep 1183 in 5d 1h    │
@@ -637,7 +637,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2 +1▶    11/?       10d    ep 1183 in 5d 1h    │
@@ -666,7 +666,7 @@
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Meitantei Precure!                                           02           2        1/48       3d     ep 4 in 3d 23h      │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2 +1▶    11/?       10d    ep 1183 in 5d 1h    │
@@ -813,7 +813,7 @@
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
 │ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
-│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dandadan S2 · 2/2                                       following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
 │ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
 │ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
 │ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
@@ -842,7 +842,7 @@
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
 │ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
-│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dandadan S2 · 2/2                                       following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
 │ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
 │ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
 │ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
@@ -893,7 +893,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- / meitantei▏
+ / meitantei▏                                                                         studio:  year:  season:  score>  #tag
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
@@ -922,7 +922,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- / meitantei▏
+ / meitantei▏                                                                         studio:  year:  season:  score>  #tag
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series · on disk 1 /meitantei ───────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1530,7 +1530,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-█████████████▎                          ▶ Meitantei Precure! 02  2:34 / 24:00  [1/1]
+████████████▉                           ▶ Meitantei Precure! 02  2:29 / 24:00  [1/1]
  v control mpv  p play queue  space queue  ⏎ play  w seen  W up to here  x extras  d missing  esc back  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1646,7 +1646,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-███████████████   ▶ Meitantei Precure! 02  2:54 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
+██████████████▌   ▶ Meitantei Precure! 02  2:49 / 24:00  [1/1]  · REMOTE: keys go to mpv, ctrl-c for anipv
  keys go to mpv  ctrl-c back to anipv
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
@@ -1656,7 +1656,7 @@
 ╰───────────────────────────────────────────────────── ep 4 in 3d 23h ─────────────────────────────────────────────────────╯
 ╭ Episodes · x shows 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │                                                                                                                          │
 │                                                                                                                          │
@@ -1676,7 +1676,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1686,7 +1686,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -1705,7 +1705,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1715,7 +1715,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -1734,7 +1734,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1744,7 +1744,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                    ╭ Meitantei Precure! ──────────────────╮(1080p).mkv                              │
 │ ·   fanart corner        extra          │▌following                            │Fanart Corner (1080p).mkv                │
@@ -1763,7 +1763,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1773,7 +1773,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                    ╭ Meitantei Precure! ──────────────────╮(1080p).mkv                              │
 │ ·   fanart corner        extra          │▌following                            │Fanart Corner (1080p).mkv                │
@@ -1792,7 +1792,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1802,7 +1802,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                    ╭ Meitantei Precure! ──────────────────╮(1080p).mkv                              │
 │ ·   fanart corner        extra          │ following                            │Fanart Corner (1080p).mkv                │
@@ -1821,7 +1821,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1831,7 +1831,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                    ╭ Meitantei Precure! ──────────────────╮(1080p).mkv                              │
 │ ·   fanart corner        extra          │ following                            │Fanart Corner (1080p).mkv                │
@@ -1850,7 +1850,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1860,7 +1860,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -1879,7 +1879,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1889,7 +1889,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -1908,7 +1908,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- ◐ Meitantei Precure! 02 stopped at 2:55
+ ◐ Meitantei Precure! 02 stopped at 2:54
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(6)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -1918,7 +1918,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -1947,7 +1947,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -1976,7 +1976,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -2005,7 +2005,7 @@
 ╭ Episodes · x hides 3 extras ─────────────────────────────────────────────────────────────────────────────────────────────╮
 │ ✓ 01                             3d            [GroupB] Meitantei Precure! - 01 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 01 Fanart Corner (1080p).mkv                │
-│▌◐ 02                             2:55 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
+│▌◐ 02                             2:54 / 24:00  [GroupB] Meitantei Precure! - 02 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 02 Fanart Corner (1080p).mkv                │
 │ · 03                                           [GroupB] Meitantei Precure! - 03 (1080p).mkv                              │
 │ ·   fanart corner        extra                 [GroupB] Meitantei Precure! - 03 Fanart Corner (1080p).mkv                │
@@ -2089,7 +2089,7 @@
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
 │ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
-│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dandadan S2 · 2/2                                       following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
 │ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
 │ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
 │ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
@@ -2118,7 +2118,7 @@
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
 │ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
-│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dandadan S2 · 2/2                                       following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
 │ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
 │ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
 │ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
@@ -2169,7 +2169,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- / nisemonogatari▏
+ / nisemonogatari▏                                                                    studio:  year:  season:  score>  #tag
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
@@ -2198,7 +2198,7 @@
 │                                                                                                                          │
 │                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- / nisemonogatari▏
+ / nisemonogatari▏                                                                    studio:  year:  season:  score>  #tag
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(2)                                                     desktop
 ╭ Series · on disk 1 /nisemonogatari ──────────────────────────────────────────────────────────────────────────────────────╮
@@ -2669,7 +2669,7 @@
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
 │ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
-│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dandadan S2 · 2/2                                       following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
 │ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
 │ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
 │ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
@@ -2698,7 +2698,7 @@
 │ Series                                                  Status     Score Watched    Disk  Last   Seen  Airing            │
 │▌Aria The Animation                                      paused     78    7/13       13    13     30w   finished          │
 │ Cowboy Bebop                                            completed  86    26/26      26    26     42w   finished          │
-│ Dandadan S2                                             following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
+│ Dandadan S2 · 2/2                                       following  85    5/12       4     8      7d    ep 9 in 1d 6h     │
 │ Dungeon Meshi                                           untracked  86    0/24       3     3            finished          │
 │ Kusuriya no Hitorigoto S3                               untracked  –     0/?        1     1                              │
 │ Laid-Back Camp The Movie (2022)                         untracked  –     0/?        1                                    │
@@ -3419,7 +3419,7 @@
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 1-24 of 73 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 1-24 of 79 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
 │ #   Series                  │Everywhere                                                    │                             │
 │ 1   One Piece               │  1-5 / Tab   switch view; again: other mode / next filter    │080p).mkv                    │
 │▌2   Nisemonogatari          │  j/k ↑/↓     move                                            │ [BD 1080p].mkv              │
@@ -3448,7 +3448,7 @@
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 1-24 of 73 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 1-24 of 79 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
 │ #   Series                  │Everywhere                                                    │                             │
 │ 1   One Piece               │  1-5 / Tab   switch view; again: other mode / next filter    │080p).mkv                    │
 │▌2   Nisemonogatari          │  j/k ↑/↓     move                                            │ [BD 1080p].mkv              │
@@ -3477,7 +3477,7 @@
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 16-39 of 73 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 16-39 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │                                                              │                             │
 │ 1   One Piece               │Up next                                                       │080p).mkv                    │
 │▌2   Nisemonogatari          │  space       queue next new episode; down when none are left │ [BD 1080p].mkv              │
@@ -3496,17 +3496,17 @@
 │                             │                                                              │                             │
 │                             │Series                                                        │                             │
 │                             │  /           fuzzy search (⏎ keeps it, Esc clears)           │                             │
+│                             │  / filters   studio:x year:2023 season:fall score>80 #tag    │                             │
 │                             │  f / 3       next status filter (works with a search)        │                             │
 │                             │  m           merge into another series                       │                             │
 │                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
-│                             │  F           fold franchises to the entry you're at          │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 16-39 of 73 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 16-39 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │                                                              │                             │
 │ 1   One Piece               │Up next                                                       │080p).mkv                    │
 │▌2   Nisemonogatari          │  space       queue next new episode; down when none are left │ [BD 1080p].mkv              │
@@ -3525,24 +3525,25 @@
 │                             │                                                              │                             │
 │                             │Series                                                        │                             │
 │                             │  /           fuzzy search (⏎ keeps it, Esc clears)           │                             │
+│                             │  / filters   studio:x year:2023 season:fall score>80 #tag    │                             │
 │                             │  f / 3       next status filter (works with a search)        │                             │
 │                             │  m           merge into another series                       │                             │
 │                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
-│                             │  F           fold franchises to the entry you're at          │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 31-54 of 73 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 31-54 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │                                                              │                             │
 │ 1   One Piece               │Series                                                        │080p).mkv                    │
 │▌2   Nisemonogatari          │  /           fuzzy search (⏎ keeps it, Esc clears)           │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  m           merge into another series                       │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  U           undo merges into this series                    │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  R           rename                                          │ck) - 04 [BD 1080p].mkv      │
+│ 3   Nekomonogatari          │  / filters   studio:x year:2023 season:fall score>80 #tag    │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  m           merge into another series                       │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  U           undo merges into this series                    │ck) - 04 [BD 1080p].mkv      │
+│                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
 │                             │  F           fold franchises to the entry you're at          │                             │
 │                             │  C           catch up: this and earlier entries watched      │                             │
@@ -3550,28 +3551,28 @@
 │                             │                                                              │                             │
 │                             │Episodes                                                      │                             │
 │                             │  space       add / remove from queue                         │                             │
-│                             │  ⏎           play this episode (or open a ▲ ▼ season)        │                             │
+│                             │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │                             │
+│                             │  o           on a ▲ ▼ ↳ link: open that one on AniList       │                             │
 │                             │  P / shift-⏎ play this episode from the beginning            │                             │
-│                             │  [ ]         previous / next season                          │                             │
+│                             │  [ ]         previous / next season (or part of this one)    │                             │
+│                             │  ⏎ / space   on a heading: collapse / expand it              │                             │
+│                             │  ← / →       on a heading: collapse / expand it              │                             │
+│                             │  backspace ×2episode back to unwatched (resume too)          │                             │
+│                             │  N           this episode starts the linked AniList entry    │                             │
 │                             │  w           toggle watched                                  │                             │
-│                             │  W           mark everything up to here watched              │                             │
-│                             │  C           catch up: this and earlier entries watched      │                             │
-│                             │  a           queue all new                                   │                             │
-│                             │  x           show / hide extras                              │                             │
-│                             │  d           show / hide episodes not on disk                │                             │
-│                             │  esc         back                                            │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 31-54 of 73 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 31-54 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
 │ #   Series                  │                                                              │                             │
 │ 1   One Piece               │Series                                                        │080p).mkv                    │
 │▌2   Nisemonogatari          │  /           fuzzy search (⏎ keeps it, Esc clears)           │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  m           merge into another series                       │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  U           undo merges into this series                    │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  R           rename                                          │ck) - 04 [BD 1080p].mkv      │
+│ 3   Nekomonogatari          │  / filters   studio:x year:2023 season:fall score>80 #tag    │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  m           merge into another series                       │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  U           undo merges into this series                    │ck) - 04 [BD 1080p].mkv      │
+│                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
 │                             │  F           fold franchises to the entry you're at          │                             │
 │                             │  C           catch up: this and earlier entries watched      │                             │
@@ -3579,28 +3580,33 @@
 │                             │                                                              │                             │
 │                             │Episodes                                                      │                             │
 │                             │  space       add / remove from queue                         │                             │
-│                             │  ⏎           play this episode (or open a ▲ ▼ season)        │                             │
+│                             │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │                             │
+│                             │  o           on a ▲ ▼ ↳ link: open that one on AniList       │                             │
 │                             │  P / shift-⏎ play this episode from the beginning            │                             │
-│                             │  [ ]         previous / next season                          │                             │
+│                             │  [ ]         previous / next season (or part of this one)    │                             │
+│                             │  ⏎ / space   on a heading: collapse / expand it              │                             │
+│                             │  ← / →       on a heading: collapse / expand it              │                             │
+│                             │  backspace ×2episode back to unwatched (resume too)          │                             │
+│                             │  N           this episode starts the linked AniList entry    │                             │
+│                             │  w           toggle watched                                  │                             │
+╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
+ queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
+────────────────────────────────────────────────────────────────────────────────
+ anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
+╭ Queue · plays in this order ╭ Keys 46-69 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │                             │
+│ 1   One Piece               │  o           on a ▲ ▼ ↳ link: open that one on AniList       │080p).mkv                    │
+│▌2   Nisemonogatari          │  P / shift-⏎ play this episode from the beginning            │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  [ ]         previous / next season (or part of this one)    │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  ⏎ / space   on a heading: collapse / expand it              │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  ← / →       on a heading: collapse / expand it              │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  backspace ×2episode back to unwatched (resume too)          │ck) - 04 [BD 1080p].mkv      │
+│                             │  N           this episode starts the linked AniList entry    │                             │
 │                             │  w           toggle watched                                  │                             │
 │                             │  W           mark everything up to here watched              │                             │
 │                             │  C           catch up: this and earlier entries watched      │                             │
 │                             │  a           queue all new                                   │                             │
 │                             │  x           show / hide extras                              │                             │
-│                             │  d           show / hide episodes not on disk                │                             │
-│                             │  esc         back                                            │                             │
-╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
- queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
-────────────────────────────────────────────────────────────────────────────────
- anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 46-69 of 73 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │  P / shift-⏎ play this episode from the beginning            │                             │
-│ 1   One Piece               │  [ ]         previous / next season                          │080p).mkv                    │
-│▌2   Nisemonogatari          │  w           toggle watched                                  │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  W           mark everything up to here watched              │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  C           catch up: this and earlier entries watched      │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  a           queue all new                                   │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  x           show / hide extras                              │ck) - 04 [BD 1080p].mkv      │
 │                             │  d           show / hide episodes not on disk                │                             │
 │                             │  esc         back                                            │                             │
 │                             │                                                              │                             │
@@ -3612,24 +3618,24 @@
 │                             │  ← / h / ⌫   up a folder                                     │                             │
 │                             │  /           search below here (⏎ keeps it, Esc clears)      │                             │
 │                             │                                                              │                             │
-│                             │Queue                                                         │                             │
-│                             │  J/K         move entry down / up                            │                             │
-│                             │  d           remove                                          │                             │
-│                             │  c           clear                                           │                             │
-│                             │  ⏎           play                                            │                             │
-│                             │  shift-⏎     play from the beginning                         │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  ⏎/p play  J/K move  d remove  c clear  y copy cmd  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 46-69 of 73 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │  P / shift-⏎ play this episode from the beginning            │                             │
-│ 1   One Piece               │  [ ]         previous / next season                          │080p).mkv                    │
-│▌2   Nisemonogatari          │  w           toggle watched                                  │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  W           mark everything up to here watched              │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  C           catch up: this and earlier entries watched      │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  a           queue all new                                   │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  x           show / hide extras                              │ck) - 04 [BD 1080p].mkv      │
+╭ Queue · plays in this order ╭ Keys 46-69 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │                             │
+│ 1   One Piece               │  o           on a ▲ ▼ ↳ link: open that one on AniList       │080p).mkv                    │
+│▌2   Nisemonogatari          │  P / shift-⏎ play this episode from the beginning            │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  [ ]         previous / next season (or part of this one)    │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  ⏎ / space   on a heading: collapse / expand it              │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  ← / →       on a heading: collapse / expand it              │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  backspace ×2episode back to unwatched (resume too)          │ck) - 04 [BD 1080p].mkv      │
+│                             │  N           this episode starts the linked AniList entry    │                             │
+│                             │  w           toggle watched                                  │                             │
+│                             │  W           mark everything up to here watched              │                             │
+│                             │  C           catch up: this and earlier entries watched      │                             │
+│                             │  a           queue all new                                   │                             │
+│                             │  x           show / hide extras                              │                             │
 │                             │  d           show / hide episodes not on disk                │                             │
 │                             │  esc         back                                            │                             │
 │                             │                                                              │                             │
@@ -3641,12 +3647,6 @@
 │                             │  ← / h / ⌫   up a folder                                     │                             │
 │                             │  /           search below here (⏎ keeps it, Esc clears)      │                             │
 │                             │                                                              │                             │
-│                             │Queue                                                         │                             │
-│                             │  J/K         move entry down / up                            │                             │
-│                             │  d           remove                                          │                             │
-│                             │  c           clear                                           │                             │
-│                             │  ⏎           play                                            │                             │
-│                             │  shift-⏎     play from the beginning                         │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  ⏎/p play  J/K move  d remove  c clear  y copy cmd  ? help
 ────────────────────────────────────────────────────────────────────────────────
@@ -3711,7 +3711,7 @@
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2 +1▶    11/?       10d    ep 1183 in 5d 1h    │
 │ Ranma 1-2 2024 S3                                            01 ◐42%      2        0/12       2d     ep 3 in 5d 23h      │
@@ -3740,7 +3740,7 @@
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2 +1▶    11/?       10d    ep 1183 in 5d 1h    │
 │ Ranma 1-2 2024 S3                                            01 ◐42%      2        0/12       2d     ep 3 in 5d 23h      │
@@ -3769,7 +3769,7 @@
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2 +1▶    11/?       10d    ep 1183 in 5d 1h    │
 │ Ranma 1-2 2024 S3                                            01 ◐42%      2        0/12       2d     ep 3 in 5d 23h      │
@@ -3798,7 +3798,7 @@
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
 ╭ Up next ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ Series                                                       Next         New      Watched    Seen   Airing              │
-│ Dandadan S2                                                  06           3        5/12       7d     ep 9 in 1d 6h       │
+│ Dandadan S2 · 2/2                                            06           3        5/12       7d     ep 9 in 1d 6h       │
 │ Monogatari Series 2/3 · Nisemonogatari                       04           8 +1▶    3/11       3w     finished            │
 │▌One Piece                                                    1181         2 +1▶    11/?       10d    ep 1183 in 5d 1h    │
 │ Ranma 1-2 2024 S3                                            01 ◐42%      2        0/12       2d     ep 3 in 5d 23h      │

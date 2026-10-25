@@ -166,6 +166,10 @@ impl Entry {
             search_linked: false,
             score: self.score,
             popularity: None,
+            titles: None,
+            hashtags: Vec::new(),
+            studios: Vec::new(),
+            season: None,
         }
     }
 }

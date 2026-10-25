@@ -40,8 +40,9 @@ name `dev`, and an event kind `e`:
 | `split` | `root`, `dir` | Make the files in folder `dir` (relative to the root named `root`, `/`-separated) a series of their own, named by their files: another anime kept inside a series folder. |
 | `unsplit` | `root`, `dir` | Undo a split. |
 | `title` | `series`, `title` | Display title override. |
-| `meta` | `series`, `anilist?`, `episodes?` | Link to an AniList id and/or set the episode total (whichever is present). |
+| `meta` | `series`, `anilist?`, `episodes?` | Link to an AniList id and/or set the episode total (whichever is present). A status set on a franchise entry that is only on AniList (nothing on disk, no history) is recorded after one of these, linking its key to the anime, so it is a series from then on. |
 | `unlink` | `series` | Remove the AniList link and stop matching the series automatically. |
+| `numbering` | `series`, `first`, `anilist?` | The linked AniList entry's episode 1 is the series' episode `first`: the episodes before it belong to the entries before it (`N` in the episode list; Steel Ball Run's 01 is its one-episode "1st STAGE", so the linked "2nd & 3rd STAGE" starts at 02). `first: 1` says it starts the series. `anilist` is the entry it was set for: it applies only while the series is linked to that one (relinked or rematched to another, it doesn't). Only how the episodes are split among AniList entries changes; their numbers and watch state don't. |
 
 Unknown kinds are ignored, so older versions can read logs written by newer ones.
 The same goes for an item whose `kind` is not one of the four below

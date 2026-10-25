@@ -12,7 +12,8 @@ use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
 static SEASON_WORDS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:season\s*(\d{1,2})|(\d{1,2})(?:st|nd|rd|th)\s+season|s0?(\d{1,2}))\b").expect("valid regex")
+    Regex::new(r"(?i)\b(?:season\s*([0-9]{1,2})|([0-9]{1,2})(?:st|nd|rd|th)\s+season|s0?([0-9]{1,2}))\b")
+        .expect("valid regex")
 });
 
 /// Normalize a human title into a series key.

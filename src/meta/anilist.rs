@@ -1,9 +1,11 @@
-//! Anonymous `AniList` GraphQL queries: airing info and prequels by id (in
+//! Anonymous `AniList` GraphQL queries: airing info and relations by id (in
 //! batches of 50), and title searches (see [`super::search`]).
 //!
 //! Only public anime data is requested. No account or token is used; nothing
 //! about the user is sent, except the titles of series a title search looks
-//! up (only with `anilist_search`, or `meta match --search`).
+//! up (only with `anilist_search`, or `meta match --search`). Ids sent are
+//! those of linked series, and of their franchise entries `AniList` itself
+//! returned as related (see [`super::chain_frontier`]).
 //!
 //! What happens when `AniList` can't be asked, and why, is in
 //! `docs/anilist.md`, each rule with the tests that hold it.
@@ -19,20 +21,33 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use super::ratelimit::{Clock, Limiter, RateHeaders, RealClock, Reply, StillLimited, paced};
-use crate::index::db::SeriesMeta;
+use crate::index::db::{SeriesMeta, distinct};
 
 /// GraphQL endpoint.
 pub const ENDPOINT: &str = "https://graphql.anilist.co";
 
-const QUERY: &str = "query ($ids: [Int]) {
+/// The [`Media`] fields both the refresh and the title search ask for, so
+/// [`Media::apply`] sees the same either way.
+macro_rules! media_fields {
+    () => {
+        "id episodes status format season seasonYear averageScore popularity hashtag
+      title { romaji english native }
+      studios(isMain: true) { nodes { name } }
+      nextAiringEpisode { episode airingAt }"
+    };
+}
+
+const QUERY: &str = concat!(
+    "query ($ids: [Int]) {
   Page(perPage: 50) {
     media(id_in: $ids, type: ANIME) {
-      id episodes status format seasonYear averageScore popularity
-      title { romaji english }
-      nextAiringEpisode { episode airingAt }
+      ",
+    media_fields!(),
+    "
     }
   }
-}";
+}"
+);
 
 /// An `AniList` id from `21` or an anime page URL: `https://anilist.co/anime/21/ONE-PIECE`,
 /// with or without the scheme (`http` or `https`) and `www.`, and with any
@@ -308,6 +323,15 @@ pub struct Media {
     /// Alternative titles (searches only).
     #[serde(default)]
     pub synonyms: Vec<String>,
+    /// Airing season: `WINTER`, `SPRING`, `SUMMER`, `FALL`.
+    #[serde(default)]
+    pub season: Option<String>,
+    /// Official hashtag(s), space-separated: `#薬屋のひとりごと`.
+    #[serde(default)]
+    pub hashtag: Option<String>,
+    /// Main animation studios.
+    #[serde(default)]
+    pub studios: Option<Studios>,
 }
 
 /// Title variants.
@@ -317,8 +341,29 @@ pub struct Titles {
     pub romaji: Option<String>,
     /// English title.
     pub english: Option<String>,
-    /// Native title (searches only).
+    /// Native title (kanji and kana).
     pub native: Option<String>,
+}
+
+impl Titles {
+    /// Romaji, English and native, those that are there.
+    pub fn all(&self) -> impl Iterator<Item = &str> {
+        [&self.romaji, &self.english, &self.native].into_iter().flatten().map(String::as_str).filter(|t| !t.is_empty())
+    }
+}
+
+/// A studio connection.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Studios {
+    /// The studios.
+    pub nodes: Vec<Studio>,
+}
+
+/// A studio.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Studio {
+    /// Its name.
+    pub name: String,
 }
 
 /// Next airing episode.
@@ -334,8 +379,7 @@ pub struct Airing {
 impl Media {
     /// Every name `AniList` knows this anime by: its titles and synonyms.
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        let t = &self.title;
-        [&t.romaji, &t.english, &t.native].into_iter().flatten().chain(&self.synonyms).map(String::as_str)
+        self.title.all().chain(self.synonyms.iter().map(String::as_str))
     }
 
     /// One line about the anime: title, format, year and id.
@@ -360,6 +404,11 @@ impl Media {
         m.next_airing = self.next_airing_episode.as_ref().map(|a| a.airing_at);
         m.score = self.average_score.or(m.score);
         m.popularity = self.popularity.or(m.popularity);
+        // Only AniList has these: what it says now replaces what it said before.
+        m.titles = Some(distinct(self.title.all()).into_iter().map(String::from).collect());
+        m.hashtags = self.hashtag.as_deref().unwrap_or_default().split_whitespace().map(String::from).collect();
+        m.studios = self.studios.iter().flat_map(|s| &s.nodes).map(|s| s.name.clone()).collect();
+        m.season.clone_from(&self.season);
         m.refreshed_at = Some(now);
     }
 }
@@ -391,7 +440,17 @@ const RELATIONS_QUERY: &str = "query ($ids: [Int]) {
   }
 }";
 
-/// The direct prequels and sequels (anime only) of an id.
+/// Related kinds (as [`Relations::related`] has them) whose entries are part
+/// of the franchise: a franchise walk follows them, as it follows prequels and
+/// sequels. Others ([`LISTED`]) are shown but not followed.
+pub const BRANCHES: [&str; 7] =
+    ["side_story", "spin_off", "summary", "alternative", "parent", "compilation", "contains"];
+
+/// Related kinds shown on an entry but not followed: they often lead out of
+/// the franchise (music videos, crossovers).
+pub const LISTED: [&str; 1] = ["other"];
+
+/// The direct relations (anime only) of an id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Relations {
     /// `AniList` id.
@@ -400,27 +459,38 @@ pub struct Relations {
     pub prequels: Vec<u64>,
     /// Its sequels' ids.
     pub sequels: Vec<u64>,
+    /// Its other related entries: relation (lowercase, `side_story`) and id,
+    /// of the kinds in [`BRANCHES`] and [`LISTED`] (`CHARACTER` links to
+    /// other franchises' works are left out).
+    pub related: Vec<(String, u64)>,
 }
 
-/// The direct prequels and sequels (anime only) of each id, for spotting new
-/// seasons and grouping franchises. Every requested id that `AniList` knows
-/// is returned, with empty lists when it has none.
+/// The direct relations (anime only) of each id, for spotting new seasons
+/// and grouping franchises. Every requested id that `AniList` knows is
+/// returned, with empty lists when it has none.
 pub fn fetch_relations(http: &dyn Http, ids: &[u64]) -> Batched<Relations> {
     query_media(http, RELATIONS_QUERY, ids, |media| {
         let mut out = Vec::new();
         for m in media.as_array().into_iter().flatten() {
             let Some(id) = m.get("id").and_then(Value::as_u64) else { continue };
-            let related = |kind: &str| -> Vec<u64> {
-                m.pointer("/relations/edges")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|e| e.get("relationType").and_then(Value::as_str) == Some(kind))
-                    .filter(|e| e.pointer("/node/type").and_then(Value::as_str) == Some("ANIME"))
-                    .filter_map(|e| e.pointer("/node/id").and_then(Value::as_u64))
-                    .collect()
-            };
-            out.push(Relations { id, prequels: related("PREQUEL"), sequels: related("SEQUEL") });
+            let edges: Vec<(String, u64)> = m
+                .pointer("/relations/edges")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|e| e.pointer("/node/type").and_then(Value::as_str) == Some("ANIME"))
+                .filter_map(|e| {
+                    let kind = e.get("relationType").and_then(Value::as_str)?.to_ascii_lowercase();
+                    Some((kind, e.pointer("/node/id").and_then(Value::as_u64)?))
+                })
+                .collect();
+            let of = |kind: &str| -> Vec<u64> { edges.iter().filter(|(k, _)| k == kind).map(|e| e.1).collect() };
+            let (prequels, sequels) = (of("prequel"), of("sequel"));
+            let related = edges
+                .into_iter()
+                .filter(|(k, _)| BRANCHES.contains(&k.as_str()) || LISTED.contains(&k.as_str()))
+                .collect();
+            out.push(Relations { id, prequels, sequels, related });
         }
         Ok(out)
     })
@@ -466,16 +536,18 @@ fn page_media(http: &dyn Http, body: &Value) -> Result<Value> {
     Ok(v.pointer_mut("/data/Page/media").map_or(Value::Array(vec![]), Value::take))
 }
 
-const SEARCH_QUERY: &str = "query ($q: String) {
+const SEARCH_QUERY: &str = concat!(
+    "query ($q: String) {
   Page(perPage: 10) {
     media(search: $q, type: ANIME) {
-      id episodes status format seasonYear averageScore popularity
-      title { romaji english native }
+      ",
+    media_fields!(),
+    "
       synonyms
-      nextAiringEpisode { episode airingAt }
     }
   }
-}";
+}"
+);
 
 /// The anime `AniList` finds for `title`, best first (at most 10). Sends only
 /// the title text.
@@ -653,6 +725,45 @@ mod tests {
         assert_eq!(row.status.as_deref(), Some("RELEASING"));
         assert_eq!(row.title.as_deref(), Some("ONE PIECE"));
         assert_eq!(row.refreshed_at, Some(9));
+        assert_eq!(row.titles, Some(vec!["ONE PIECE".into()]), "One Piece is the same title");
+        assert!(row.hashtags.is_empty() && row.studios.is_empty() && row.season.is_none());
+    }
+
+    /// Titles (distinct, ignoring case), hashtags (split), main studios and
+    /// the season are kept.
+    #[test]
+    fn apply_keeps_titles_studios_and_hashtags() {
+        let m: Media = serde_json::from_value(json!({
+            "id": 161_645, "episodes": 24, "status": "FINISHED", "format": "TV", "season": "FALL", "seasonYear": 2023,
+            "title": {"romaji": "Kusuriya no Hitorigoto", "english": "The Apothecary Diaries", "native": "薬屋のひとりごと"},
+            "hashtag": "#薬屋のひとりごと  #kusuriya",
+            "studios": {"nodes": [{"name": "Studio A"}, {"name": "Studio B"}]},
+            "nextAiringEpisode": null
+        }))
+        .unwrap();
+        let mut row = SeriesMeta { series: "kusuriya no hitorigoto".into(), ..SeriesMeta::default() };
+        m.apply(&mut row, 9);
+        let titles = ["Kusuriya no Hitorigoto", "The Apothecary Diaries", "薬屋のひとりごと"];
+        assert_eq!(row.titles, Some(titles.map(String::from).to_vec()));
+        assert_eq!(row.hashtags, ["#薬屋のひとりごと", "#kusuriya"]);
+        assert_eq!(row.studios, ["Studio A", "Studio B"]);
+        assert_eq!((row.season.as_deref(), row.year), (Some("FALL"), Some(2023)));
+        // What AniList no longer says goes, the season too.
+        let bare: Media =
+            serde_json::from_value(json!({"id": 161_645, "title": {"romaji": "Kusuriya no Hitorigoto"}})).unwrap();
+        bare.apply(&mut row, 10);
+        assert!(row.season.is_none() && row.studios.is_empty() && row.hashtags.is_empty());
+        assert_eq!(row.year, Some(2023), "the year is also the offline database's, so it stays");
+    }
+
+    /// Both queries ask for what [`Media::apply`] keeps.
+    #[test]
+    fn queries_ask_for_the_kept_fields() {
+        for q in [QUERY, SEARCH_QUERY] {
+            for field in ["native", "hashtag", "season ", "studios(isMain: true)"] {
+                assert!(q.contains(field), "{field} missing from {q}");
+            }
+        }
     }
 
     #[test]
@@ -661,14 +772,19 @@ mod tests {
             {"id": 199_111, "relations": {"edges": [
                 {"relationType": "PREQUEL", "node": {"id": 182_309, "type": "ANIME"}},
                 {"relationType": "SEQUEL", "node": {"id": 5, "type": "ANIME"}},
-                {"relationType": "PREQUEL", "node": {"id": 7, "type": "MANGA"}}
+                {"relationType": "PREQUEL", "node": {"id": 7, "type": "MANGA"}},
+                {"relationType": "SIDE_STORY", "node": {"id": 8, "type": "ANIME"}},
+                {"relationType": "OTHER", "node": {"id": 9, "type": "ANIME"}},
+                {"relationType": "CHARACTER", "node": {"id": 10, "type": "ANIME"}},
+                {"relationType": "SPIN_OFF", "node": {"id": 11, "type": "MANGA"}}
             ]}},
             {"id": 100_922, "relations": {"edges": []}}
         ]}}});
         let fake = Fake { calls: RefCell::new(vec![]), reply };
         let got = fetch_relations(&fake, &[199_111, 100_922]).items;
-        let rel = |id, prequels, sequels| Relations { id, prequels, sequels };
-        assert_eq!(got, vec![rel(199_111, vec![182_309], vec![5]), rel(100_922, vec![], vec![])]);
+        let related = vec![("side_story".to_string(), 8), ("other".to_string(), 9)];
+        let rel = |id, prequels, sequels, related| Relations { id, prequels, sequels, related };
+        assert_eq!(got, vec![rel(199_111, vec![182_309], vec![5], related), rel(100_922, vec![], vec![], vec![])]);
     }
 
     /// docs/anilist.md R14: Regression: a failing batch no longer discards the batches that

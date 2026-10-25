@@ -25,4 +25,5 @@ pub mod meta;
 pub mod model;
 pub mod mpv;
 pub mod parse;
+pub mod split;
 pub mod tui;
