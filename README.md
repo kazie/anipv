@@ -94,7 +94,7 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 | | |
 | --- | --- |
 | <img src="assets/img/series.svg" alt="series list"> | <img src="assets/img/detail.svg" alt="episode list with extras"> |
-| **Series**: everything on disk, filterable by status and fuzzy-searchable by any of its titles (romaji, English, native). Filter on AniList data too: `studio:madhouse`, `year:2023`, `season:fall`, `score>80`, `#hashtag`. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. The seasons around it are a row away (`▲`/`▼`, or `[`/`]`). |
+| **Series**: everything on disk, filterable by status and fuzzy-searchable by any of its titles (romaji, English, native). Filter on AniList data too: `studio:madhouse`, `year:2023`, `season:fall`, `score>80`, `#hashtag`. Merge different names of the same show (`m`). | **Episodes**: watched ✓, started ◐; extras tucked under their episode (`x`). Episodes no longer on disk stay out of the way until `d`. The seasons around it are a row away (`▲`/`▼`, or `[`/`]`), those you don't have too (from AniList), and related entries (side stories, films) are listed after the episodes. Episodes numbered on through several seasons (`25` being season 2's `01`) are split among them. |
 | <img src="assets/img/queue.svg" alt="play queue"> | <img src="assets/img/status.svg" alt="status picker"> |
 | **Queue**: reorder with `J`/`K`, play with `p`, or `y` to copy the plain `mpv …` command. | **Status**: `s`, then a letter. Dropping or pausing asks for an optional note. |
 
@@ -198,6 +198,11 @@ anipv makes two kinds of network requests by default, both optional, and a third
 library, tracked or not: AniList then sees which anime you have, though still
 nothing about what you watched. It only runs when you ask for it, or a few at a
 time from `anipv update` when you set `refresh_untracked = true`.
+
+For series you engage with, anipv also walks their franchise on AniList: the
+ids AniList returned as their prequels, sequels and spin-offs are asked about
+in turn (once a month each), so the seasons you haven't got show up. Only
+those ids are sent, no titles.
 
 anipv keeps to AniList's [rate limits](https://docs.anilist.co/guide/rate-limiting):
 it paces its requests by what AniList says is left, and when it is told to

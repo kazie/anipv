@@ -64,9 +64,14 @@ Press `?` in the TUI to see these at any time.
 | Key | Action |
 | --- | --- |
 | `space` | add / remove from queue |
-| `⏎` | play this episode (or open a ▲ ▼ season) |
+| `⏎` | play this episode (or open a ▲ ▼ ↳ link) |
+| `o` | on a ▲ ▼ ↳ link: open that one on AniList |
 | `P / shift-⏎` | play this episode from the beginning |
-| `[ ]` | previous / next season |
+| `[ ]` | previous / next season (or part of this one) |
+| `⏎ / space` | on a heading: collapse / expand it |
+| `← / →` | on a heading: collapse / expand it |
+| `backspace ×2` | episode back to unwatched (resume too) |
+| `N` | this episode starts the linked AniList entry |
 | `w` | toggle watched |
 | `W` | mark everything up to here watched |
 | `C` | catch up: this and earlier entries watched |

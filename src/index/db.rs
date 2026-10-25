@@ -16,7 +16,7 @@ use super::scan::ScannedFile;
 
 /// Bump on any schema change; older caches are dropped and rebuilt (unless
 /// listed in `UPGRADABLE`).
-pub const SCHEMA_VERSION: i32 = 9;
+pub const SCHEMA_VERSION: i32 = 10;
 
 /// Older schema versions brought up to date in place rather than rebuilt:
 /// [`SCHEMA`] only adds to them (`CREATE … IF NOT EXISTS`), and [`upgrade`]
@@ -28,7 +28,9 @@ pub const SCHEMA_VERSION: i32 = 9;
 /// * 7 → 8: the `sequels` table (filled as series are asked about again).
 /// * 8 → 9: `series_meta.titles`, `hashtags`, `studios` and `season` (filled
 ///   by one refresh, see [`SeriesMeta::titles`]).
-const UPGRADABLE: [i32; 5] = [4, 5, 6, 7, 8];
+/// * 9 → 10: the `anilist_media` and `related` tables (filled as franchises
+///   are walked, see [`crate::meta::chain_frontier`]).
+const UPGRADABLE: [i32; 6] = [4, 5, 6, 7, 8, 9];
 
 /// `kv` key prefix (followed by the root name) remembering whether the root
 /// directory was a mount point at its last non-empty scan, and which
@@ -89,8 +91,18 @@ const META_SYNCS: &str = "meta_syncs";
 /// `kv` key prefixes followed by a root name, forgotten with the root.
 const ROOT_KEYS: [&str; 2] = [ROOT_MOUNTED, SCAN_TRIED];
 
-const TABLES: [&str; 8] =
-    ["files", "scans", "kv", "series_meta", "match_attempts", "prequels", "sequels", "anilist_checks"];
+const TABLES: [&str; 10] = [
+    "files",
+    "scans",
+    "kv",
+    "series_meta",
+    "match_attempts",
+    "prequels",
+    "sequels",
+    "anilist_checks",
+    "anilist_media",
+    "related",
+];
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS scans(
@@ -125,6 +137,28 @@ CREATE TABLE IF NOT EXISTS sequels(
     anilist    INTEGER PRIMARY KEY,
     sequels    TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS related(
+    anilist    INTEGER PRIMARY KEY,
+    related    TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS anilist_media(
+    anilist     INTEGER PRIMARY KEY,
+    title       TEXT,
+    episodes    INTEGER,
+    status      TEXT,
+    format      TEXT,
+    year        INTEGER,
+    next_ep     INTEGER,
+    next_airing INTEGER,
+    score       INTEGER,
+    popularity  INTEGER,
+    titles      TEXT,
+    hashtags    TEXT,
+    studios     TEXT,
+    season      TEXT,
+    fetched_at  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS anilist_checks(
     anilist    INTEGER PRIMARY KEY,
@@ -172,6 +206,12 @@ fn from_sql<T: TryFrom<i64> + Default>(n: i64) -> T {
 fn path_bytes(p: &Path) -> &[u8] {
     use std::os::unix::ffi::OsStrExt;
     p.as_os_str().as_bytes()
+}
+
+/// Last path component as a `String` (empty when there is none), lossily
+/// as text: what events record.
+pub fn file_name_lossy(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 fn bytes_path(b: Vec<u8>) -> PathBuf {
@@ -233,13 +273,32 @@ impl SeriesMeta {
 
 /// `names` without repeats, ignoring case: the first spelling stays.
 pub fn distinct<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut seen: Vec<String> = Vec::new();
     let mut out: Vec<&str> = Vec::new();
     for name in names {
-        if !out.iter().any(|n| n.to_lowercase() == name.to_lowercase()) {
+        let lower = name.to_lowercase();
+        if !seen.contains(&lower) {
+            seen.push(lower);
             out.push(name);
         }
     }
     out
+}
+
+/// What a metadata sync fetched from `AniList` by id, for [`Db::store_sync`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Fetched<'a> {
+    /// Prequel ids by id.
+    pub prequels: &'a [(u64, Vec<u64>)],
+    /// Sequel ids by id.
+    pub sequels: &'a [(u64, Vec<u64>)],
+    /// Other related ids by id, with the relation (see
+    /// [`crate::meta::anilist::Relations::related`]).
+    pub related: &'a [(u64, Vec<(String, u64)>)],
+    /// Data on anime no series links (see [`Db::anilist_media`]).
+    pub media: &'a [SeriesMeta],
+    /// Every id asked about, and whether `AniList` knew it.
+    pub checks: &'a [(u64, bool)],
 }
 
 /// Cached facts about a series from metadata providers.
@@ -565,6 +624,31 @@ impl Db {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
+    /// Forget files a complete scan found gone (under `root`, else every
+    /// root), but those whose name `kept` says history still names (their
+    /// history may need the file to find its series). Only cache rows go:
+    /// the event log is untouched. Returns the number forgotten.
+    pub fn forget_gone(&self, root: impl Fn(&str) -> bool, kept: impl Fn(&str) -> bool) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let gone: Vec<(Vec<u8>, String, Vec<u8>)> = {
+            let mut st = tx.prepare("SELECT path, root, rel FROM files WHERE present = 0")?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut n = 0;
+        for (path, r, rel) in gone {
+            let name = file_name_lossy(&bytes_path(rel));
+            if root(&r) && !kept(&name) {
+                n += tx.execute("DELETE FROM files WHERE path = ?1", [path])?;
+            }
+        }
+        if n > 0 {
+            count_write(&tx, FILE_CHANGES)?;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
     /// Forget files and mount records of roots that are no longer configured.
     /// Returns the number of files forgotten.
     pub fn retain_roots(&self, roots: &[&str]) -> Result<usize> {
@@ -656,28 +740,25 @@ impl Db {
     /// does.
     #[cfg(test)]
     pub fn put_match_results(&self, rows: &[SeriesMeta], attempts: &[MatchAttempt]) -> Result<()> {
-        self.store_sync(rows, attempts, None, &[], &[], &[], 0)
+        self.store_sync(rows, attempts, None, &Fetched::default(), 0)
     }
 
     /// Store everything a metadata sync produced (links, "no match" attempts,
-    /// the offline database version, prequel lists, which `AniList` ids were
-    /// asked about and found) in one transaction, so a failure part-way (e.g.
-    /// the database busy during a scan) leaves no half state. `ts` is when the
-    /// prequels and checks were fetched.
+    /// the offline database version, and what `AniList` was asked by id) in
+    /// one transaction, so a failure part-way (e.g. the database busy during a
+    /// scan) leaves no half state. `ts` is when the `AniList` part was fetched.
     ///
     /// A row replaces its series' attempt; an attempt drops its series' row
     /// ("nothing to link").
-    #[expect(clippy::too_many_arguments, reason = "all a sync produced, written in one transaction")]
     pub fn store_sync(
         &self,
         rows: &[SeriesMeta],
         attempts: &[MatchAttempt],
         db_version: Option<&str>,
-        prequels: &[(u64, Vec<u64>)],
-        sequels: &[(u64, Vec<u64>)],
-        checks: &[(u64, bool)],
+        fetched: &Fetched<'_>,
         ts: i64,
     ) -> Result<()> {
+        let Fetched { prequels, sequels, related, media, checks } = *fetched;
         let tx = self.conn.unchecked_transaction()?;
         {
             // A link (or fresh data for one) replaces "nothing to link", and
@@ -698,6 +779,8 @@ impl Db {
         write_metas(&tx, rows)?;
         write_relations(&tx, "prequels", prequels, ts)?;
         write_relations(&tx, "sequels", sequels, ts)?;
+        write_relations(&tx, "related", related, ts)?;
+        write_media(&tx, media, ts)?;
         {
             let mut put = tx.prepare_cached(
                 "INSERT OR REPLACE INTO anilist_checks(anilist, checked_at, found) VALUES (?1, ?2, ?3)",
@@ -731,6 +814,27 @@ impl Db {
             Ok((from_sql(r.get(0)?), (ids, r.get(2)?)))
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// All known related lists (relation, id), by `AniList` id.
+    pub fn related(&self) -> Result<std::collections::HashMap<u64, Vec<(String, u64)>>> {
+        let mut st = self.conn.prepare_cached("SELECT anilist, related FROM related")?;
+        let rows = st.query_map([], |r| {
+            Ok((from_sql(r.get(0)?), serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default()))
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Data on anime no series links, by `AniList` id (rows without a series
+    /// key, `refreshed_at` when they were fetched).
+    pub fn anilist_media(&self) -> Result<std::collections::HashMap<u64, SeriesMeta>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT '', anilist, title, episodes, status, format, year, next_ep, next_airing, fetched_at, 0,
+                    score, popularity, titles, hashtags, studios, season
+             FROM anilist_media",
+        )?;
+        let rows = st.query_map([], meta_row)?;
+        rows.map(|m| m.map(|m| (m.anilist.unwrap_or_default(), m))).collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
     /// When each `AniList` id was last asked about, and whether it was found.
@@ -833,29 +937,32 @@ impl Db {
                     score, popularity, titles, hashtags, studios, season
              FROM series_meta",
         )?;
-        let rows = st.query_map([], |r| {
-            Ok(SeriesMeta {
-                series: r.get(0)?,
-                anilist: r.get::<_, Option<i64>>(1)?.map(from_sql),
-                title: r.get(2)?,
-                episodes: r.get(3)?,
-                status: r.get(4)?,
-                format: r.get(5)?,
-                year: r.get(6)?,
-                next_ep: r.get(7)?,
-                next_airing: r.get(8)?,
-                refreshed_at: r.get(9)?,
-                search_linked: r.get(10)?,
-                score: r.get(11)?,
-                popularity: r.get(12)?,
-                titles: r.get::<_, Option<String>>(13)?.map(|j| json_list(&j)),
-                hashtags: r.get::<_, Option<String>>(14)?.map(|j| json_list(&j)).unwrap_or_default(),
-                studios: r.get::<_, Option<String>>(15)?.map(|j| json_list(&j)).unwrap_or_default(),
-                season: r.get(16)?,
-            })
-        })?;
+        let rows = st.query_map([], meta_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
+}
+
+/// A [`SeriesMeta`] from a row of its columns, in `series_meta`'s order.
+fn meta_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SeriesMeta> {
+    Ok(SeriesMeta {
+        series: r.get(0)?,
+        anilist: r.get::<_, Option<i64>>(1)?.map(from_sql),
+        title: r.get(2)?,
+        episodes: r.get(3)?,
+        status: r.get(4)?,
+        format: r.get(5)?,
+        year: r.get(6)?,
+        next_ep: r.get(7)?,
+        next_airing: r.get(8)?,
+        refreshed_at: r.get(9)?,
+        search_linked: r.get(10)?,
+        score: r.get(11)?,
+        popularity: r.get(12)?,
+        titles: r.get::<_, Option<String>>(13)?.map(|j| json_list(&j)),
+        hashtags: r.get::<_, Option<String>>(14)?.map(|j| json_list(&j)).unwrap_or_default(),
+        studios: r.get::<_, Option<String>>(15)?.map(|j| json_list(&j)).unwrap_or_default(),
+        season: r.get(16)?,
+    })
 }
 
 fn user_version(conn: &Connection) -> Result<i32> {
@@ -947,6 +1054,16 @@ fn write_kv(conn: &Connection, k: &str, v: &str) -> Result<()> {
     Ok(())
 }
 
+/// The list columns of a metadata row, as stored: titles (none until
+/// refreshed), hashtags and studios, as JSON.
+fn meta_lists(m: &SeriesMeta) -> Result<(Option<String>, String, String)> {
+    Ok((
+        m.titles.as_ref().map(serde_json::to_string).transpose()?,
+        serde_json::to_string(&m.hashtags)?,
+        serde_json::to_string(&m.studios)?,
+    ))
+}
+
 fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
     let mut put = conn.prepare_cached(
         "INSERT OR REPLACE INTO series_meta(series, anilist, title, episodes, status, format, year, next_ep, next_airing, refreshed_at, search_linked,
@@ -954,6 +1071,7 @@ fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
     )?;
     for m in rows {
+        let (titles, hashtags, studios) = meta_lists(m)?;
         put.execute(params![
             m.series,
             m.anilist.map(to_sql),
@@ -968,18 +1086,49 @@ fn write_metas(conn: &Connection, rows: &[SeriesMeta]) -> Result<()> {
             m.search_linked,
             m.score,
             m.popularity,
-            m.titles.as_ref().map(serde_json::to_string).transpose()?,
-            serde_json::to_string(&m.hashtags)?,
-            serde_json::to_string(&m.studios)?,
+            titles,
+            hashtags,
+            studios,
             m.season
         ])?;
     }
     Ok(())
 }
 
-/// Write `AniList` relation lists into `table` (`prequels` or `sequels`,
-/// whose list column has the table's name).
-fn write_relations(conn: &Connection, table: &str, rows: &[(u64, Vec<u64>)], ts: i64) -> Result<()> {
+/// Write data on anime no series links into `anilist_media`, by id.
+fn write_media(conn: &Connection, rows: &[SeriesMeta], ts: i64) -> Result<()> {
+    let mut put = conn.prepare_cached(
+        "INSERT OR REPLACE INTO anilist_media(anilist, title, episodes, status, format, year, next_ep, next_airing,
+                                              score, popularity, titles, hashtags, studios, season, fetched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+    )?;
+    for m in rows {
+        let Some(id) = m.anilist else { continue };
+        let (titles, hashtags, studios) = meta_lists(m)?;
+        put.execute(params![
+            to_sql(id),
+            m.title,
+            m.episodes,
+            m.status,
+            m.format,
+            m.year,
+            m.next_ep,
+            m.next_airing,
+            m.score,
+            m.popularity,
+            titles,
+            hashtags,
+            studios,
+            m.season,
+            m.refreshed_at.unwrap_or(ts)
+        ])?;
+    }
+    Ok(())
+}
+
+/// Write `AniList` relation lists into `table` (`prequels`, `sequels` or
+/// `related`, whose list column has the table's name).
+fn write_relations<T: serde::Serialize>(conn: &Connection, table: &str, rows: &[(u64, T)], ts: i64) -> Result<()> {
     let mut put = conn
         .prepare_cached(&format!("INSERT OR REPLACE INTO {table}(anilist, {table}, fetched_at) VALUES (?1, ?2, ?3)"))?;
     for (id, pre) in rows {
@@ -1204,11 +1353,11 @@ mod tests {
         writer.apply_scan("dl", &[f("a.mkv"), f("b.mkv")], 50, true, m(), None).unwrap();
         assert_ne!(reader.changes().unwrap().files, gone.files);
         let tried = reader.changes().unwrap();
-        writer.store_sync(&[], &[], None, &[], &[], &[], 20).unwrap();
+        writer.store_sync(&[], &[], None, &Fetched::default(), 20).unwrap();
         let synced = reader.changes().unwrap();
         assert_eq!(synced.files, tried.files);
         assert_ne!(synced.meta, tried.meta);
-        writer.store_sync(&[], &[], None, &[], &[], &[], 20).unwrap();
+        writer.store_sync(&[], &[], None, &Fetched::default(), 20).unwrap();
         assert_ne!(reader.changes().unwrap().meta, synced.meta, "two syncs in the same second");
     }
 
@@ -1273,7 +1422,14 @@ mod tests {
         {
             let mut db = Db::open(&path).unwrap();
             db.apply_scan("dl", &[f("a.mkv")], 10, true, m(), None).unwrap();
-            db.store_sync(&[], &[], None, &[(7, vec![3])], &[(7, vec![9])], &[], 42).unwrap();
+            db.store_sync(
+                &[],
+                &[],
+                None,
+                &Fetched { prequels: &[(7, vec![3])], sequels: &[(7, vec![9])], ..Fetched::default() },
+                42,
+            )
+            .unwrap();
             db.conn.execute_batch("DROP TABLE anilist_checks;").unwrap();
             db.conn.pragma_update(None, "user_version", 4).unwrap();
         }
@@ -1286,11 +1442,64 @@ mod tests {
         assert_eq!(user_version(&db.conn).unwrap(), SCHEMA_VERSION);
     }
 
+    /// Data and related lists of anime no series links are kept by id; a
+    /// version 9 cache gets their tables and keeps the rest.
+    #[test]
+    fn anilist_media_and_related_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            let mut db = Db::open(&path).unwrap();
+            db.apply_scan("dl", &[f("a.mkv")], 10, true, m(), None).unwrap();
+            db.conn.execute_batch("DROP TABLE anilist_media; DROP TABLE related;").unwrap();
+            db.conn.pragma_update(None, "user_version", 9).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(!db.was_rebuilt());
+        assert_eq!(db.files().unwrap()[0].first_seen, 10);
+        let media = SeriesMeta {
+            anilist: Some(14_719),
+            title: Some("JoJo no Kimyou na Bouken".into()),
+            episodes: Some(26),
+            titles: Some(vec!["JoJo no Kimyou na Bouken".into()]),
+            studios: vec!["david production".into()],
+            ..SeriesMeta::default()
+        };
+        let related = [(14_719, vec![("side_story".to_string(), 20_799)])];
+        let fetched = Fetched { media: std::slice::from_ref(&media), related: &related, ..Fetched::default() };
+        db.store_sync(&[], &[], None, &fetched, 42).unwrap();
+        assert_eq!(db.anilist_media().unwrap()[&14_719], SeriesMeta { refreshed_at: Some(42), ..media });
+        assert_eq!(db.related().unwrap()[&14_719], related[0].1);
+        assert!(db.all_meta().unwrap().is_empty(), "no series row is written");
+    }
+
+    /// Files a complete scan found gone are forgotten, but those history
+    /// names, and those still on disk.
+    #[test]
+    fn gone_files_are_forgotten_unless_history_names_them() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.apply_scan("dl", &[f("a.mkv"), f("b.mkv"), f("c.mkv")], 10, true, m(), None).unwrap();
+        db.apply_scan("dl", &[f("a.mkv")], 20, true, m(), None).unwrap();
+        assert_eq!(db.files().unwrap().iter().filter(|r| !r.present).count(), 2);
+        assert_eq!(db.forget_gone(|r| r == "other", |_| false).unwrap(), 0, "another root's only");
+        assert_eq!(db.forget_gone(|r| r == "dl", |name| name != "b.mkv").unwrap(), 1);
+        assert_eq!(db.forget_gone(|_| true, |name| name == "c.mkv").unwrap(), 0, "c is named");
+        let names: Vec<String> = db.files().unwrap().iter().map(|r| r.rel.display().to_string()).collect();
+        assert_eq!(names, ["a.mkv", "c.mkv"]);
+    }
+
     #[test]
     fn anilist_checks_roundtrip() {
         let db = Db::open_in_memory().unwrap();
-        db.store_sync(&[], &[], None, &[(1, vec![])], &[], &[(1, true), (2, false)], 9).unwrap();
-        db.store_sync(&[], &[], None, &[], &[], &[(2, true)], 11).unwrap();
+        db.store_sync(
+            &[],
+            &[],
+            None,
+            &Fetched { prequels: &[(1, vec![])], checks: &[(1, true), (2, false)], ..Fetched::default() },
+            9,
+        )
+        .unwrap();
+        db.store_sync(&[], &[], None, &Fetched { checks: &[(2, true)], ..Fetched::default() }, 11).unwrap();
         let checks = db.anilist_checks().unwrap();
         assert_eq!(checks[&1], AnilistCheck { checked_at: 9, found: true });
         assert_eq!(checks[&2], AnilistCheck { checked_at: 11, found: true });

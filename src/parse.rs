@@ -224,7 +224,7 @@ fn cut_at_quality(title: &str, cut_year: bool) -> &str {
 }
 
 /// A technical word (resolution, codec, source), punctuation around it aside.
-fn is_tag_word(word: &str) -> bool {
+pub fn is_tag_word(word: &str) -> bool {
     QUALITY.is_match(word.trim_matches(|c: char| !c.is_alphanumeric()))
 }
 

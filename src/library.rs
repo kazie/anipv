@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::app::Index;
+use crate::app::{Graph, Index};
 use crate::config::{Config, RootKind};
 use crate::events::{Event, EventBody, Link, Moved, Relabelled, SetBy, State};
 use crate::franchise::{Folder, Franchise, Part};
@@ -51,10 +51,7 @@ impl FileRef {
     }
 }
 
-/// Last path component as a `String` (empty when there is none).
-pub fn file_name_lossy(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-}
+pub use crate::index::db::file_name_lossy;
 
 /// One watchable item of a series.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +108,7 @@ pub struct LastMatch {
 
 /// A series with its items and user state.
 #[derive(Debug, Clone)]
+#[expect(clippy::struct_excessive_bools, reason = "independent facts about a series")]
 pub struct Series {
     /// Canonical key.
     pub key: String,
@@ -158,9 +156,54 @@ pub struct Series {
     /// What fuzzy search matches against (see [`Series::search_text`]),
     /// made when first asked for.
     search: std::sync::OnceLock<String>,
+    /// Only on `AniList`: a franchise entry with no files and no history
+    /// (see [`Library::remote`]).
+    pub remote: bool,
+    /// The `AniList` entries its episodes run through, when they are numbered
+    /// on past the linked one (see [`crate::split`]).
+    pub split: Option<crate::split::Split>,
+    /// Linked to an entry related to another series by its remembered file
+    /// name (see `related_by_file`): a branch of that series, not a season.
+    pub related_link: bool,
+    /// Its other related entries on `AniList` (see
+    /// [`crate::meta::anilist::Relations::related`]): relation and entry
+    /// index (see [`Library::entry`]), those known.
+    pub related: Vec<(String, usize)>,
 }
 
 impl Series {
+    /// A series called `title` with nothing known of it yet: no items,
+    /// history, link or metadata.
+    fn blank(key: String, title: String) -> Self {
+        Self {
+            key,
+            title,
+            status: SeriesStatus::Untracked,
+            note: None,
+            items: Vec::new(),
+            meta: None,
+            last_match: None,
+            link: Link::Auto,
+            auto_completed: false,
+            auto_followed: false,
+            status_by: SetBy::default(),
+            status_via: None,
+            kept: false,
+            prequels: None,
+            sequels: None,
+            folder: None,
+            shared: std::sync::OnceLock::new(),
+            relations_at: None,
+            episodes_override: None,
+            aliases: Vec::new(),
+            search: std::sync::OnceLock::new(),
+            remote: false,
+            related: Vec::new(),
+            split: None,
+            related_link: false,
+        }
+    }
+
     /// Regular episodes.
     pub fn episodes(&self) -> impl Iterator<Item = &Item> {
         self.items.iter().filter(|i| i.key.kind == ItemKind::Episode)
@@ -230,15 +273,46 @@ impl Series {
         self.link.manual().or_else(|| self.usable_meta(m)?.anilist)
     }
 
+    /// Its `AniList` id, then the other entries its episodes run through
+    /// (see [`Series::split`]).
+    pub fn anilist_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.anilist_id().into_iter().collect();
+        for id in self.split.iter().flat_map(crate::split::Split::ids) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
     /// Total episodes: manual override, then metadata. For a long-running
     /// show the offline database's count lags behind, so a known count is
     /// raised to the episodes aired so far (everything before the next one).
+    /// A [split](Series::split) series counts through the part airing now.
     pub fn total(&self) -> Option<u32> {
         self.episodes_override.or_else(|| {
-            let m = self.meta.as_ref()?;
+            let (m, _) = self.airing_meta()?;
+            // The episodes of its own parts before (not a season another
+            // series holds between them).
+            let before = self
+                .split
+                .as_ref()
+                .map_or(Some(0), |sp| sp.parts[..sp.current].iter().map(|p| p.meta.episodes).sum::<Option<u32>>())?;
             let aired = m.next_ep.map(|next| next.saturating_sub(1));
-            m.episodes.map(|count| aired.map_or(count, |aired| count.max(aired)))
+            m.episodes.map(|count| before + aired.map_or(count, |aired| count.max(aired)))
         })
+    }
+
+    /// The metadata of what is airing, and how many of the series' episodes
+    /// come before it: the series' own, else (split) the current part's.
+    fn airing_meta(&self) -> Option<(&SeriesMeta, u32)> {
+        match &self.split {
+            Some(split) => {
+                let part = split.current_part();
+                Some((&part.meta, part.first - 1))
+            }
+            None => Some((self.meta.as_ref()?, 0)),
+        }
     }
 
     /// You have a relationship with this series: following, paused or
@@ -274,7 +348,9 @@ impl Series {
 
     /// The show has finished airing and every episode has been watched.
     pub fn is_done(&self) -> bool {
-        let finished = self.meta.as_ref().is_some_and(SeriesMeta::is_finished);
+        // A split series: its last part finished, and none announced after it.
+        let finished =
+            self.airing_meta().is_some_and(|(m, _)| m.is_finished()) && !self.split.as_ref().is_some_and(|s| s.more);
         finished && self.total().is_some_and(|t| t > 0 && self.whole_watched_count() >= t as usize)
     }
 
@@ -355,16 +431,48 @@ impl Series {
     /// Airing summary from metadata (`ep 9 in 1d 7h`, `finished`, …) and
     /// whether it is "live" (still airing) for highlighting.
     pub fn airing(&self, now: i64) -> Option<(String, bool)> {
-        let m = self.meta.as_ref()?;
-        if let (Some(e), Some(t)) = (m.next_ep, m.next_airing) {
-            return Some((format!("ep {e} {until}", until = crate::fmt::until(t, now)), true));
+        // Of a split series, the part airing now, in the series' numbers.
+        let (m, before) = self.airing_meta()?;
+        airing_of(m, before, now)
+    }
+
+    /// The items of part `n` of its [split](Series::split): episodes by
+    /// number (see [`crate::split::Split::part_of`]), the others with the
+    /// first part. Empty without a split.
+    pub fn part_items(&self, n: usize) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(move |it| self.part_of_item(it) == Some(n))
+    }
+
+    /// What part `n` of its [split](Series::split) is called: the linked
+    /// entry's, when it comes first, by the series' title (the franchise is
+    /// named after it); the others (a lead-in too) by their entries'. The
+    /// franchise's stops and the Detail header both call it so.
+    pub fn part_title(&self, n: usize) -> &str {
+        let Some(part) = self.split.as_ref().and_then(|sp| sp.parts.get(n)) else { return &self.title };
+        if n == 0 && self.anilist_id() == Some(part.id()) { &self.title } else { part.title() }
+    }
+
+    /// How far you are in part `n` of its [split](Series::split): its
+    /// episodes watched (those that count toward a total), its length, and
+    /// whether all are watched. The header and the part's heading both say it.
+    pub fn part_progress(&self, n: usize) -> (usize, Option<u32>, bool) {
+        let watched = self.part_items(n).filter(|i| i.counts_toward_total() && i.state.is_watched()).count();
+        let total = self.split.as_ref().and_then(|sp| sp.parts.get(n)).and_then(|p| p.meta.episodes);
+        let done = total.is_some_and(|t| t > 0 && watched >= t as usize);
+        (watched, total, done)
+    }
+
+    /// The part of its [split](Series::split) item `it` is in: an episode's
+    /// by its number (see [`crate::split::Split::part_of`]), an extra
+    /// attached to an episode with it. Others (specials, movies, extras of
+    /// their own) are in none: a part is its episodes.
+    pub fn part_of_item(&self, it: &Item) -> Option<usize> {
+        let split = self.split.as_ref()?;
+        match (it.key.kind, it.key.ep) {
+            (ItemKind::Episode, ep) => split.holding(ep.map_or(0, EpNo::whole)),
+            (ItemKind::Extra, Some(ep)) => split.holding(ep.whole()),
+            _ => None,
         }
-        Some(match m.status.as_deref()? {
-            "FINISHED" => ("finished".into(), false),
-            "RELEASING" => ("airing".into(), true),
-            "NOT_YET_RELEASED" => ("upcoming".into(), false),
-            other => (other.to_lowercase(), false),
-        })
     }
 
     /// Items in display order: episodes, each followed by its attached extras;
@@ -561,6 +669,14 @@ pub struct IndexedFile {
 pub struct Library {
     /// All series, sorted by title.
     pub series: Vec<Series>,
+    /// Franchise entries only on `AniList` (no files, no history), sorted by
+    /// title: reached from the series through cached relations. They share
+    /// one index space with [`Library::series`], after it (see
+    /// [`Library::entry`]); only franchise code (and what opens their
+    /// entries) sees them. A status recorded for one makes it a series.
+    pub remote: Vec<Series>,
+    /// [`Library::remote`] entries by key → their index (see [`Library::entry`]).
+    remote_by_key: HashMap<String, usize>,
     /// All files (present and gone) with classification, sorted by path.
     pub files: Vec<IndexedFile>,
     /// Every key that finds a series (its own, merged-away and legacy keys) → its index.
@@ -591,6 +707,13 @@ pub struct Library {
     /// Problems met while building that did not stop it (e.g. the cache
     /// migration in [`crate::app::Ctx::migrated_library`] failing), for the UI to show.
     pub warnings: Vec<String>,
+    /// The seasons folded into their series (see `FoldRule`).
+    folds: Vec<FoldRule>,
+    /// For each series, the one it may be (see [`Library::merge_hint`]).
+    merge_hints: Vec<Option<usize>>,
+    /// What `AniList` said about how anime relate, as cached (franchise
+    /// walks start from it, see [`crate::meta::chain_frontier`]).
+    pub graph: Arc<Graph>,
     /// Part of the event log could not be read (see [`Library::warnings`]).
     /// Nothing is recorded automatically from such a library: the missing
     /// part may hold choices that would be overridden.
@@ -659,28 +782,60 @@ fn group(
     (building, indexed)
 }
 
-/// Group `series` into franchises, with the franchise of each and the stop
-/// you are at in it: the series' first stop not watched yet, else its last.
-fn franchises(series: &[Series]) -> (Vec<Franchise>, Vec<Option<(usize, usize)>>) {
+/// Group `series` (local, then remote, see [`Library::entry`]) into
+/// franchises, with the franchise of each and the stop you are at in it: the
+/// series' first stop not watched yet, else its last.
+fn franchises(series: &[&Series], graph: &Graph) -> (Vec<Franchise>, Vec<Option<(usize, usize)>>) {
+    // A split series links on from all its parts: their prequels and
+    // sequels, but for the parts themselves.
+    let split_links: Vec<Option<[Vec<u64>; 3]>> = series
+        .iter()
+        .map(|s| {
+            s.split.as_ref()?;
+            let ids = s.anilist_ids();
+            let outside = |lists: Vec<&Vec<u64>>| -> Vec<u64> {
+                let mut out: Vec<u64> = lists.into_iter().flatten().copied().filter(|id| !ids.contains(id)).collect();
+                out.sort_unstable();
+                out.dedup();
+                out
+            };
+            let prequels = outside(ids.iter().filter_map(|id| graph.prequels.get(id)).collect());
+            let sequels = outside(ids.iter().filter_map(|id| graph.sequels.get(id).map(|(s, _)| s)).collect());
+            Some([ids[1..].to_vec(), prequels, sequels])
+        })
+        .collect();
     let nodes: Vec<crate::franchise::Node<'_>> = series
         .iter()
-        .map(|s| crate::franchise::Node {
+        .zip(&split_links)
+        .map(|(s, links)| crate::franchise::Node {
+            remote: s.remote,
+            // A special named as a season (`One Piece S36`) is no season.
+            branch: s.related_link,
             key: &s.key,
             title: &s.title,
             anilist: s.anilist_id(),
-            prequels: s.prequels.as_deref().unwrap_or_default(),
-            sequels: s.sequels.as_deref().unwrap_or_default(),
+            also: links.as_ref().map_or(&[][..], |l| &l[0]),
+            prequels: links.as_ref().map_or_else(|| s.prequels.as_deref().unwrap_or_default(), |l| &l[1]),
+            sequels: links.as_ref().map_or_else(|| s.sequels.as_deref().unwrap_or_default(), |l| &l[2]),
             folder: s.folder.as_ref(),
-            parts: entry_parts(s),
+            parts: {
+                let parts = entry_parts(s);
+                if parts.is_empty() { split_parts(s, graph) } else { parts }
+            },
             year: s.meta.as_ref().and_then(|m| m.year),
         })
         .collect();
     let mut franchises = crate::franchise::group(&nodes);
     for f in &mut franchises {
-        let labels: Vec<&str> = f.stops.iter().map(|stop| stop_label(series, stop)).collect();
+        let labels: Vec<&str> = f.stops.iter().map(|stop| stop_label(series[stop.series], stop)).collect();
         let short = crate::franchise::short_labels(&f.name, &labels);
-        for (stop, short) in f.stops.iter_mut().zip(short) {
-            stop.watched = stop_watched(series, stop);
+        for (stop, mut short) in f.stops.iter_mut().zip(short) {
+            // The first part of a split series, named like the franchise: S1.
+            let first_part = stop.folder.as_ref().is_some_and(|p| p.anilist.is_some() && p.no == 1);
+            if first_part && short == f.name {
+                short = "S1".to_string();
+            }
+            stop.watched = stop_watched(series[stop.series], stop);
             stop.short = short;
         }
     }
@@ -698,15 +853,15 @@ fn franchises(series: &[Series]) -> (Vec<Franchise>, Vec<Option<(usize, usize)>>
     (franchises, at)
 }
 
-/// What to call a stop: [`Library::stop_label`].
-fn stop_label<'a>(series: &'a [Series], stop: &'a crate::franchise::Stop) -> &'a str {
-    stop.folder.as_ref().map_or(series[stop.series].title.as_str(), |part| part.name.as_str())
+/// What to call a stop of series `s`: [`Library::stop_label`].
+fn stop_label<'a>(s: &'a Series, stop: &'a crate::franchise::Stop) -> &'a str {
+    stop.folder.as_ref().map_or(s.title.as_str(), |part| part.name.as_str())
 }
 
-/// Every item of the stop is watched (for a whole series: it is completed,
-/// or finished and fully watched): [`crate::franchise::Stop::watched`].
-fn stop_watched(series: &[Series], stop: &crate::franchise::Stop) -> bool {
-    let s = &series[stop.series];
+/// Every item of the stop (of series `s`) is watched (for a whole series:
+/// it is completed, or finished and fully watched):
+/// [`crate::franchise::Stop::watched`].
+fn stop_watched(s: &Series, stop: &crate::franchise::Stop) -> bool {
     if stop.items.is_empty() {
         return s.status == SeriesStatus::Completed || s.is_done();
     }
@@ -747,7 +902,414 @@ fn entry_parts(s: &Series) -> Vec<(Part, Vec<ItemKey>)> {
             items.push(key.clone());
         }
     }
-    parts.into_iter().map(|(no, (name, items))| (Part { no, name: name.to_string() }, items)).collect()
+    parts
+        .into_iter()
+        .map(|(no, (name, items))| (Part { no, name: name.to_string(), ..Part::default() }, items))
+        .collect()
+}
+
+/// The entry series `i` is, when nothing links it and it is known only
+/// from history (no file on disk): a release named after a season of
+/// another series (`One.Piece.S36E00.ONE.PIECE.FAN.LETTER…` is `one piece
+/// s36`) that `AniList` has as an entry related to that series, the one
+/// whose title (longer than the series' own key) the remembered file names.
+/// Exactly one must fit; it isn't recorded (an automatic link).
+fn related_by_file(
+    series: &[Series],
+    i: usize,
+    by_key: &HashMap<String, usize>,
+    state: &State,
+    graph: &Graph,
+    linked: &HashSet<u64>,
+) -> Option<u64> {
+    let s = &series[i];
+    if !unmatched(s) || s.present() {
+        return None;
+    }
+    let base = crate::identity::base_key(&s.key);
+    let parent = series.get(*by_key.get(base).filter(|_| base != s.key)?)?.anilist_id()?;
+    let named = format!(" {key} ", key = crate::identity::series_key(state.file_hints.get(&s.key)?));
+    let names_it = |m: &SeriesMeta| {
+        m.names()
+            .iter()
+            .map(|n| crate::identity::series_key(n))
+            .any(|k| k.len() > base.len() && named.contains(&format!(" {k} ")))
+    };
+    let mut hits: Vec<u64> = graph
+        .related
+        .get(&parent)?
+        .iter()
+        .map(|(_, id)| *id)
+        .filter(|id| !linked.contains(id) && graph.media.get(id).is_some_and(names_it))
+        .collect();
+    hits.sort_unstable();
+    hits.dedup();
+    match hits[..] {
+        [id] => Some(id),
+        _ => None,
+    }
+}
+
+/// The name words (see [`name_words`]) of every entry a franchise walk
+/// cached and of every linked series' anime, names of three words or more:
+/// what [`entry_by_name`] looks for (an entry linked already counts too, so
+/// a less specific one isn't taken for it).
+fn entry_names(graph: &Graph, series: &[Series]) -> Vec<(u64, Vec<HashSet<String>>)> {
+    let linked = series.iter().filter_map(|s| Some((s.anilist_id()?, s.meta.as_ref()?)));
+    let mut all: HashMap<u64, &SeriesMeta> = graph.media.iter().map(|(&id, m)| (id, m)).collect();
+    all.extend(linked);
+    let mut out: Vec<(u64, Vec<HashSet<String>>)> =
+        all.into_iter().map(|(id, m)| (id, name_sets(m.names(), 3))).collect();
+    out.sort_unstable_by_key(|e| e.0);
+    out
+}
+
+/// The name words (see [`name_words`]) of each of `names`, those of `min`
+/// words or more: what a name matcher looks for.
+fn name_sets<'a>(names: impl IntoIterator<Item = &'a str>, min: usize) -> Vec<HashSet<String>> {
+    names.into_iter().map(name_words).filter(|n| n.len() >= min).collect()
+}
+
+/// Of `candidates` (each with its names' words), the one whose name `words`
+/// spell, the most specific (the most words); two as specific: neither.
+/// How every name matcher decides ([`entry_by_name`], [`merge_hint`]).
+fn most_specific<'a, T: Copy>(
+    words: &HashSet<String>,
+    candidates: impl IntoIterator<Item = (T, &'a [HashSet<String>])>,
+) -> Option<T> {
+    let mut best: Option<(usize, T)> = None;
+    let mut tied = false;
+    for (c, names) in candidates {
+        let Some(n) = names.iter().filter(|n| n.is_subset(words)).map(HashSet::len).max() else { continue };
+        match best {
+            Some((m, _)) if n < m => {}
+            Some((m, _)) if n == m => tied = true,
+            _ => (best, tied) = (Some((n, c)), false),
+        }
+    }
+    best.filter(|_| !tied).map(|b| b.1)
+}
+
+/// A series nothing links, of no metadata: what the name matchers may link
+/// or hint.
+fn unmatched(s: &Series) -> bool {
+    s.link == Link::Auto && s.meta.is_none()
+}
+
+/// Link series `s` to `AniList` entry `id` by its cached data, as an
+/// automatic match (not recorded).
+fn link_auto(s: &mut Series, graph: &Graph, id: u64) {
+    if let Some(m) = graph.media.get(&id) {
+        s.meta = Some(SeriesMeta { series: s.key.clone(), ..m.clone() });
+        set_relations(s, graph, id);
+    }
+}
+
+/// The entry of your franchises an unlinked series is, when matching found
+/// nothing for it (a folder name cut short, `… Diamond wa Kudakena`): the
+/// one whose name its title, key or first file's name spells
+/// (`Jojo's_Bizarre_Adventure_Diamond_is_Unbreakable_01…` is "`JoJo's`
+/// Bizarre Adventure: Diamond is Unbreakable"), the most specific; two as
+/// specific, neither. An automatic link, not recorded.
+fn entry_by_name(s: &Series, entries: &[(u64, Vec<HashSet<String>>)], linked: &HashSet<u64>) -> Option<u64> {
+    if !unmatched(s) || s.last_match.is_none() {
+        return None;
+    }
+    let mut words = name_words(&s.key);
+    words.extend(name_words(&s.title));
+    if let Some(file) = s.items.iter().find_map(|i| i.files.first()) {
+        words.extend(name_words(&file.name()));
+    }
+    // The best is linked already (another copy of it): none.
+    most_specific(&words, entries.iter().map(|(id, n)| (*id, n.as_slice()))).filter(|id| !linked.contains(id))
+}
+
+/// Work out each series' [split](Series::split): the entries its episodes
+/// run through when they are numbered on past the linked one. A season
+/// another series links is passed over, by that series' row.
+fn set_splits(series: &mut [Series], graph: &Graph, state: &State) {
+    let rows: HashMap<u64, &SeriesMeta> = series
+        .iter()
+        .filter_map(|s| {
+            let id = s.anilist_id()?;
+            Some((id, s.meta.as_ref().filter(|m| m.is_for(id))?))
+        })
+        .collect();
+    let splits: Vec<Option<crate::split::Split>> = series.iter().map(|s| split_of(s, &rows, graph, state)).collect();
+    for (s, split) in series.iter_mut().zip(splits) {
+        s.split = split;
+    }
+}
+
+/// [`set_splits`] of one series, with `rows` the linked series' data.
+fn split_of(s: &Series, rows: &HashMap<u64, &SeriesMeta>, graph: &Graph, state: &State) -> Option<crate::split::Split> {
+    let id = s.anilist_id()?;
+    let m = s.meta.as_ref().filter(|m| m.is_for(id))?;
+    let numbers: Vec<u32> = s.episodes().filter_map(|i| i.key.ep).map(EpNo::whole).collect();
+    let range = numbers.iter().min().copied().zip(numbers.iter().max().copied())?;
+    // Set for the entry linked now (or before entries were kept with it).
+    let numbering = state
+        .series
+        .get(&s.key)
+        .and_then(|st| st.numbering)
+        .filter(|(_, for_id)| for_id.is_none_or(|f| f == id))
+        .map(|(first, _)| first);
+    let taken = |other: u64| rows.get(&other).copied().filter(|_| other != id);
+    crate::split::split(id, m, range, numbering, graph, taken)
+}
+
+/// A season folded into the series it is a part of: a series of its own
+/// release, linked to an entry another series' split passes over (see
+/// [`crate::split::Split::held`], [`season_folds`]). Its events and files are
+/// read as that series' before the library is built again (see
+/// [`Library::build`]), so its history, watch state and status are the
+/// series'. Nothing is recorded.
+#[derive(Debug, Clone)]
+struct FoldRule {
+    /// Its key and merged-away names.
+    from_keys: Vec<String>,
+    /// The series it is folded into.
+    into: String,
+    /// How far its episodes move: numbered by themselves (01–24) to their
+    /// place (25–48); 0 when numbered on already.
+    shift: u32,
+    /// What its items of no number (`NCOP`, specials) are told apart by
+    /// (`S2 ncop`): the series' own may have the same.
+    prefix: String,
+    /// Its data, for the splits (the entry is linked by no series then).
+    meta: Option<SeriesMeta>,
+    /// The series' number of the season's first episode.
+    first: u32,
+    /// The names of its files: history recorded under the series' key with
+    /// one of them (before the season's files were told apart) is the
+    /// season's too.
+    files: HashSet<String>,
+    /// The series' title: its files vote for it, not for their own.
+    title: String,
+}
+
+impl FoldRule {
+    /// Whether events or files of series key `key` are the season's.
+    fn covers(&self, key: &str) -> bool {
+        self.from_keys.iter().any(|k| k == key)
+    }
+
+    /// Item `k` of the season, as the series' item.
+    fn item(&self, k: &ItemKey) -> ItemKey {
+        match (k.kind, k.ep) {
+            (ItemKind::Episode | ItemKind::Extra, Some(ep)) => ItemKey { ep: Some(ep.plus(self.shift)), ..k.clone() },
+            _ if k.label.is_empty() => k.clone(),
+            _ => ItemKey { label: self.label(&k.label), ..k.clone() },
+        }
+    }
+
+    /// An item label of the season, told apart from the series' own.
+    fn label(&self, label: &str) -> String {
+        format!("{prefix} {label}", prefix = self.prefix)
+    }
+
+    /// Whether item `k`, recorded under the series' key with `file`, is
+    /// the season's in its own numbers (from before it was told apart).
+    fn owns(&self, k: &ItemKey, file: Option<&str>) -> bool {
+        let numbered = matches!(k.kind, ItemKind::Episode | ItemKind::Extra);
+        let own_number = k.ep.is_some_and(|ep| self.shift > 0 && ep.whole() < self.first);
+        numbered && own_number && file.is_some_and(|f| self.files.contains(f))
+    }
+
+    /// A file's parse, as the series' (see [`FoldRule::item`]).
+    fn parsed(&self, p: &crate::parse::Parsed) -> crate::parse::Parsed {
+        let mut p = p.clone();
+        match (p.kind, p.ep) {
+            (ItemKind::Episode | ItemKind::Extra, Some(ep)) => {
+                p.ep = Some(ep.plus(self.shift));
+                p.ep_end = p.ep_end.map(|e| e.plus(self.shift));
+            }
+            // As its item key would be (see `Parsed::item_key`), told apart.
+            (ItemKind::Movie, _) if p.label.is_empty() => p.label = self.label(&crate::identity::label_key(&p.title)),
+            (ItemKind::Episode, None) => {}
+            _ => p.label = self.label(&p.label),
+        }
+        p
+    }
+}
+
+/// The seasons to fold: a series (not split itself) linked to an entry
+/// another series' split passed over, whose episode numbers fit that entry
+/// (numbered by itself, 1 to its count, or on, its place in the series).
+fn season_folds(series: &[Series]) -> Vec<FoldRule> {
+    let mut folds: Vec<(usize, usize, FoldRule)> = Vec::new();
+    for (into_ix, s) in series.iter().enumerate() {
+        for held in s.split.iter().flat_map(|sp| &sp.held) {
+            // Not a film or OVA whose title number reads as an episode.
+            let fits = |a: &Series| {
+                let numbers: Vec<u32> = a.episodes().filter_map(|i| i.key.ep).map(EpNo::whole).collect();
+                let count = held.meta.episodes;
+                let within = |lo: u32, hi: Option<u32>| numbers.iter().all(|&n| n >= lo && hi.is_none_or(|hi| n <= hi));
+                let last = count.map(|c| held.first + c.saturating_sub(1));
+                !numbers.is_empty() && (within(1, count) || within(held.first, last))
+            };
+            let from = series.iter().position(|a| a.anilist_id() == Some(held.id()) && a.split.is_none() && fits(a));
+            let Some(from) = from.filter(|&a| a != into_ix && !folds.iter().any(|f| f.0 == a || f.1 == a)) else {
+                continue;
+            };
+            let a = &series[from];
+            let lowest = a.episodes().filter_map(|i| i.key.ep).min();
+            let by_itself = lowest.is_some_and(|ep| ep.whole() < held.first);
+            let prefix =
+                crate::identity::season_suffix(&a.key).map_or_else(|| a.title.clone(), |(_, n)| format!("S{n}"));
+            let rule = FoldRule {
+                from_keys: std::iter::once(a.key.clone()).chain(a.aliases.iter().cloned()).collect(),
+                into: s.key.clone(),
+                shift: if by_itself { held.first - 1 } else { 0 },
+                prefix: crate::identity::label_key(&prefix),
+                meta: a.meta.clone(),
+                first: held.first,
+                files: a.items.iter().flat_map(|i| &i.files).map(|f| f.name()).collect(),
+                title: s.title.clone(),
+            };
+            folds.push((from, into_ix, rule));
+        }
+    }
+    folds.into_iter().map(|f| f.2).collect()
+}
+
+/// `events` with those of folded seasons (see [`FoldRule`]) read as their
+/// series': watch events renumbered, statuses kept; their own titles,
+/// links and numberings dropped (they were for the season).
+///
+/// The season's statuses count only while the series has none of its own,
+/// and never anipv's own (completing the season isn't completing the
+/// series). History recorded under the series' key with a file of the
+/// season, in the season's numbers (from before its files were told
+/// apart), is renumbered too.
+fn fold_events(events: &[Event], rules: &[FoldRule]) -> Vec<Event> {
+    let rule_of = |key: &str| rules.iter().find(|r| r.covers(key));
+    let with_status: HashSet<&str> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::SeriesStatus { series, .. } => Some(series.as_str()),
+            _ => None,
+        })
+        .collect();
+    events
+        .iter()
+        .filter_map(|e| {
+            let own = e.body.series().and_then(|k| rules.iter().find(|r| r.into == k));
+            if let Some(rule) = own {
+                let mut e = e.clone();
+                if let EventBody::Watched { item, file, .. }
+                | EventBody::Progress { item, file, .. }
+                | EventBody::Unwatched { item, file, .. } = &mut e.body
+                    && rule.owns(item, file.as_deref())
+                {
+                    *item = rule.item(item);
+                }
+                return Some(e);
+            }
+            let Some(rule) = e.body.series().and_then(rule_of) else { return Some(e.clone()) };
+            let mut e = e.clone();
+            match &mut e.body {
+                EventBody::Watched { series, item, .. }
+                | EventBody::Progress { series, item, .. }
+                | EventBody::Unwatched { series, item, .. } => {
+                    series.clone_from(&rule.into);
+                    *item = rule.item(item);
+                }
+                EventBody::SeriesStatus { auto: true, .. } => return None,
+                EventBody::SeriesStatus { .. } if with_status.contains(rule.into.as_str()) => return None,
+                EventBody::SeriesStatus { series, .. } => series.clone_from(&rule.into),
+                EventBody::Title { .. }
+                | EventBody::Meta { .. }
+                | EventBody::Unlink { .. }
+                | EventBody::Numbering { .. } => {
+                    return None;
+                }
+                _ => {}
+            }
+            Some(e)
+        })
+        .collect()
+}
+
+/// Words of release names that say nothing about the show and that the
+/// parser's technical words (see [`crate::parse::is_tag_word`]) leave out.
+const RELEASE_WORDS: [&str; 6] = ["sub", "subs", "dub", "mkv", "mp4", "dl"];
+
+/// The words of `text` that can name a show: its series key's, without
+/// numbers, season and episode markers (`s06e01`, `s6`, `e01`),
+/// resolutions (`1080p`), technical words and [`RELEASE_WORDS`].
+fn name_words(text: &str) -> HashSet<String> {
+    crate::identity::series_key(text)
+        .split_whitespace()
+        .filter(|w| !w.bytes().all(|b| b.is_ascii_digit()) && !is_marker(w))
+        .filter(|w| !RELEASE_WORDS.contains(w) && !crate::parse::is_tag_word(w))
+        .map(String::from)
+        .collect()
+}
+
+/// A season or episode marker (`s06e01`, `s6`, `e01`, `ep01`) or a
+/// resolution (`1080p`).
+fn is_marker(w: &str) -> bool {
+    let digits = |n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit());
+    if w.strip_suffix('p').is_some_and(digits) || w.strip_prefix("ep").is_some_and(digits) {
+        return true;
+    }
+    if let Some(rest) = w.strip_prefix('s') {
+        let (season, episode) = rest.split_once('e').unwrap_or((rest, "0"));
+        return digits(season) && digits(episode);
+    }
+    w.strip_prefix('e').is_some_and(digits)
+}
+
+/// The name words (see [`name_words`]) of each linked series' names, of two
+/// words or more: what [`merge_hint`] looks for, worked out once a build.
+fn hint_targets(series: &[Series]) -> Vec<(usize, Vec<HashSet<String>>)> {
+    series
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.anilist_id().is_some())
+        .map(|(j, t)| {
+            let names = std::iter::once(t.title.as_str()).chain(t.meta.iter().flat_map(SeriesMeta::names));
+            (j, name_sets(names, 2))
+        })
+        .collect()
+}
+
+/// [`Library::merge_hint`] of series `i`, worked out.
+fn merge_hint(series: &[Series], i: usize, state: &State, targets: &[(usize, Vec<HashSet<String>>)]) -> Option<usize> {
+    let s = &series[i];
+    if !unmatched(s) || s.present() {
+        return None;
+    }
+    let mut words = name_words(&s.key);
+    words.extend(state.file_hints.get(&s.key).map(|f| name_words(f)).unwrap_or_default());
+    // A key of a later season (`… s6`) is only hinted to a series known to
+    // come after another: not to a first season, whose bare name it spells.
+    let later = crate::identity::season_suffix(&s.key).is_some_and(|(_, n)| n >= 2);
+    let first_entry = |t: &Series| t.prequels.as_ref().is_none_or(Vec::is_empty);
+    let candidates = targets.iter().filter(|(j, _)| *j != i && !(later && first_entry(&series[*j])));
+    most_specific(&words, candidates.map(|(j, n)| (*j, n.as_slice())))
+}
+
+/// The items of `s` by the part of its [split](Series::split) they are in
+/// (see [`crate::split::Split::part_of`]), each named after its entry: parts
+/// without items are left out. Empty without a split.
+fn split_parts(s: &Series, graph: &Graph) -> Vec<(Part, Vec<ItemKey>)> {
+    let Some(split) = &s.split else { return Vec::new() };
+    let mut parts: Vec<Vec<ItemKey>> = vec![Vec::new(); split.parts.len()];
+    for it in &s.items {
+        if let Some(n) = s.part_of_item(it) {
+            parts[n].push(it.key.clone());
+        }
+    }
+    let named = |(n, items): (usize, Vec<ItemKey>)| {
+        let no = u32::try_from(n + 1).unwrap_or(u32::MAX);
+        let name = s.part_title(n).to_string();
+        let id = split.parts[n].id();
+        let after = graph.prequels.get(&id).cloned().unwrap_or_default();
+        (!items.is_empty()).then_some((Part { no, name, anilist: Some(id), after }, items))
+    };
+    parts.into_iter().enumerate().filter_map(named).collect()
 }
 
 /// How `row` is classified in the innermost of the `splits` it lies in, if any.
@@ -949,11 +1511,28 @@ impl<'a> Lookups<'a> {
         let folder = b.folder();
         let state = self.state;
         let st = state.series.get(&key).cloned().unwrap_or_default();
+        // Caches written under a legacy key still belong to the series. The
+        // first usable row (see `link_admits`) wins: a row for another anime
+        // under one key doesn't hide a matching row under the other.
+        let row = spellings(self.legacy_of, &key).find_map(|k| self.meta_by.get(k).filter(|m| link_admits(st.link, m)));
+        // Without a refreshed row, what a franchise walk fetched for the
+        // linked anime (an entry that was only on AniList, now recorded).
+        let walked = st
+            .link
+            .manual()
+            .or_else(|| row.and_then(|m| m.anilist))
+            .filter(|_| row.is_none_or(|m| m.refreshed_at.is_none()))
+            .and_then(|id| self.index.meta.graph.media.get(&id));
+        let meta = walked.or_else(|| row.copied()).map(|m| SeriesMeta { series: key.clone(), ..m.clone() });
         // The title set by the user, else the files', else the last played
-        // file's (a series known only from history), else the key's.
+        // file's (a series known only from history), else the anime's, else
+        // the key's.
         let title = st.title.clone().or_else(|| b.voted_title()).unwrap_or_else(|| {
             let played = state.file_hints.get(&key).map(|f| classify(self.cfg, RootKind::Ongoing, Path::new(f)).title);
-            played.filter(|t| !t.is_empty()).unwrap_or_else(|| title_case(&key))
+            played
+                .filter(|t| !t.is_empty())
+                .or_else(|| meta.as_ref().and_then(|m| m.title.clone()))
+                .unwrap_or_else(|| title_case(&key))
         });
         let states = state.items.get(&key);
         let mut items: Vec<Item> = b
@@ -968,20 +1547,12 @@ impl<'a> Lookups<'a> {
         items.sort_by_key(|i| (i.key.kind, i.key.kind == ItemKind::Episode && i.key.ep.is_none()));
         let mut aliases = self.aliases_of.get(key.as_str()).cloned().unwrap_or_default();
         aliases.sort();
-        // Caches written under a legacy key still belong to the series. The
-        // first usable row (see `link_admits`) wins: a row for another anime
-        // under one key doesn't hide a matching row under the other.
-        let meta = spellings(self.legacy_of, &key)
-            .find_map(|k| self.meta_by.get(k).filter(|m| link_admits(st.link, m)))
-            .map(|m| SeriesMeta { series: key.clone(), ..(*m).clone() });
         // A "no match" for the old key doesn't count: the new key is a
         // different title to match (`Ctx::migrated_library` drops those rows).
         let last_match = self.attempted.get(key.as_str()).copied();
         let mut s = Series {
             meta,
             last_match,
-            key,
-            title,
             status: st.status,
             note: st.note,
             items,
@@ -991,23 +1562,98 @@ impl<'a> Lookups<'a> {
             status_by: st.status_by,
             status_via: st.status_via,
             kept: st.kept,
-            prequels: None,
-            sequels: None,
-            relations_at: None,
             folder,
-            shared: std::sync::OnceLock::new(),
             episodes_override: st.episodes,
             aliases,
-            search: std::sync::OnceLock::new(),
+            ..Series::blank(key, title)
         };
         if let Some(id) = s.anilist_id() {
-            s.prequels = self.index.meta.prequels.get(&id).cloned();
-            if let Some((sequels, at)) = self.index.meta.sequels.get(&id) {
-                (s.sequels, s.relations_at) = (Some(sequels.clone()), Some(*at));
-            }
+            set_relations(&mut s, &self.index.meta.graph, id);
         }
         s
     }
+}
+
+/// The airing summary of `m` (see [`Series::airing`]), its next episode
+/// numbered on from `before` episodes of the series.
+pub fn airing_of(m: &SeriesMeta, before: u32, now: i64) -> Option<(String, bool)> {
+    if let (Some(e), Some(t)) = (m.next_ep, m.next_airing) {
+        let e = before + e;
+        return Some((format!("ep {e} {until}", until = crate::fmt::until(t, now)), true));
+    }
+    Some(match m.status.as_deref()? {
+        "FINISHED" => ("finished".into(), false),
+        "RELEASING" => ("airing".into(), true),
+        "NOT_YET_RELEASED" => ("upcoming".into(), false),
+        other => (other.to_lowercase(), false),
+    })
+}
+
+/// Give `s` the cached prequels and sequels of `AniList` anime `id`.
+fn set_relations(s: &mut Series, graph: &Graph, id: u64) {
+    s.prequels = graph.prequels.get(&id).cloned();
+    if let Some((sequels, at)) = graph.sequels.get(&id) {
+        (s.sequels, s.relations_at) = (Some(sequels.clone()), Some(*at));
+    }
+}
+
+/// The franchise entries only on `AniList` (see [`Library::remote`]): every
+/// anime with cached data that the cached relations reach from the linked
+/// `series` (through prequels, sequels and related entries of the kinds in
+/// [`crate::meta::anilist::BRANCHES`]; one listed only, see
+/// [`crate::meta::anilist::LISTED`], is reached but not gone through) and
+/// that no series links. Sorted by title; `taken` keys can't be theirs.
+fn remote_entries(series: &[Series], graph: &Graph, taken: impl Fn(&str) -> bool) -> Vec<Series> {
+    // Linked ids (and the parts of split series) are seen: they are series,
+    // not entries to make.
+    let mut seen: HashSet<u64> = series.iter().flat_map(Series::anilist_ids).collect();
+    let mut queue: std::collections::VecDeque<u64> = series.iter().flat_map(Series::anilist_ids).collect();
+    let mut reached: Vec<u64> = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        let (followed, listed) = graph.walk_edges(id);
+        for next in followed {
+            if seen.insert(next) && graph.media.contains_key(&next) {
+                reached.push(next);
+                queue.push_back(next);
+            }
+        }
+        for next in listed {
+            if seen.insert(next) && graph.media.contains_key(&next) {
+                reached.push(next);
+            }
+        }
+    }
+    // The title's key, unless a series has it or another entry shares it:
+    // then every one of them has its id after it (whatever order they are
+    // reached in, so a sync can't swap them). No key: `anilist <id>`.
+    let title_of = |id: u64| graph.media[&id].title.clone().unwrap_or_else(|| format!("AniList {id}"));
+    let mut shared: HashMap<String, usize> = HashMap::new();
+    for &id in &reached {
+        *shared.entry(crate::identity::series_key(&title_of(id))).or_default() += 1;
+    }
+    let mut out: Vec<Series> = reached
+        .into_iter()
+        .map(|id| {
+            let title = title_of(id);
+            let base = crate::identity::series_key(&title);
+            let key = match base.as_str() {
+                "" => format!("anilist {id}"),
+                b if taken(b) || shared[b] > 1 => format!("{b} {id}"),
+                _ => base.clone(),
+            };
+            remote_series(key, title, &graph.media[&id], graph, id)
+        })
+        .collect();
+    out.sort_by_cached_key(|s| (s.title.to_lowercase(), s.key.clone()));
+    out
+}
+
+/// A franchise entry only on `AniList` (see [`remote_entries`]).
+fn remote_series(key: String, title: String, m: &SeriesMeta, graph: &Graph, id: u64) -> Series {
+    let meta = Some(SeriesMeta { series: key.clone(), ..m.clone() });
+    let mut s = Series { meta, remote: true, ..Series::blank(key, title) };
+    set_relations(&mut s, graph, id);
+    s
 }
 
 /// A series' files in one franchise folder.
@@ -1057,7 +1703,27 @@ impl Library {
     /// series recorded under a key from before kana voiced marks were kept
     /// (`バカ` was `ハカ`) is re-keyed to the key of the series on disk it
     /// belongs to (see `legacy_keys`).
+    ///
+    /// A season released numbered by itself is folded into the series it is
+    /// a part of (see `FoldRule`): when the first build finds such seasons,
+    /// the library is built again with their events and files read as the
+    /// series'.
+    ///
+    /// # Panics
+    /// Never: building with the folds found finds no more to fold.
     pub fn build(cfg: &Config, events: &[Event], index: &Index) -> Self {
+        Self::build_folding(cfg, events, index, &[]).unwrap_or_else(|rules| {
+            let events = fold_events(events, &rules);
+            let mut lib = Self::build_folding(cfg, &events, index, &rules).expect("folding finds no more seasons");
+            lib.folds = rules;
+            lib
+        })
+    }
+
+    /// [`Library::build`], with the seasons of `rules` folded in. Without
+    /// rules, the seasons to fold when it finds some (the rest isn't built:
+    /// it is built again with them).
+    fn build_folding(cfg: &Config, events: &[Event], index: &Index, rules: &[FoldRule]) -> Result<Self, Vec<FoldRule>> {
         let splits = crate::events::settled_splits(events);
         // Files in a split folder are classified again, as their own series.
         let resplit: HashMap<usize, Classified> = if splits.is_empty() {
@@ -1068,15 +1734,42 @@ impl Library {
             };
             index.classified().enumerate().filter_map(split).collect()
         };
+        // Files of a folded season are its series' (see `FoldRule`).
+        let refolded: HashMap<usize, Classified> = if rules.is_empty() {
+            HashMap::new()
+        } else {
+            index
+                .classified()
+                .enumerate()
+                .filter_map(|(i, (_, _, c))| {
+                    let c = resplit.get(&i).unwrap_or(c);
+                    let rule = rules.iter().find(|r| r.covers(&c.series))?;
+                    let folded = Classified {
+                        series: rule.into.clone(),
+                        legacy_series: None,
+                        title: rule.title.clone(),
+                        parsed: rule.parsed(&c.parsed),
+                        ..c.clone()
+                    };
+                    Some((i, folded))
+                })
+                .collect()
+        };
         let classified: Vec<(&FileRow, RootKind, &Classified)> = index
             .classified()
             .enumerate()
-            .map(|(i, (row, kind, c))| (row, kind, resplit.get(&i).unwrap_or(c)))
+            .map(|(i, (row, kind, c))| (row, kind, refolded.get(&i).or_else(|| resplit.get(&i)).unwrap_or(c)))
             .collect();
         let legacy = legacy_keys(classified.iter().map(|(_, _, c)| (c.series.as_str(), c.legacy_series.as_deref())));
         let aliases = crate::events::settled_aliases(events, &legacy);
-        // Resolved once, so lookups by any key are a single lookup.
-        let canonical = crate::events::canonical_keys(&legacy, &aliases);
+        // Resolved once, so lookups by any key are a single lookup. A folded
+        // season's keys resolve to its series.
+        let mut canonical = crate::events::canonical_keys(&legacy, &aliases);
+        for rule in rules {
+            for k in &rule.from_keys {
+                canonical.entry(k.clone()).or_insert_with(|| rule.into.clone());
+            }
+        }
         let (mut building, mut indexed) = group(&aliases, classified);
         let relabelled = relabelled(events, &canonical, &building);
         let moved = moved(cfg, events, &canonical, &indexed);
@@ -1095,7 +1788,6 @@ impl Library {
         series.sort_by_cached_key(|s| (s.title.to_lowercase(), s.key.clone()));
         indexed.sort_by(|a, b| path_order(&a.file.path, &b.file.path));
 
-        let (franchises, franchise_at) = franchises(&series);
         let (legacy_named, legacy_decided) = legacy_mentions(events, &legacy);
         let mut by_key: HashMap<String, usize> = series.iter().enumerate().map(|(i, s)| (s.key.clone(), i)).collect();
         for (k, to) in &canonical {
@@ -1103,8 +1795,101 @@ impl Library {
                 by_key.entry(k.clone()).or_insert(i);
             }
         }
-        Self {
+        // With a folded season's data: no series links its entry now.
+        // (Copied only when the cache lacks it: after the next walk it has it.)
+        let missing = rules
+            .iter()
+            .filter_map(|r| r.meta.as_ref())
+            .any(|m| m.anilist.is_some_and(|id| !index.meta.graph.media.contains_key(&id)));
+        let shared = if missing {
+            let mut g = (*index.meta.graph).clone();
+            for m in rules.iter().filter_map(|r| r.meta.clone()) {
+                if let Some(id) = m.anilist {
+                    g.media.entry(id).or_insert(m);
+                }
+            }
+            Arc::new(g)
+        } else {
+            Arc::clone(&index.meta.graph)
+        };
+        let graph = &*shared;
+        let mut linked: HashSet<u64> = series.iter().filter_map(Series::anilist_id).collect();
+        for i in 0..series.len() {
+            if let Some(id) = related_by_file(&series, i, &by_key, &state, graph, &linked) {
+                let s = &mut series[i];
+                link_auto(s, graph, id);
+                if state.series.get(&s.key).is_none_or(|st| st.title.is_none()) {
+                    s.title = graph.media[&id].title.clone().unwrap_or_else(|| s.title.clone());
+                }
+                s.related_link = true;
+                linked.insert(id);
+            }
+        }
+        // A series matching found nothing for (a folder name cut short) whose
+        // files spell an entry of your franchises: that entry.
+        // (The entries' names worked out only when a series may need them.)
+        if series.iter().any(|s| unmatched(s) && s.last_match.is_some()) {
+            let entries = entry_names(graph, &series);
+            for s in &mut series {
+                if let Some(id) = entry_by_name(s, &entries, &linked) {
+                    link_auto(s, graph, id);
+                    linked.insert(id);
+                }
+            }
+        }
+        set_splits(&mut series, graph, &state);
+        // A season you have apart (your BD of S2, numbered 01–24) of a series
+        // numbered on through it (01–24, 49–52): to be folded in at its place
+        // (25–48, see `Library::build`).
+        let folds = if rules.is_empty() { season_folds(&series) } else { Vec::new() };
+        if !folds.is_empty() {
+            return Err(folds);
+        }
+        // After the matches above: a series they link is no hint.
+        let merge_hints = if series.iter().any(|s| unmatched(s) && !s.present()) {
+            let targets = hint_targets(&series);
+            (0..series.len()).map(|i| merge_hint(&series, i, &state, &targets)).collect()
+        } else {
+            vec![None; series.len()]
+        };
+        let mut remote = remote_entries(&series, graph, |k| by_key.contains_key(k) || canonical.contains_key(k));
+        let remote_by_key: HashMap<String, usize> =
+            remote.iter().enumerate().map(|(i, s)| (s.key.clone(), series.len() + i)).collect();
+        // Each entry's related entries, by index.
+        let mut by_id: HashMap<u64, usize> = HashMap::new();
+        for (i, s) in series.iter().chain(&remote).enumerate() {
+            for id in s.anilist_ids() {
+                by_id.entry(id).or_insert(i);
+            }
+        }
+        for (i, s) in series.iter_mut().chain(remote.iter_mut()).enumerate() {
+            // Of every entry it covers; not itself.
+            let ids = s.anilist_ids();
+            let related = ids.iter().filter_map(|id| graph.related.get(id)).flatten();
+            let mut seen = HashSet::new();
+            s.related = related
+                .filter_map(|(kind, id)| Some((kind.clone(), *by_id.get(id)?)))
+                .filter(|(_, j)| *j != i && seen.insert(*j))
+                .collect();
+        }
+        // Each entry's related entries by year, films first among a year's.
+        let order: Vec<(i32, bool, String)> = series
+            .iter()
+            .chain(&remote)
+            .map(|s| {
+                let m = s.meta.as_ref();
+                let not_film = m.and_then(|m| m.format.as_deref()) != Some("MOVIE");
+                (m.and_then(|m| m.year).unwrap_or(i32::MAX), not_film, s.title.to_lowercase())
+            })
+            .collect();
+        for s in series.iter_mut().chain(remote.iter_mut()) {
+            s.related.sort_by(|a, b| order[a.1].cmp(&order[b.1]));
+        }
+        let (franchises, franchise_at) = franchises(&series.iter().chain(&remote).collect::<Vec<_>>(), graph);
+        Ok(Self {
             series,
+            remote,
+            remote_by_key,
             files: indexed,
             by_key,
             canonical,
@@ -1117,9 +1902,12 @@ impl Library {
             franchise_at,
             splits,
             db_version: index.meta.db_version.clone(),
+            graph: Arc::clone(&shared),
+            folds,
+            merge_hints,
             warnings: Vec::new(),
             partial_history: false,
-        }
+        })
     }
 
     /// Folders of the series `s` that [`crate::events::EventBody::Split`]
@@ -1181,15 +1969,69 @@ impl Library {
         Some((&self.franchises[f], pos))
     }
 
-    /// [`Library::franchise_pos`] by key.
+    /// [`Library::franchise_pos`] by key (of a series or a remote entry).
     pub fn franchise_of(&self, key: &str) -> Option<(&Franchise, usize)> {
-        self.franchise_pos(self.index_of(key)?)
+        self.franchise_pos(self.index_any(key)?)
     }
 
     /// What to call a stop: its entry folder's name (`Kabukimonogatari`),
     /// else the series' title.
     pub fn stop_label<'a>(&'a self, stop: &'a crate::franchise::Stop) -> &'a str {
-        stop_label(&self.series, stop)
+        stop_label(self.entry(stop.series), stop)
+    }
+
+    /// Series or remote entry `i` of the index space they share: an index
+    /// past [`Library::series`] is into [`Library::remote`]. Franchise stops,
+    /// neighbours and [`Series::related`] are such indices.
+    ///
+    /// # Panics
+    /// When `i` is in neither.
+    pub fn entry(&self, i: usize) -> &Series {
+        self.series.get(i).unwrap_or_else(|| &self.remote[i - self.series.len()])
+    }
+
+    /// The series that series `i` may be the same as, to merge it into (`m`):
+    /// for a series nothing links, known only from history, the linked
+    /// series all of whose name the remembered file name or the key spells
+    /// (`JoJos.Bizarre.Adventure.2012.S06E01.STEEL.BALL.RUN…` for Steel Ball
+    /// Run), the most specific when several do. Only a hint: nothing is
+    /// merged until you do.
+    pub fn merge_hint(&self, i: usize) -> Option<usize> {
+        self.merge_hints.get(i).copied().flatten()
+    }
+
+    /// The series [`Library::merge_hint`] says may be series `j`.
+    pub fn merge_hinted(&self, j: usize) -> Vec<usize> {
+        (0..self.series.len()).filter(|&i| self.merge_hint(i) == Some(j)).collect()
+    }
+
+    /// The part of its series' [split](Series::split) a franchise stop is
+    /// (an index into its parts), by the `AniList` entry it is: `None` for a
+    /// whole series or an entry folder.
+    pub fn stop_part(&self, stop: &crate::franchise::Stop) -> Option<usize> {
+        // A split's parts are numbered from 1 (see `split_parts`).
+        let part = stop.folder.as_ref().filter(|p| p.anilist.is_some())?;
+        usize::try_from(part.no).ok()?.checked_sub(1)
+    }
+
+    /// The stop (an index into `f`'s) of part `n` of series `i`'s split.
+    pub fn part_stop(&self, f: &Franchise, i: usize, n: usize) -> Option<usize> {
+        f.stops.iter().position(|st| st.series == i && self.stop_part(st) == Some(n))
+    }
+
+    /// [`Library::entry`], `None` when `i` is in neither list.
+    pub fn get_entry(&self, i: usize) -> Option<&Series> {
+        self.series.get(i).or_else(|| self.remote.get(i.checked_sub(self.series.len())?))
+    }
+
+    /// [`Library::index_of`], or the index of the remote entry `key` (see [`Library::entry`]).
+    pub fn index_any(&self, key: &str) -> Option<usize> {
+        self.index_of(key).or_else(|| self.remote_by_key.get(key).copied())
+    }
+
+    /// [`Library::get`], or the remote entry `key`.
+    pub fn get_any(&self, key: &str) -> Option<&Series> {
+        self.index_any(key).map(|i| self.entry(i))
     }
 
     /// The short name ([`crate::franchise::Stop::short`]) of series `i`
@@ -1238,7 +2080,7 @@ impl Library {
 
     /// The title of the series `key`, or the key itself without one.
     pub fn title_of<'a>(&'a self, key: &'a str) -> &'a str {
-        self.get(key).map_or(key, |s| s.title.as_str())
+        self.get_any(key).map_or(key, |s| s.title.as_str())
     }
 
     /// Canonical key for a series key (possibly merged away, or a legacy spelling).
@@ -1313,6 +2155,11 @@ impl Library {
         if let Some(f) = self.file(path) {
             return (f.series.clone(), f.items.clone());
         }
+        // A file of a folded season: the series' item (see `FoldRule`).
+        let fold = |c: Classified| match self.folds.iter().find(|r| r.covers(&c.series)) {
+            Some(rule) => (rule.into.clone(), crate::index::classify::expand_items(&rule.parsed(&c.parsed))),
+            None => (self.resolve(&c.series).to_string(), c.items()),
+        };
         let c = cfg
             .roots
             .iter()
@@ -1320,7 +2167,7 @@ impl Library {
             .unwrap_or_else(|| {
                 classify(cfg, RootKind::Ongoing, Path::new(path.file_name().unwrap_or(path.as_os_str())))
             });
-        (self.resolve(&c.series).to_string(), c.items())
+        fold(c)
     }
 
     /// Untracked series with files in an ongoing root (e.g. Downloads): shows
@@ -1509,7 +2356,7 @@ mod tests {
             }
         }
     }
-    use crate::app::MetaCache;
+    use crate::app::{Graph, MetaCache};
     use crate::config::Root;
     use crate::events::{Event, EventBody};
     use crate::index::db::{FileRow, MatchAttempt};
@@ -2036,11 +2883,490 @@ mod tests {
         let metas = [meta("totally different name", 2), meta("old name", 1)];
         let lib = build(&files, &events, &metas);
         assert_eq!(lib.inbox(&cfg())[0].hint, None);
-        let index = index(&files, MetaCache { prequels: HashMap::from([(2, vec![1])]), ..rows(&metas) });
+        let index = index(
+            &files,
+            MetaCache {
+                graph: Graph { prequels: HashMap::from([(2, vec![1])]), ..Graph::default() }.into(),
+                ..rows(&metas)
+            },
+        );
         let lib = Library::build(&cfg(), &events, &index);
         let old = lib.index_of("old name").unwrap();
         assert_eq!(lib.inbox(&cfg())[0].hint, Some(Hint::NewSeasonOf(old)));
         assert_eq!(lib.get("old name").unwrap().prequels, None, "only the sequel's anime has prequels");
+    }
+
+    /// A JoJo-like franchise: Stone Ocean (id 6) on disk, its prequels 1–5
+    /// only on `AniList`, with a side story (50, with a sequel 51) of 4, an
+    /// entry 4 only lists (60, titled like a season of the series), and an
+    /// anime (99) nothing relates to.
+    fn jojo_graph() -> Graph {
+        let media = |id: u64, title: &str| {
+            let m = SeriesMeta {
+                anilist: Some(id),
+                title: Some(title.into()),
+                episodes: Some(26),
+                refreshed_at: Some(1),
+                ..SeriesMeta::default()
+            };
+            (id, m)
+        };
+        Graph {
+            prequels: (2..=6).map(|id| (id, vec![id - 1])).chain([(51, vec![50])]).collect(),
+            sequels: (1..=5).map(|id| (id, (vec![id + 1], 1))).chain([(50, (vec![51], 1))]).collect(),
+            related: HashMap::from([(4, vec![("side_story".into(), 50), ("other".into(), 60)])]),
+            media: HashMap::from([
+                media(1, "JoJo no Kimyou na Bouken"),
+                media(2, "JoJo no Kimyou na Bouken Part 2"),
+                media(3, "JoJo no Kimyou na Bouken Stardust Crusaders"),
+                media(4, "JoJo no Kimyou na Bouken Diamond wa Kudakenai"),
+                media(5, "JoJo no Kimyou na Bouken Ougon no Kaze"),
+                media(6, "JoJo no Kimyou na Bouken Stone Ocean"),
+                media(50, "Kishibe Rohan wa Ugokanai"),
+                media(51, "Kishibe Rohan wa Ugokanai 2"),
+                media(60, "JoJo no Kimyou na Bouken Stone Ocean S2"),
+                media(99, "Unrelated"),
+            ]),
+        }
+    }
+
+    fn jojo(events: &[Event], graph: Graph) -> Library {
+        let files = [row("dl", "[A] JoJo no Kimyou na Bouken Stone Ocean - 01.mkv", true, 1)];
+        let key = "jojo no kimyou na bouken stone ocean";
+        let meta = SeriesMeta { series: key.into(), anilist: Some(6), ..SeriesMeta::default() };
+        Library::build(&cfg(), events, &index(&files, MetaCache { graph: graph.into(), ..rows(&[meta]) }))
+    }
+
+    /// Remote entries fill the franchise of a series on disk: its prequels in
+    /// watch order, the series last, the franchise named after it. A branch
+    /// is its own franchise, related to the entry it hangs off; an entry
+    /// only listed is reached but doesn't join by its title's season. What
+    /// nothing reaches, or a series links, is no entry.
+    #[test]
+    fn remote_entries_fill_the_franchise() {
+        let lib = jojo(&[], jojo_graph());
+        let ids = |list: &[Series]| -> Vec<u64> {
+            let mut ids: Vec<u64> = list.iter().filter_map(Series::anilist_id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(ids(&lib.remote), vec![1, 2, 3, 4, 5, 50, 51, 60]);
+        assert!(lib.remote.iter().all(|s| s.remote && s.items.is_empty() && s.status == SeriesStatus::Untracked));
+        let local = lib.index_of("jojo no kimyou na bouken stone ocean").unwrap();
+        let (f, _) = lib.franchise_pos(local).unwrap();
+        assert_eq!(f.name, "JoJo no Kimyou na Bouken Stone Ocean");
+        let chain: Vec<Option<u64>> = f.stops.iter().map(|s| lib.entry(s.series).anilist_id()).collect();
+        assert_eq!(chain, [1, 2, 3, 4, 5, 6].map(Some));
+        assert_eq!(lib.franchise_neighbours(local).0, lib.index_any("jojo no kimyou na bouken ougon no kaze"));
+        // Remote entries are found only by the franchise code's lookups.
+        assert!(lib.get("jojo no kimyou na bouken").is_none());
+        assert_eq!(lib.get_any("jojo no kimyou na bouken").unwrap().title, "JoJo no Kimyou na Bouken");
+        let diamond = lib.get_any("jojo no kimyou na bouken diamond wa kudakenai").unwrap();
+        let related: Vec<(&str, u64)> =
+            diamond.related.iter().map(|(k, i)| (k.as_str(), lib.entry(*i).anilist_id().unwrap())).collect();
+        assert_eq!(related, [("other", 60), ("side_story", 50)], "by title, with no year");
+        let (rohan, _) = lib.franchise_of("kishibe rohan wa ugokanai").unwrap();
+        assert_eq!((rohan.name.as_str(), rohan.stops.len()), ("Kishibe Rohan wa Ugokanai", 2));
+        assert!(lib.franchise_of("jojo no kimyou na bouken stone ocean s2").is_none());
+        assert!(lib.inbox(&cfg()).iter().all(|e| e.hint.is_none()), "no hint names a remote entry");
+    }
+
+    /// A related entry you have on disk (a film in its own folder) is that
+    /// series: its related row opens it, and it is no stop of the franchise.
+    #[test]
+    fn a_related_entry_on_disk_is_the_series() {
+        let files = [
+            row("dl", "[A] JoJo no Kimyou na Bouken Stone Ocean - 01.mkv", true, 1),
+            row("anime", "Kishibe Rohan wa Ugokanai/Kishibe Rohan wa Ugokanai - 01.mkv", true, 1),
+        ];
+        let meta = |series: &str, id| SeriesMeta { series: series.into(), anilist: Some(id), ..SeriesMeta::default() };
+        let rows = rows(&[meta("jojo no kimyou na bouken stone ocean", 6), meta("kishibe rohan wa ugokanai", 50)]);
+        let lib = Library::build(&cfg(), &[], &index(&files, MetaCache { graph: jojo_graph().into(), ..rows }));
+        let rohan = lib.index_of("kishibe rohan wa ugokanai").unwrap();
+        assert!(lib.remote.iter().all(|r| r.anilist_id() != Some(50)));
+        let diamond = lib.get_any("jojo no kimyou na bouken diamond wa kudakenai").unwrap();
+        assert!(diamond.related.iter().any(|&(_, i)| i == rohan));
+        let local = lib.index_of("jojo no kimyou na bouken stone ocean").unwrap();
+        assert!(lib.franchise_pos(local).unwrap().0.stops.iter().all(|s| s.series != rohan));
+    }
+
+    /// Kusuriya no Hitorigoto 01–52 on disk, linked to the first season (24),
+    /// with the second (24), the third (12, airing) and a part 2 to come
+    /// cached.
+    fn kusuriya() -> Library {
+        let files: Vec<FileRow> =
+            (1..=52).map(|n| row("dl", &format!("[A] Kusuriya no Hitorigoto - {n:02}.mkv"), true, 1)).collect();
+        let entry = |id: u64, title: &str, status: &str, next: Option<(u32, i64)>| SeriesMeta {
+            anilist: Some(id),
+            title: Some(title.into()),
+            format: Some("TV".into()),
+            episodes: Some(if id == 161_645 || id == 176_301 { 24 } else { 12 }),
+            status: Some(status.into()),
+            next_ep: next.map(|n| n.0),
+            next_airing: next.map(|n| n.1),
+            refreshed_at: Some(1),
+            ..SeriesMeta::default()
+        };
+        let s1 = SeriesMeta {
+            series: "kusuriya no hitorigoto".into(),
+            ..entry(161_645, "Kusuriya no Hitorigoto", "FINISHED", None)
+        };
+        let ids = [161_645, 176_301, 195_516, 200_927];
+        let graph = Graph {
+            prequels: ids.windows(2).map(|w| (w[1], vec![w[0]])).collect(),
+            sequels: ids.windows(2).map(|w| (w[0], (vec![w[1]], 1))).collect(),
+            media: HashMap::from([
+                (176_301, entry(176_301, "Kusuriya no Hitorigoto 2nd Season", "FINISHED", None)),
+                (195_516, entry(195_516, "Kusuriya no Hitorigoto 3rd Season", "RELEASING", Some((5, 2_000_000_000)))),
+                (200_927, entry(200_927, "Kusuriya no Hitorigoto 3rd Season Part 2", "NOT_YET_RELEASED", None)),
+            ]),
+            ..Graph::default()
+        };
+        Library::build(&cfg(), &[], &index(&files, MetaCache { graph: graph.into(), ..rows(&[s1]) }))
+    }
+
+    /// Episodes numbered on through the seasons are split among them: each
+    /// season a stop of the series, the one to come an entry only on
+    /// AniList. The total, the next episode and "finished" are the airing
+    /// season's, in the series' numbers.
+    #[test]
+    fn episodes_numbered_on_are_split_among_the_seasons() {
+        let lib = kusuriya();
+        let i = lib.index_of("kusuriya no hitorigoto").unwrap();
+        let s = &lib.series[i];
+        assert_eq!(s.split.as_ref().map(|sp| sp.parts.len()), Some(3));
+        assert_eq!((s.total(), s.is_done()), (Some(60), false));
+        assert_eq!(s.airing(1_999_000_000).map(|a| a.0.starts_with("ep 53 ")), Some(true));
+        let remote: Vec<u64> = lib.remote.iter().filter_map(Series::anilist_id).collect();
+        assert_eq!(remote, [200_927], "the seasons on disk aren't entries of their own");
+        let (f, _) = lib.franchise_pos(i).unwrap();
+        let stops: Vec<(&str, usize)> = f.stops.iter().map(|st| (lib.stop_label(st), st.items.len())).collect();
+        assert_eq!(
+            stops,
+            [
+                ("Kusuriya no Hitorigoto", 24),
+                ("Kusuriya no Hitorigoto 2nd Season", 24),
+                ("Kusuriya no Hitorigoto 3rd Season", 4),
+                ("Kusuriya no Hitorigoto 3rd Season Part 2", 0),
+            ]
+        );
+        // Catching up to the second season marks its episodes and the first's.
+        let plan = crate::app::catch_up_to(&lib, f, 1);
+        assert_eq!(plan.episodes, 48);
+    }
+
+    /// A watched special known only from history, named as a season of One
+    /// Piece (`S36E00`), is the entry `AniList` relates to One Piece that its
+    /// file names: linked (not recorded), titled from it, a related entry of
+    /// One Piece and not a stop of it. Two entries the name fits: neither.
+    #[test]
+    fn a_special_named_as_a_season_is_the_related_entry_it_names() {
+        let files = [row("dl", "[A] One Piece - 1181.mkv", true, 1)];
+        let file = "One.Piece.S36E00.ONE.PIECE.FAN.LETTER.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG.mkv";
+        let events =
+            [ev(1, EventBody::Watched { series: "one piece s36".into(), item: ep(0), file: Some(file.into()) })];
+        let op = SeriesMeta { series: "one piece".into(), anilist: Some(21), ..SeriesMeta::default() };
+        let special = |id: u64, title: &str| {
+            let m = SeriesMeta {
+                anilist: Some(id),
+                title: Some(title.into()),
+                format: Some("SPECIAL".into()),
+                ..SeriesMeta::default()
+            };
+            (id, m)
+        };
+        let graph = |related: Vec<(String, u64)>, media: Vec<(u64, SeriesMeta)>| Graph {
+            related: HashMap::from([(21, related)]),
+            media: media.into_iter().collect(),
+            ..Graph::default()
+        };
+        let one = graph(vec![("side_story".into(), 182_469)], vec![special(182_469, "ONE PIECE FAN LETTER")]);
+        let lib = Library::build(
+            &cfg(),
+            &events,
+            &index(&files, MetaCache { graph: one.into(), ..rows(std::slice::from_ref(&op)) }),
+        );
+        let fan = lib.get("one piece s36").unwrap();
+        assert_eq!((fan.anilist_id(), fan.title.as_str()), (Some(182_469), "ONE PIECE FAN LETTER"));
+        assert!(lib.remote.is_empty());
+        let op_i = lib.index_of("one piece").unwrap();
+        let fan_i = lib.index_of("one piece s36").unwrap();
+        assert!(lib.series[op_i].related.iter().any(|&(_, i)| i == fan_i));
+        assert!(lib.franchise_pos(op_i).is_none(), "no S36 stop");
+
+        let two = graph(
+            vec![("side_story".into(), 182_469), ("summary".into(), 5)],
+            vec![special(182_469, "ONE PIECE FAN LETTER"), special(5, "ONE PIECE FAN")],
+        );
+        let lib = Library::build(&cfg(), &events, &index(&files, MetaCache { graph: two.into(), ..rows(&[op]) }));
+        assert_eq!(lib.get("one piece s36").unwrap().anilist_id(), None);
+    }
+
+    /// History scattered over names of other releases: those that spell the
+    /// name of a linked series are hinted to be it (the most specific name
+    /// wins); a later season's key isn't hinted to be the franchise's first
+    /// entry; nothing is merged.
+    #[test]
+    fn scattered_history_is_hinted_to_the_series_it_names() {
+        let files = [
+            row("dl", "[GroupA] Steel Ball Run - JoJo's Bizarre Adventure 01 (1080p) [AB12CD34].mkv", true, 1),
+            row("dl", "[GroupA] JoJo no Kimyou na Bouken 2012 - 01 (1080p).mkv", true, 1),
+        ];
+        let watched = |key: &str, n, file: &str| {
+            ev(1, EventBody::Watched { series: key.into(), item: ep(n), file: Some(file.into()) })
+        };
+        let events = [
+            watched(
+                "jojos bizarre adventure 2012 s6",
+                1,
+                "JoJos.Bizarre.Adventure.2012.S06E01.STEEL.BALL.RUN.1080p.NF.WEB-DL.DUAL.AAC2.0.H.264-GRP.mkv",
+            ),
+            watched(
+                "jojos bizarre adventure part 7 steel ball run",
+                1,
+                "JoJo's Bizarre Adventure Part 7: Steel Ball Run - 01.mkv",
+            ),
+            watched(
+                "jojos bizarre adventure s6",
+                2,
+                "JoJos.Bizarre.Adventure.S06E02.The.Sheriffs.Request.1080p.NF.WEB-DL.DUAL.AAC2.0.H.264-GRP.mkv",
+            ),
+        ];
+        let sbr = SeriesMeta {
+            series: "steel ball run jojos bizarre adventure".into(),
+            anilist: Some(210_482),
+            ..SeriesMeta::default()
+        };
+        let first = SeriesMeta {
+            series: "jojo no kimyou na bouken 2012".into(),
+            anilist: Some(14_719),
+            titles: Some(vec!["JoJo no Kimyou na Bouken".into(), "JoJo's Bizarre Adventure".into()]),
+            ..SeriesMeta::default()
+        };
+        let graph = Graph {
+            prequels: HashMap::from([(14_719, vec![]), (210_482, vec![190_327])]),
+            sequels: HashMap::from([(14_719, (vec![20_474], 1)), (210_482, (vec![], 1))]),
+            ..Graph::default()
+        };
+        let lib =
+            Library::build(&cfg(), &events, &index(&files, MetaCache { graph: graph.into(), ..rows(&[sbr, first]) }));
+        let at = |k: &str| lib.index_of(k).unwrap();
+        let sbr = at("steel ball run jojos bizarre adventure");
+        assert_eq!(lib.merge_hint(at("jojos bizarre adventure 2012 s6")), Some(sbr));
+        assert_eq!(lib.merge_hint(at("jojos bizarre adventure part 7 steel ball run")), Some(sbr));
+        assert_eq!(lib.merge_hint(at("jojos bizarre adventure s6")), None, "not the first season");
+        assert_eq!(lib.merge_hinted(sbr).len(), 2);
+        assert_eq!(lib.merge_hint(sbr), None, "a linked series on disk is hinted to nothing");
+    }
+
+    /// The second season's files numbered by themselves (01–24, a BD), the
+    /// first and third numbered on (01–24, 49–52): the second is folded in at
+    /// its place (25–48), so the series has three parts; its watch state
+    /// comes along, its key finds the series, and its files point there.
+    #[test]
+    fn a_season_numbered_by_itself_is_folded_in() {
+        let mut files: Vec<FileRow> = (1..=24)
+            .chain(49..=52)
+            .map(|n| row("dl", &format!("[A] Kusuriya no Hitorigoto - {n:02}.mkv"), true, 1))
+            .collect();
+        files.extend((1..=24).map(|n| row("dl", &format!("[B] Kusuriya no Hitorigoto S2 - {n:02}.mkv"), true, 1)));
+        files.push(row("dl", "[A] Kusuriya no Hitorigoto - NCOP.mkv", true, 1));
+        files.push(row("dl", "[B] Kusuriya no Hitorigoto S2 - NCOP.mkv", true, 1));
+        let base = kusuriya();
+        let s1 = base.get("kusuriya no hitorigoto").unwrap().meta.clone().unwrap();
+        let s2 = SeriesMeta { series: "kusuriya no hitorigoto s2".into(), ..base.graph.media[&176_301].clone() };
+        let s2_key = "kusuriya no hitorigoto s2";
+        // Watched 12 of the season, then unwatched as the series' 36; the
+        // season followed.
+        let watched = EventBody::Watched { series: s2_key.into(), item: ep(12), file: None };
+        let unwatched = EventBody::Unwatched { series: "kusuriya no hitorigoto".into(), item: ep(36), file: None };
+        let follow = EventBody::status(s2_key, SeriesStatus::Following, None);
+        // anipv completed the season on its own, later: not the series.
+        let auto_done = EventBody::SeriesStatus {
+            series: s2_key.into(),
+            status: SeriesStatus::Completed,
+            note: None,
+            auto: true,
+            keep: false,
+            via: None,
+        };
+        // History from before the season's files were told apart: recorded
+        // under the series' key, with the season's file and number.
+        let old = EventBody::Watched {
+            series: "kusuriya no hitorigoto".into(),
+            item: ep(5),
+            file: Some("[B] Kusuriya no Hitorigoto S2 - 05.mkv".into()),
+        };
+        let started = EventBody::Progress {
+            series: "kusuriya no hitorigoto s2".into(),
+            item: ep(11),
+            pos: 165.0,
+            dur: Some(1442.0),
+            file: Some("[B] Kusuriya no Hitorigoto S2 - 11.mkv".into()),
+        };
+        let events = [ev(0, old), ev(1, started), ev(2, watched), ev(3, unwatched), ev(4, follow), ev(5, auto_done)];
+        let lib = Library::build(&cfg(), &events, &index(&files, MetaCache { graph: base.graph, ..rows(&[s1, s2]) }));
+        let main = lib.index_of("kusuriya no hitorigoto").unwrap();
+        assert_eq!(lib.index_of("kusuriya no hitorigoto s2"), Some(main), "the season's key finds the series");
+        let s = &lib.series[main];
+        let split = s.split.as_ref().unwrap();
+        let firsts: Vec<(u64, u32)> = split.parts.iter().map(|p| (p.id(), p.first)).collect();
+        assert_eq!(firsts, [(161_645, 1), (176_301, 25), (195_516, 49)]);
+        assert_eq!(s.total(), Some(60));
+        assert!(matches!(s.item(&ep(35)).map(|i| &i.state), Some(WatchState::Started { .. })), "11 of S2 is 35");
+        assert!(matches!(s.item(&ep(11)).map(|i| &i.state), Some(WatchState::Unwatched)), "S1's 11 untouched");
+        assert!(matches!(s.item(&ep(36)).map(|i| &i.state), Some(WatchState::Unwatched)), "the later unwatch stands");
+        assert_eq!(s.status, SeriesStatus::Following, "the season's status is the series'");
+        assert_eq!(lib.resolve(s2_key), "kusuriya no hitorigoto");
+        assert!(s.item(&ep(29)).is_some_and(|i| i.state.is_watched()), "old history follows the season's file");
+        assert!(!s.item(&ep(5)).is_some_and(|i| i.state.is_watched()), "S1's 5 untouched");
+        // A file of the season the index doesn't know yet is its number in the series.
+        let unknown = Path::new("/dl/[B] Kusuriya no Hitorigoto S2 - 07.mkv");
+        assert_eq!(lib.identify(&cfg(), unknown), ("kusuriya no hitorigoto".to_string(), vec![ep(31)]));
+        let extras: Vec<&str> =
+            s.items.iter().filter(|i| i.key.kind == ItemKind::Extra).map(|i| i.key.label.as_str()).collect();
+        assert_eq!(extras.len(), 2, "each its own: {extras:?}");
+        let file = lib.file(Path::new("/dl/[B] Kusuriya no Hitorigoto S2 - 11.mkv")).unwrap();
+        assert_eq!((file.series.as_str(), file.items.clone()), ("kusuriya no hitorigoto", vec![ep(35)]));
+        let (f, _) = lib.franchise_pos(main).unwrap();
+        let stops: Vec<(usize, usize)> = f.stops.iter().map(|st| (st.series, st.items.len())).collect();
+        let remote = lib.series.len() + lib.remote.iter().position(|r| r.anilist_id() == Some(200_927)).unwrap();
+        assert_eq!(stops, [(main, 24), (main, 24), (main, 4), (remote, 0)]);
+    }
+
+    /// A series that its side story names as its parent still joins its
+    /// next season by title (a season not linked yet).
+    #[test]
+    fn a_parent_still_joins_its_seasons_by_title() {
+        let files = [row("dl", "[A] Show - 01.mkv", true, 1), row("dl", "[A] Show S2 - 01.mkv", true, 1)];
+        let show = SeriesMeta { series: "show".into(), anilist: Some(1), ..SeriesMeta::default() };
+        let side = SeriesMeta { anilist: Some(2), title: Some("Show Side Story".into()), ..SeriesMeta::default() };
+        let graph = Graph {
+            related: HashMap::from([(1, vec![("side_story".into(), 2)]), (2, vec![("parent".into(), 1)])]),
+            media: HashMap::from([(2, side)]),
+            ..Graph::default()
+        };
+        let lib = Library::build(&cfg(), &[], &index(&files, MetaCache { graph: graph.into(), ..rows(&[show]) }));
+        let (f, _) = lib.franchise_of("show s2").expect("joined by title");
+        assert_eq!(f.stops.len(), 2);
+    }
+
+    /// Names are matched by their words, without markers and release words.
+    #[test]
+    fn name_words_leave_out_markers() {
+        let words = name_words("JoJos.Bizarre.Adventure.S06E01.ep02.e03.s6.1080p.NF.WEB-DL.Steel.Ball.Run");
+        let mut words: Vec<String> = words.into_iter().collect();
+        words.sort();
+        assert_eq!(words, ["adventure", "ball", "bizarre", "jojos", "run", "steel"]);
+        // Words that only look like markers stay.
+        assert!(name_words("Steins Gate Sep Episode").contains("sep"));
+    }
+
+    /// A series matching found nothing for (its folder name cut short) whose
+    /// files spell an entry of the franchise is that entry, not a series
+    /// beside an entry only on AniList.
+    #[test]
+    fn a_series_matching_missed_is_the_entry_its_files_spell() {
+        let key = "jojo no kimyou na bouken diamond wa kudakena";
+        let files = [
+            row("dl", "[A] JoJo no Kimyou na Bouken Stone Ocean - 01.mkv", true, 1),
+            row(
+                "anime",
+                "JoJo no Kimyou na Bouken - Diamond wa Kudakena/[GroupS]_Jojo's_Bizarre_Adventure_Diamond_is_Unbreakable_01_(1080p)_[AB12CD34].mkv",
+                true,
+                1,
+            ),
+        ];
+        let mut graph = jojo_graph();
+        graph.media.get_mut(&4).unwrap().titles = Some(vec![
+            "JoJo no Kimyou na Bouken: Diamond wa Kudakenai".into(),
+            "JoJo's Bizarre Adventure: Diamond is Unbreakable".into(),
+        ]);
+        let attempt =
+            MatchAttempt { series: key.into(), db_version: "v1".into(), at: 1, result: MatchResult::SearchNone };
+        let stone = SeriesMeta {
+            series: "jojo no kimyou na bouken stone ocean".into(),
+            anilist: Some(6),
+            ..SeriesMeta::default()
+        };
+        let cache =
+            MetaCache { graph: graph.into(), attempts: vec![attempt], db_version: "v1".into(), ..rows(&[stone]) };
+        let lib = Library::build(&cfg(), &[], &index(&files, cache));
+        assert_eq!(lib.get(key).and_then(Series::anilist_id), Some(4));
+        assert!(lib.remote.iter().all(|r| r.anilist_id() != Some(4)));
+    }
+
+    /// A second copy of a series (the entry it is linked already by the
+    /// first) isn't taken for a less specific entry its name also spells.
+    #[test]
+    fn a_name_matching_a_linked_entry_links_nothing_less() {
+        let files = [
+            row("dl", "[A] Shingeki no Kyojin The Final Season - 01.mkv", true, 1),
+            row("anime", "SnK Final BD/[B] Shingeki no Kyojin The Final Season - 01.mkv", true, 1),
+        ];
+        let first = SeriesMeta {
+            series: "shingeki no kyojin the final season".into(),
+            anilist: Some(10),
+            title: Some("Shingeki no Kyojin: The Final Season".into()),
+            ..SeriesMeta::default()
+        };
+        let s1 = SeriesMeta { anilist: Some(1), title: Some("Shingeki no Kyojin".into()), ..SeriesMeta::default() };
+        let graph = Graph { media: HashMap::from([(1, s1)]), ..Graph::default() };
+        let attempt = MatchAttempt {
+            series: "snk final bd".into(),
+            db_version: "v1".into(),
+            at: 1,
+            result: MatchResult::SearchNone,
+        };
+        let cache =
+            MetaCache { graph: graph.into(), attempts: vec![attempt], db_version: "v1".into(), ..rows(&[first]) };
+        let lib = Library::build(&cfg(), &[], &index(&files, cache));
+        assert_eq!(lib.get("snk final bd").and_then(Series::anilist_id), None);
+    }
+
+    /// A remote entry whose key a series has gets its id after it.
+    #[test]
+    fn remote_keys_dont_collide() {
+        let mut graph = jojo_graph();
+        graph.media.get_mut(&5).unwrap().title = Some("JoJo no Kimyou na Bouken Stone Ocean".into());
+        let lib = jojo(&[], graph);
+        assert_eq!(lib.get_any("jojo no kimyou na bouken stone ocean 5").and_then(Series::anilist_id), Some(5));
+        assert_eq!(lib.get_any("jojo no kimyou na bouken stone ocean").and_then(Series::anilist_id), Some(6));
+        // Two entries of one title both have their ids: neither has the bare key.
+        let mut graph = jojo_graph();
+        graph.media.get_mut(&2).unwrap().title = Some("JoJo no Kimyou na Bouken".into());
+        let lib = jojo(&[], graph);
+        assert!(lib.get_any("jojo no kimyou na bouken").is_none());
+        assert_eq!(lib.get_any("jojo no kimyou na bouken 1").and_then(Series::anilist_id), Some(1));
+        assert_eq!(lib.get_any("jojo no kimyou na bouken 2").and_then(Series::anilist_id), Some(2));
+    }
+
+    /// A status recorded for a remote entry (with its link) makes it a
+    /// series, titled and described by the data the walk fetched.
+    #[test]
+    fn a_recorded_remote_entry_is_a_series() {
+        let key = "jojo no kimyou na bouken";
+        let events = [
+            ev(1, EventBody::Meta { series: key.into(), anilist: Some(1), episodes: None }),
+            ev(2, EventBody::status(key, SeriesStatus::Completed, None)),
+        ];
+        let lib = jojo(&events, jojo_graph());
+        let s = lib.get(key).unwrap();
+        assert!(!s.remote);
+        assert_eq!((s.title.as_str(), s.total()), ("JoJo no Kimyou na Bouken", Some(26)));
+        assert!(lib.remote.iter().all(|r| r.anilist_id() != Some(1)));
+        let local = lib.index_of("jojo no kimyou na bouken stone ocean").unwrap();
+        assert_eq!(lib.franchise_pos(local).unwrap().0.stops.len(), 6);
+    }
+
+    /// Without the relations that reached them, the entries are gone.
+    #[test]
+    fn unreachable_remote_entries_are_left_out() {
+        let mut graph = jojo_graph();
+        graph.prequels.remove(&6);
+        let lib = jojo(&[], graph);
+        assert!(lib.remote.is_empty());
+        assert!(lib.franchise_of("jojo no kimyou na bouken stone ocean").is_none());
     }
 
     #[test]

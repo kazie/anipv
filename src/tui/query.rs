@@ -134,10 +134,10 @@ fn tokens(text: &str) -> Vec<(String, String)> {
 /// What the token `raw` (`t` without its quotes) says.
 fn token(raw: &str, t: &str) -> Token {
     if raw.starts_with('"') {
-        return Token::Word(matcher_words(t));
+        return Token::Word(literal_words(t));
     }
     if let Some(rest) = t.strip_prefix('\\') {
-        return Token::Word(matcher_words(rest));
+        return Token::Word(literal_words(rest));
     }
     if let Some(tag) = t.strip_prefix('#') {
         return text_filter(tag, Filter::Hashtag, HASHTAG);
@@ -165,6 +165,20 @@ fn token(raw: &str, t: &str) -> Token {
 /// so `one piece` stays one part.
 fn matcher_words(t: &str) -> String {
     t.split(' ').collect::<Vec<_>>().join("\\ ")
+}
+
+/// [`matcher_words`] taken as they are: what the matcher would read as an
+/// operator (a leading `!`, `^` or `'`, a trailing `$`) escaped, so a quoted
+/// or backslash-escaped `!foo` finds `!foo`.
+fn literal_words(t: &str) -> String {
+    let mut out = matcher_words(t);
+    if out.starts_with(['!', '^', '\'']) {
+        out.insert(0, '\\');
+    }
+    if out.ends_with('$') {
+        out.insert(out.len() - 1, '\\');
+    }
+    out
 }
 
 /// A text filter, or nothing while its value is empty.
@@ -214,6 +228,15 @@ mod tests {
         assert_eq!(q.words, "apothecary diaries");
         assert_eq!(q.filters, [Filter::Studio("toho".into())]);
         assert!(!SeriesQuery::parse("frieren").has_filters());
+    }
+
+    /// A quoted or escaped token is a word as it is, operators and all.
+    #[test]
+    fn literal_tokens_are_not_operators() {
+        assert_eq!(SeriesQuery::parse("\"!foo\"").words, "\\!foo");
+        assert_eq!(SeriesQuery::parse("\\!foo").words, "\\!foo");
+        assert_eq!(SeriesQuery::parse("\"one$\"").words, "one\\$");
+        assert_eq!(SeriesQuery::parse("!foo").words, "!foo", "unquoted, nucleo's own syntax");
     }
 
     #[test]

@@ -247,6 +247,30 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         meta("dungeon meshi", 153_518, Some(24), "FINISHED", None),
         meta("meitantei precure", 195_000, Some(48), "RELEASING", Some((4, ts + 4 * DAY))),
     ])?;
+    // Dandadan's first season is only on AniList (nothing on disk, nothing
+    // watched here), as a franchise walk finds it, with a film of it.
+    let remote = |id: u64, title: &str, format: &str, year: i32, episodes: u32| SeriesMeta {
+        anilist: Some(id),
+        title: Some(title.into()),
+        titles: Some(vec![title.into()]),
+        episodes: Some(episodes),
+        status: Some("FINISHED".into()),
+        format: Some(format.into()),
+        year: Some(year),
+        studios: vec!["Science SARU".into()],
+        score: Some(84),
+        refreshed_at: Some(ts),
+        ..SeriesMeta::default()
+    };
+    let media = [remote(171_018, "Dandadan", "TV", 2024, 12), remote(990_001, "Dandadan: Evil Eye", "MOVIE", 2025, 1)];
+    let fetched = crate::index::db::Fetched {
+        prequels: &[(185_660, vec![171_018]), (171_018, vec![])],
+        sequels: &[(185_660, vec![]), (171_018, vec![185_660]), (990_001, vec![])],
+        related: &[(185_660, vec![("compilation".into(), 990_001)])],
+        media: &media,
+        checks: &[],
+    };
+    ctx.db.store_sync(&[], &[], None, &fetched, ts)?;
     Ok(ctx)
 }
 

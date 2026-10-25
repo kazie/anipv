@@ -3,7 +3,8 @@
 //! * `offline` — the *anime-offline-database* (a community continuation of
 //!   manami's), downloaded on demand; used to match series to `AniList` ids
 //!   and learn episode totals.
-//! * `anilist` — anonymous GraphQL queries: airing info and prequels by id,
+//! * `anilist` — anonymous GraphQL queries: airing info and relations by id
+//!   (also of franchise entries `AniList` returned, see [`chain_frontier`]),
 //!   and (only with `anilist_search`) title searches.
 //! * `search` — title search for series the offline database can't match;
 //!   the one place where text from the user's library (series titles) is
@@ -19,8 +20,10 @@ pub mod search;
 
 pub use search::{SearchOutcome, add_title_search, search_due, search_unmatched};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+
+use crate::app::Graph;
 
 use crate::events::Link;
 use crate::index::db::{AnilistCheck, MatchAttempt, MatchResult, SeriesMeta};
@@ -219,22 +222,45 @@ fn recently_not_found(checks: &Checks, id: u64, ts: i64) -> bool {
 /// `AniList` ids of followed/paused series whose airing info is older than
 /// `max_age`, or whose next episode has aired (at most every [`AIRED_RETRY`]).
 /// Ids `AniList` recently didn't know (see `checks`) are left out.
+///
+/// A [split](Series::split) series airs as the part airing now: that
+/// part's id is refreshed by the same rules (see [`airing_part`]).
 pub fn stale_ids(lib: &Library, checks: &Checks, ts: i64, max_age: i64) -> Vec<(String, u64)> {
     lib.series
         .iter()
-        .filter_map(|s| Some((s.key.clone(), stale_id(s, s.meta.as_ref(), checks, ts, max_age)?)))
+        .flat_map(|s| {
+            let own = stale_id(s, s.meta.as_ref(), checks, ts, max_age);
+            let part = airing_part(s).and_then(|p| stale_meta(s, p.id(), Some(&p.meta), checks, ts, max_age));
+            own.into_iter().chain(part).map(|id| (s.key.clone(), id))
+        })
         .collect()
+}
+
+/// The part of a [split](Series::split) series airing now, when it isn't
+/// the entry the series links: its airing info is refreshed too, and kept
+/// as that entry's data (see [`SyncResult::media`]), not the series'.
+pub fn airing_part(s: &Series) -> Option<&crate::split::SplitPart> {
+    let part = s.split.as_ref()?.current_part();
+    (s.anilist_id() != Some(part.id())).then_some(part)
+}
+
+/// True if `id` is only a part of the split series `key` (see [`airing_part`]).
+fn is_part(lib: &Library, key: &str, id: u64) -> bool {
+    lib.get(key).and_then(airing_part).is_some_and(|p| p.id() == id)
 }
 
 /// The `AniList` id of `s` if its metadata `m` is stale (see [`stale_ids`]).
 fn stale_id(s: &Series, m: Option<&SeriesMeta>, checks: &Checks, ts: i64, max_age: i64) -> Option<u64> {
+    stale_meta(s, s.anilist_id_with(m)?, m, checks, ts, max_age)
+}
+
+/// `id` (of `s`, or a part of it) if its metadata `m` is stale.
+fn stale_meta(s: &Series, id: u64, m: Option<&SeriesMeta>, checks: &Checks, ts: i64, max_age: i64) -> Option<u64> {
     if !s.status.is_tracked() {
         return None;
     }
     // Airing info is kept fresh for series being watched; others (e.g.
     // completed) only get the one-time refresh below.
-    let watching = matches!(s.status, SeriesStatus::Following | SeriesStatus::Paused);
-    let id = s.anilist_id_with(m)?;
     if recently_not_found(checks, id, ts) {
         return None;
     }
@@ -248,7 +274,7 @@ fn stale_id(s: &Series, m: Option<&SeriesMeta>, checks: &Checks, ts: i64, max_ag
     if m.titles.is_none() {
         return Some(id);
     }
-    if !watching {
+    if !matches!(s.status, SeriesStatus::Following | SeriesStatus::Paused) {
         return None;
     }
     let finished = m.is_finished();
@@ -293,11 +319,16 @@ pub fn requested_ids(
             Some(k) => s.key == k,
             None => untracked || s.status.is_tracked(),
         })
-        .filter_map(|s| Some((s.key.clone(), s.anilist_id_with(meta_of(s, fresh))?)))
+        .flat_map(|s| {
+            let own = s.anilist_id_with(meta_of(s, fresh));
+            own.into_iter().chain(airing_part(s).map(crate::split::SplitPart::id)).map(|id| (s.key.clone(), id))
+        })
         .collect()
 }
 
 /// Apply `AniList` results to cache rows for the given (series, id) pairs.
+/// A pair of a split series' part (see [`airing_part`]) is left out: its
+/// data is the part's, not the series'.
 pub fn apply_media(
     lib: &Library,
     fresh: &HashMap<String, SeriesMeta>,
@@ -308,6 +339,7 @@ pub fn apply_media(
     let by_id: HashMap<u64, &anilist::Media> = media.iter().map(|m| (m.id, m)).collect();
     pairs
         .iter()
+        .filter(|(key, id)| !is_part(lib, key, *id))
         .filter_map(|(key, id)| {
             let m = by_id.get(id)?;
             let mut row = lib
@@ -395,6 +427,11 @@ pub struct SyncResult {
     pub prequels: Vec<(u64, Vec<u64>)>,
     /// `AniList` sequel ids fetched with them.
     pub sequels: Vec<(u64, Vec<u64>)>,
+    /// Their other related ids (relation, id), fetched with them.
+    pub related: Vec<(u64, Vec<(String, u64)>)>,
+    /// Data on the franchise entries walked to that no series links (see
+    /// [`chain_frontier`]).
+    pub media: Vec<SeriesMeta>,
     /// Every id `AniList` was asked about, and whether it returned it.
     pub checked: Vec<(u64, bool)>,
     /// Non-fatal problems (offline DB unreadable, `AniList` unreachable…).
@@ -426,16 +463,223 @@ pub fn inbox_lookups(lib: &Library, cfg: &crate::config::Config, checks: &Checks
 }
 
 /// Series you have a relationship with (see [`Series::engaged`]) whose
-/// `AniList` relations (prequels and sequels, to group them with their other
-/// seasons and entries) were never fetched, or not for [`INBOX_RECHECK`].
-/// Only ids of series you engage with are sent, as for airing refreshes.
+/// `AniList` relations (prequels, sequels and related entries, to group them
+/// with their other seasons and entries) were never fetched, or not for
+/// [`INBOX_RECHECK`]. Relations fetched before related entries were kept
+/// (no `related` row) are fetched again. Only ids of series you engage with
+/// are sent, as for airing refreshes.
 pub fn relation_lookups(lib: &Library, ts: i64) -> Vec<(String, u64)> {
     lib.series
         .iter()
         .filter(|s| s.engaged())
-        .filter(|s| s.relations_at.is_none_or(|at| ts - at >= INBOX_RECHECK))
-        .filter_map(|s| Some((s.key.clone(), s.anilist_id()?)))
+        .filter_map(|s| Some((s, s.anilist_id()?)))
+        .filter(|(s, id)| {
+            s.relations_at.is_none_or(|at| ts - at >= INBOX_RECHECK) || !lib.graph.related.contains_key(id)
+        })
+        .map(|(s, id)| (s.key.clone(), id))
         .collect()
+}
+
+/// How many franchise entries one sync walks to at most (see
+/// [`chain_frontier`]); the rest are left for the next. Only a backstop
+/// against a runaway walk: the entries walked are cached, and asked about
+/// again after [`INBOX_RECHECK`].
+pub const WALK_PER_SYNC: usize = 500;
+
+/// Franchise entries to ask `AniList` about next (see [`chain_frontier`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Frontier {
+    /// Entries to fetch the relations and data of: walked to, and never
+    /// fetched or not for [`INBOX_RECHECK`].
+    pub walk: Vec<u64>,
+    /// Entries reached (walked to, or only listed, see [`anilist::LISTED`])
+    /// whose data alone is missing or that old.
+    pub media: Vec<u64>,
+}
+
+impl Frontier {
+    /// Nothing to ask.
+    pub fn is_empty(&self) -> bool {
+        self.walk.is_empty() && self.media.is_empty()
+    }
+}
+
+/// The franchise entries a walk from the series you engage with (see
+/// [`Series::engaged`]; only `only`, if given) reaches next. The walk follows
+/// the cached prequels, sequels and related entries of the kinds in
+/// [`anilist::BRANCHES`] through entries already fetched, and stops at those
+/// not (or not lately): they are [`Frontier::walk`]. Series in the library
+/// are walked through like any entry, but their data isn't fetched (it is
+/// refreshed with the series). Only ids `AniList` returned are reached.
+pub fn chain_frontier(lib: &Library, only: Option<&str>, ts: i64) -> Frontier {
+    frontier(&lib.graph, &walk_seeds(lib, only), &linked_ids(lib), ts)
+}
+
+/// The ids franchise walks start from (see [`chain_frontier`]).
+fn walk_seeds(lib: &Library, only: Option<&str>) -> Vec<u64> {
+    let engaged = lib.series.iter().filter(|s| s.engaged() && only.is_none_or(|o| o == s.key));
+    engaged.filter_map(Series::anilist_id).collect()
+}
+
+/// Every id a series in the library links.
+fn linked_ids(lib: &Library) -> HashSet<u64> {
+    lib.series.iter().filter_map(Series::anilist_id).collect()
+}
+
+/// [`chain_frontier`] over `graph`.
+fn frontier(graph: &Graph, seeds: &[u64], linked: &HashSet<u64>, ts: i64) -> Frontier {
+    let recent = |at: i64| ts - at < INBOX_RECHECK;
+    // Fetched lately, with its related entries (relations fetched before
+    // those were kept have none on record).
+    let walked = |id: &u64| graph.sequels.get(id).is_some_and(|(_, at)| recent(*at)) && graph.related.contains_key(id);
+    let starts: HashSet<u64> = seeds.iter().copied().collect();
+    let mut seen = starts.clone();
+    let mut queue: VecDeque<u64> = seeds.iter().copied().collect();
+    let mut listed: Vec<u64> = Vec::new();
+    let mut out = Frontier::default();
+    while let Some(id) = queue.pop_front() {
+        let (followed, other) = graph.walk_edges(id);
+        for next in followed {
+            if !seen.insert(next) {
+                continue;
+            }
+            if walked(&next) {
+                queue.push_back(next);
+            } else {
+                out.walk.push(next);
+            }
+        }
+        listed.extend(other);
+    }
+    let walking: HashSet<u64> = out.walk.iter().copied().collect();
+    let mut asked = HashSet::new();
+    out.media = seen
+        .iter()
+        .filter(|id| !starts.contains(id))
+        .copied()
+        .chain(listed)
+        .filter(|id| !linked.contains(id) && !walking.contains(id))
+        .filter(|id| graph.media.get(id).is_none_or(|m| m.refreshed_at.is_none_or(|at| !recent(at))))
+        // Answered lately as unknown to AniList (an empty relations row
+        // and no data): not asked again until that answer is old.
+        .filter(|id| {
+            let unknown = graph.sequels.get(id).is_some_and(|(ids, at)| ids.is_empty() && recent(*at))
+                && graph.related.get(id).is_some_and(Vec::is_empty)
+                && graph.prequels.get(id).is_none_or(Vec::is_empty);
+            !unknown || graph.media.contains_key(id)
+        })
+        .filter(|id| asked.insert(*id))
+        .collect();
+    out.media.sort_unstable();
+    out
+}
+
+/// Record `id` as answered and unknown to `AniList`: empty sequel and
+/// related lists (in `graph`, and to store in `out`), so it isn't asked
+/// about again until they are old.
+fn record_unknown(graph: &mut Graph, out: &mut SyncResult, id: u64, ts: i64) {
+    // No prequel list: none was answered (see `inbox_lookups`).
+    graph.sequels.insert(id, (Vec::new(), ts));
+    graph.related.insert(id, Vec::new());
+    out.sequels.push((id, Vec::new()));
+    out.related.push((id, Vec::new()));
+}
+
+/// Record the relations `AniList` gave for an id (in `graph`, and to store
+/// in `out`), fetched at `ts`.
+fn record_relations(graph: &mut Graph, out: &mut SyncResult, r: anilist::Relations, ts: i64) {
+    graph.prequels.insert(r.id, r.prequels.clone());
+    graph.sequels.insert(r.id, (r.sequels.clone(), ts));
+    graph.related.insert(r.id, r.related.clone());
+    out.prequels.push((r.id, r.prequels));
+    out.sequels.push((r.id, r.sequels));
+    out.related.push((r.id, r.related));
+}
+
+/// Add what `res` fetched (at `ts`) to `graph`, as storing it would.
+fn absorb(graph: &mut Graph, res: &SyncResult, ts: i64) {
+    graph.prequels.extend(res.prequels.iter().cloned());
+    graph.sequels.extend(res.sequels.iter().map(|(id, ids)| (*id, (ids.clone(), ts))));
+    graph.related.extend(res.related.iter().cloned());
+    graph.media.extend(res.media.iter().filter_map(|m| Some((m.anilist?, m.clone()))));
+}
+
+/// Report `errors` in `out`; whether one says the client gave up (see
+/// [`anilist::Outage::stops`]): ask no more.
+fn note_errors(out: &mut SyncResult, errors: &[anyhow::Error]) -> bool {
+    out.errors.extend(errors.iter().map(|e| format!("{e:#}")));
+    errors.iter().any(|e| anilist::Outage::of(e).is_some_and(anilist::Outage::stops))
+}
+
+/// Walk the franchises of the series you engage with (see
+/// [`chain_frontier`]) in rounds, until nothing is left to ask or
+/// [`WALK_PER_SYNC`] entries were walked, adding what is fetched to `out`.
+/// `graph` is the cache with this sync's relations in it.
+fn walk_franchises(
+    lib: &Library,
+    http: &dyn anilist::Http,
+    only: Option<&str>,
+    mut graph: Graph,
+    out: &mut SyncResult,
+    ts: i64,
+) {
+    let (seeds, linked) = (walk_seeds(lib, only), linked_ids(lib));
+    // Ids not answered, or answered with nothing: not asked again this sync.
+    let mut done: HashSet<u64> = HashSet::new();
+    let mut walked = 0;
+    loop {
+        let mut next = frontier(&graph, &seeds, &linked, ts);
+        next.walk.retain(|id| !done.contains(id));
+        next.walk.truncate(WALK_PER_SYNC - walked);
+        next.media.retain(|id| !done.contains(id));
+        if next.is_empty() {
+            break;
+        }
+        walked += next.walk.len();
+        // Data for the entries only: a linked series' comes with its own refresh.
+        let ids: Vec<u64> = next.walk.iter().filter(|id| !linked.contains(id)).chain(&next.media).copied().collect();
+        let res = anilist::fetch(http, &ids);
+        let stopped = note_errors(out, &res.errors);
+        let returned: HashSet<u64> = res.items.iter().map(|m| m.id).collect();
+        done.extend(ids.iter().filter(|id| !returned.contains(id)));
+        // An entry asked for its data alone that AniList answered without:
+        // recorded as unknown (empty relations), so it isn't asked again
+        // on every start.
+        let answered: HashSet<u64> = res.answered.iter().copied().collect();
+        for &id in next.media.iter().filter(|id| answered.contains(id) && !returned.contains(id)) {
+            record_unknown(&mut graph, out, id, ts);
+        }
+        for m in res.items.iter().filter(|m| !linked.contains(&m.id)) {
+            let mut row = SeriesMeta::default();
+            m.apply(&mut row, ts);
+            graph.media.insert(m.id, row.clone());
+            out.media.push(row);
+        }
+        if stopped {
+            break;
+        }
+        if !next.walk.is_empty() {
+            let res = anilist::fetch_relations(http, &next.walk);
+            let stopped = note_errors(out, &res.errors);
+            let answered: HashSet<u64> = res.answered.iter().copied().collect();
+            done.extend(next.walk.iter().filter(|id| !answered.contains(id)));
+            let returned: HashSet<u64> = res.items.iter().map(|r| r.id).collect();
+            // As for engaged series: an id AniList didn't return gets an empty
+            // sequel list, so it isn't asked again until it is old.
+            for &id in res.answered.iter().filter(|id| !returned.contains(id)) {
+                record_unknown(&mut graph, out, id, ts);
+            }
+            for r in res.items {
+                record_relations(&mut graph, out, r, ts);
+            }
+            if stopped {
+                break;
+            }
+        }
+        if walked >= WALK_PER_SYNC {
+            break;
+        }
+    }
 }
 
 /// What a metadata update is asked to cover (see [`plan`]).
@@ -486,6 +730,9 @@ pub struct SyncOptions {
     pub inbox: Vec<(String, u64)>,
     /// Engaged series to fetch relations for (see [`relation_lookups`]).
     pub relations: Vec<(String, u64)>,
+    /// Walk the franchises of engaged series (see [`chain_frontier`]),
+    /// after their relations are fetched.
+    pub walk: bool,
     /// What to refresh from `AniList`.
     pub refresh: Refresh,
     /// Match against the offline database (it always is after a download).
@@ -521,6 +768,7 @@ impl Default for SyncOptions {
         Self {
             inbox: Vec::new(),
             relations: Vec::new(),
+            walk: false,
             refresh: Refresh::default(),
             rematch: false,
             only: None,
@@ -547,6 +795,7 @@ impl SyncOptions {
     pub fn asks_anilist(&self) -> bool {
         !self.inbox.is_empty()
             || !self.relations.is_empty()
+            || self.walk
             || !matches!(&self.refresh, Refresh::Stale { ids, .. } if ids.is_empty())
             || self.search
     }
@@ -569,6 +818,12 @@ pub fn plan(
     let offline_urls = offline::source_urls(cfg.offline_db_url.as_deref());
     let inbox = if network { inbox_lookups(lib, cfg, checks, ts) } else { Vec::new() };
     let relations = if network { relation_lookups(lib, ts) } else { Vec::new() };
+    // Relations fetched now may open a walk too.
+    let walk_only = match request {
+        Request::Series(key) => Some(key.as_str()),
+        _ => None,
+    };
+    let walk = network && (!relations.is_empty() || !chain_frontier(lib, walk_only, ts).is_empty());
     let only = match request {
         Request::Auto { max_age } => {
             let ids = if network { stale_ids(lib, checks, ts, *max_age) } else { Vec::new() };
@@ -576,13 +831,14 @@ pub fn plan(
             // Searches run after a rematch (which may find series to search),
             // or on their own when some are due.
             let search = search && (rematch || searches_due(lib, ts));
-            if ids.is_empty() && inbox.is_empty() && relations.is_empty() && !rematch && !search {
+            if ids.is_empty() && inbox.is_empty() && relations.is_empty() && !walk && !rematch && !search {
                 return None;
             }
             let refresh = Refresh::Stale { ids, max_age: *max_age, checks: checks.clone() };
             return Some(SyncOptions {
                 inbox,
                 relations,
+                walk,
                 refresh,
                 rematch,
                 offline_urls,
@@ -598,6 +854,7 @@ pub fn plan(
     Some(SyncOptions {
         inbox,
         relations,
+        walk,
         update_offline: network,
         network,
         search,
@@ -770,6 +1027,12 @@ pub fn sync_with_progress(
             for r in apply_media(lib, &fresh, &pairs, &res.items, ts) {
                 fresh.insert(r.series.clone(), r);
             }
+            // The airing part of a split series: that entry's data.
+            for m in res.items.iter().filter(|m| pairs.iter().any(|(k, id)| *id == m.id && is_part(lib, k, m.id))) {
+                let mut row = lib.graph.media.get(&m.id).cloned().unwrap_or_default();
+                m.apply(&mut row, ts);
+                out.media.push(row);
+            }
         }
         // Relations for the inbox (recorded as asked about, with their airing
         // info) and for engaged series (not: their airing info is refreshed
@@ -786,13 +1049,22 @@ pub fn sync_with_progress(
             let got = res.items.iter().map(|r| r.id).filter(|id| asked.contains(id)).collect();
             record(&inbox_ids, &answered, got, &res.errors);
             out.prequels = res.items.iter().map(|r| (r.id, r.prequels.clone())).collect();
+            out.related = res.items.iter().map(|r| (r.id, r.related.clone())).collect();
             // An id AniList didn't return gets an empty sequel list too: it
             // is asked again after `INBOX_RECHECK`, not on every start.
             let returned: HashSet<u64> = res.items.iter().map(|r| r.id).collect();
-            let unknown = res.answered.iter().filter(|id| !returned.contains(id)).map(|&id| (id, Vec::new()));
-            out.sequels = res.items.into_iter().map(|r| (r.id, r.sequels)).chain(unknown).collect();
+            out.sequels = res.items.into_iter().map(|r| (r.id, r.sequels)).collect();
+            let mut graph = Graph::default();
+            for &id in res.answered.iter().filter(|id| !returned.contains(id)) {
+                record_unknown(&mut graph, &mut out, id, ts);
+            }
         }
         out.checked = checked.into_iter().filter(|(id, _)| !failed.contains(id)).collect();
+        if opts.walk {
+            let mut graph = (*lib.graph).clone();
+            absorb(&mut graph, &out, ts);
+            walk_franchises(lib, http, only, graph, &mut out, ts);
+        }
     }
     out.rows = fresh.into_values().collect();
     out
@@ -801,11 +1073,12 @@ pub fn sync_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Index, MetaCache};
+    use crate::app::{Graph, Index, MetaCache};
     use crate::config::{Config, Root, RootKind};
     use crate::events::{Event, EventBody};
     use crate::index::db::FileRow;
     use anilist::Echo;
+    use std::cell::RefCell;
 
     pub(super) fn lib(events: &[Event], meta: &[SeriesMeta]) -> Library {
         lib_with(events, meta, &[])
@@ -1058,7 +1331,15 @@ mod tests {
             let files = vec![FileRow::test("dl", "[A] One Piece - 1181.mkv")];
             // Relations fetched already (see `relation_lookups`).
             let sequels = HashMap::from([(21, (vec![], 100))]);
-            Index::new(&cfg, files, MetaCache { rows, sequels, ..MetaCache::default() })
+            Index::new(
+                &cfg,
+                files,
+                MetaCache {
+                    rows,
+                    graph: Graph { sequels, related: HashMap::from([(21, vec![])]), ..Graph::default() }.into(),
+                    ..MetaCache::default()
+                },
+            )
         };
         let l = Library::build(&cfg, std::slice::from_ref(&follow), &index(vec![fresh]));
         let auto = Request::Auto { max_age: 3600 };
@@ -1143,7 +1424,9 @@ mod tests {
         let cfg = Config { anilist: true, refresh_untracked: true, ..cfg() };
         let files = vec![FileRow::test("dl", "[A] One Piece - 1181.mkv")];
         let sequels = HashMap::from([(21, (vec![], 100))]);
-        let index = Index::new(&cfg, files, MetaCache { rows: vec![fresh], sequels, ..MetaCache::default() });
+        let graph = Graph { sequels, related: HashMap::from([(21, vec![])]), ..Graph::default() };
+        let index =
+            Index::new(&cfg, files, MetaCache { rows: vec![fresh], graph: graph.into(), ..MetaCache::default() });
         let l = Library::build(&cfg, &[follow], &index);
         assert!(plan_background(&l, &cfg, &Checks::new(), false, 100).is_none());
         let opts = plan_background(&l, &cfg, &Checks::new(), true, 100).unwrap();
@@ -1362,7 +1645,7 @@ mod tests {
     fn inbox_lib(checks: Checks, prequels: &[(u64, Vec<u64>)]) -> (Library, Checks) {
         let meta = MetaCache {
             rows: vec![row("zzz", 5, Some(1))],
-            prequels: prequels.iter().cloned().collect(),
+            graph: Graph { prequels: prequels.iter().cloned().collect(), ..Graph::default() }.into(),
             anilist_checks: checks.clone(),
             ..MetaCache::default()
         };
@@ -1447,13 +1730,224 @@ mod tests {
 
         let meta = MetaCache {
             rows: vec![row("zzz", 5, Some(1))],
-            sequels: HashMap::from([(5, (vec![], 100))]),
+            graph: Graph {
+                sequels: HashMap::from([(5, (vec![], 100))]),
+                related: HashMap::from([(5, vec![])]),
+                ..Graph::default()
+            }
+            .into(),
             ..MetaCache::default()
         };
         let index = Index::new(&cfg(), vec![FileRow::test("dl", "[A] Zzz - 01.mkv")], meta);
         let l = Library::build(&cfg(), &[follow], &index);
         assert!(relation_lookups(&l, 100 + INBOX_RECHECK - 1).is_empty());
         assert_eq!(relation_lookups(&l, 100 + INBOX_RECHECK).len(), 1);
+    }
+
+    /// An `AniList` that knows the anime in it, with their relations
+    /// (`AniList` relation types); it records the ids each query asks about.
+    #[derive(Default)]
+    struct Tree {
+        edges: HashMap<u64, Vec<(&'static str, u64)>>,
+        media: RefCell<Vec<u64>>,
+        relations: RefCell<Vec<u64>>,
+    }
+
+    impl anilist::Http for Tree {
+        fn post_json(&self, _url: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            let ids: Vec<u64> = serde_json::from_value(body["variables"]["ids"].clone()).unwrap();
+            let asked =
+                if body["query"].as_str().unwrap().contains("relations") { &self.relations } else { &self.media };
+            asked.borrow_mut().extend(&ids);
+            let media: Vec<serde_json::Value> =
+                ids.iter()
+                    .filter_map(|id| {
+                        let edges: Vec<serde_json::Value> = self.edges.get(id)?.iter().map(|(kind, to)| {
+                        serde_json::json!({"relationType": kind, "node": {"id": to, "type": "ANIME"}})
+                    }).collect();
+                        Some(serde_json::json!({"id": id, "format": "TV", "title": {"romaji": format!("Entry {id}")},
+                        "relations": {"edges": edges}}))
+                    })
+                    .collect();
+            Ok(serde_json::json!({"data": {"Page": {"media": media}}}))
+        }
+    }
+
+    /// A followed series `zzz` (id 5) whose relations `edges` are cached.
+    fn walk_lib(graph: Graph) -> Library {
+        let follow = Event::new(1, "d", EventBody::status("zzz", SeriesStatus::Following, None));
+        let meta = MetaCache { rows: vec![row("zzz", 5, Some(1))], graph: graph.into(), ..MetaCache::default() };
+        let index = Index::new(&cfg(), vec![FileRow::test("dl", "[A] Zzz - 01.mkv")], meta);
+        Library::build(&cfg(), &[follow], &index)
+    }
+
+    fn walk_opts(l: &Library) -> SyncOptions {
+        SyncOptions { walk: true, ..auto(l, Checks::new(), 100, i64::MAX) }
+    }
+
+    /// The cache as it is after storing `res` (fetched at `ts`) over `graph`.
+    fn stored(mut graph: Graph, res: &SyncResult, ts: i64) -> Graph {
+        absorb(&mut graph, res, ts);
+        graph
+    }
+
+    /// docs/anilist.md R19, R20: A franchise is walked through prequels, sequels and branches (a side
+    /// story's own sequel), in rounds; an entry only listed (`OTHER`) gets
+    /// its data but isn't followed, and the series' own data isn't fetched.
+    /// Once cached, nothing is asked until it is old.
+    #[test]
+    fn franchises_are_walked_with_their_branches() {
+        let graph = Graph {
+            prequels: HashMap::from([(5, vec![4])]),
+            sequels: HashMap::from([(5, (vec![], 100))]),
+            related: HashMap::from([(5, vec![("side_story".into(), 50), ("other".into(), 60)])]),
+            ..Graph::default()
+        };
+        let l = walk_lib(graph.clone());
+        assert_eq!(chain_frontier(&l, None, 100), Frontier { walk: vec![4, 50], media: vec![60] });
+        let tree = Tree {
+            edges: HashMap::from([
+                (4, vec![("PREQUEL", 3), ("SEQUEL", 5), ("CHARACTER", 70)]),
+                (3, vec![("SEQUEL", 4)]),
+                (50, vec![("SEQUEL", 51)]),
+                (51, vec![]),
+                (60, vec![("PREQUEL", 61)]),
+            ]),
+            ..Tree::default()
+        };
+        let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&tree), &walk_opts(&l), 100);
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
+        assert_eq!(*tree.relations.borrow(), vec![4, 50, 3, 51]);
+        let mut media = tree.media.borrow().clone();
+        media.sort_unstable();
+        assert_eq!(media, vec![3, 4, 50, 51, 60]);
+        assert!(res.rows.is_empty(), "no series row is written");
+        assert_eq!(res.related.iter().find(|r| r.0 == 4).unwrap().1, vec![], "CHARACTER is dropped");
+
+        let l = walk_lib(stored(graph, &res, 100));
+        assert!(chain_frontier(&l, None, 100 + INBOX_RECHECK - 1).is_empty());
+        // Once old, the walk stops at the first entries again.
+        assert_eq!(chain_frontier(&l, None, 100 + INBOX_RECHECK).walk, vec![4, 50]);
+        // Only engaged series start a walk.
+        let index = Index::new(
+            &cfg(),
+            vec![FileRow::test("dl", "[A] Zzz - 01.mkv")],
+            MetaCache { rows: vec![row("zzz", 5, Some(1))], graph: l.graph, ..MetaCache::default() },
+        );
+        assert!(chain_frontier(&Library::build(&cfg(), &[], &index), None, 100 + INBOX_RECHECK).is_empty());
+    }
+
+    /// A split series (14 episodes numbered on past its 12-episode first
+    /// season) refreshes the season airing now, and keeps the answer as that
+    /// season's data: the series' row stays its first season's.
+    #[test]
+    fn a_split_series_refreshes_its_airing_part() {
+        let follow = Event::new(1, "d", EventBody::status("zzz", SeriesStatus::Following, None));
+        let s1 = SeriesMeta { format: Some("TV".into()), ..row("zzz", 5, Some(1)) };
+        let s2 = SeriesMeta {
+            status: Some("RELEASING".into()),
+            series: String::new(),
+            ..SeriesMeta { anilist: Some(6), ..s1.clone() }
+        };
+        let graph = Graph {
+            prequels: HashMap::from([(6, vec![5])]),
+            sequels: HashMap::from([(5, (vec![6], 1))]),
+            media: HashMap::from([(6, s2)]),
+            ..Graph::default()
+        };
+        let files = (1..=14).map(|n| FileRow::test("dl", &format!("[A] Zzz - {n:02}.mkv"))).collect();
+        let meta = MetaCache { rows: vec![s1], graph: graph.into(), ..MetaCache::default() };
+        let l = Library::build(&cfg(), &[follow], &Index::new(&cfg(), files, meta));
+        assert_eq!(l.get("zzz").and_then(airing_part).map(crate::split::SplitPart::id), Some(6));
+        assert_eq!(stale_ids(&l, &Checks::new(), 100, 10), vec![("zzz".to_string(), 6)]);
+        let res = sync(
+            &l,
+            tempfile::tempdir().unwrap().path(),
+            Some(&Echo::default()),
+            &auto(&l, Checks::new(), 100, 10),
+            100,
+        );
+        assert!(res.errors.is_empty(), "{errors:?}", errors = res.errors);
+        assert!(res.rows.iter().all(|r| r.anilist == Some(5)), "{rows:?}", rows = res.rows);
+        assert_eq!(res.media.iter().map(|m| (m.anilist, m.refreshed_at)).collect::<Vec<_>>(), [(Some(6), Some(100))]);
+    }
+
+    /// Relations fetched before related entries were kept (no `related` row)
+    /// are fetched again, for a series and for an entry walked to.
+    #[test]
+    fn relations_without_related_entries_are_fetched_again() {
+        let graph = Graph {
+            prequels: HashMap::from([(5, vec![4]), (4, vec![])]),
+            sequels: HashMap::from([(5, (vec![], 100)), (4, (vec![5], 100))]),
+            ..Graph::default()
+        };
+        let l = walk_lib(graph.clone());
+        assert_eq!(relation_lookups(&l, 101), vec![("zzz".to_string(), 5)]);
+        let mut with_related = graph;
+        with_related.related.insert(5, vec![]);
+        let l = walk_lib(with_related.clone());
+        assert!(relation_lookups(&l, 101).is_empty());
+        assert_eq!(chain_frontier(&l, None, 101).walk, vec![4]);
+        with_related.related.insert(4, vec![]);
+        assert!(chain_frontier(&walk_lib(with_related), None, 101).walk.is_empty());
+    }
+
+    /// docs/anilist.md R20: An entry `AniList` doesn't know gets an empty sequel list (it isn't
+    /// asked about on every sync), and no data.
+    #[test]
+    fn unknown_franchise_entries_get_an_empty_row() {
+        let graph = Graph {
+            prequels: HashMap::from([(5, vec![4])]),
+            sequels: HashMap::from([(5, (vec![], 100))]),
+            ..Graph::default()
+        };
+        let l = walk_lib(graph);
+        let tree = Tree::default();
+        let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&tree), &walk_opts(&l), 100);
+        assert_eq!((res.sequels.clone(), res.media.clone()), (vec![(4, vec![])], vec![]));
+        assert_eq!(*tree.relations.borrow(), vec![4]);
+        // Stored, nothing is due for it on the next start.
+        let l = walk_lib(stored((*l.graph).clone(), &res, 100));
+        assert!(chain_frontier(&l, None, 101).is_empty(), "{f:?}", f = chain_frontier(&l, None, 101));
+    }
+
+    /// docs/anilist.md R21: One sync walks to at most [`WALK_PER_SYNC`] entries; the next goes on.
+    #[test]
+    fn a_long_walk_is_left_for_the_next_sync() {
+        let graph = Graph {
+            prequels: HashMap::from([(5, vec![1000])]),
+            sequels: HashMap::from([(5, (vec![], 100))]),
+            ..Graph::default()
+        };
+        let edges = (1000..1600).map(|id| (id, vec![("PREQUEL", id + 1)])).collect();
+        let tree = Tree { edges, ..Tree::default() };
+        let l = walk_lib(graph.clone());
+        let res = sync(&l, tempfile::tempdir().unwrap().path(), Some(&tree), &walk_opts(&l), 100);
+        assert_eq!(tree.relations.borrow().len(), WALK_PER_SYNC);
+        let l = walk_lib(stored(graph, &res, 100));
+        assert_eq!(chain_frontier(&l, None, 100).walk, vec![1000 + WALK_PER_SYNC as u64]);
+    }
+
+    /// Automatic updates walk when an entry is due, and not otherwise.
+    #[test]
+    fn walks_are_planned_when_due() {
+        let graph = Graph {
+            prequels: HashMap::from([(5, vec![4])]),
+            sequels: HashMap::from([(5, (vec![], 100))]),
+            related: HashMap::from([(5, vec![])]),
+            ..Graph::default()
+        };
+        let auto = Request::Auto { max_age: i64::MAX };
+        let on = Config { anilist: true, ..cfg() };
+        let due = plan(&walk_lib(graph.clone()), &on, &Checks::new(), &auto, 100).unwrap();
+        assert!(due.walk && due.asks_anilist());
+        let media = vec![SeriesMeta { anilist: Some(4), refreshed_at: Some(100), ..SeriesMeta::default() }];
+        let res = SyncResult { sequels: vec![(4, vec![])], related: vec![(4, vec![])], media, ..SyncResult::default() };
+        let l = walk_lib(stored(graph, &res, 100));
+        assert!(plan(&l, &on, &Checks::new(), &auto, 100).is_none_or(|o| !o.walk));
+        // Without the network, nothing is walked.
+        let off = Config { anilist: false, ..cfg() };
+        assert!(plan(&walk_lib(Graph::default()), &off, &Checks::new(), &auto, 100).is_none_or(|o| !o.walk));
     }
 
     /// A followed series whose id `AniList` doesn't know isn't asked about on

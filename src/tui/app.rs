@@ -277,38 +277,69 @@ pub enum DetailRow<'a> {
     Season {
         /// That season.
         series: &'a Series,
-        /// Its index in [`Library::series`].
+        /// Its index (see [`Library::entry`]).
         index: usize,
         /// After, rather than before.
         next: bool,
     },
+    /// An entry related to it on `AniList` (a side story, a film…).
+    Related {
+        /// That entry.
+        series: &'a Series,
+        /// Its index (see [`Library::entry`]).
+        index: usize,
+        /// How it relates (`side_story`, see
+        /// [`crate::meta::anilist::Relations::related`]).
+        relation: &'a str,
+    },
+    /// A divider naming the rows after it.
+    Divider(Divider),
+}
+
+/// What a Detail divider row introduces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Divider {
+    /// The related entries.
+    Related,
+    /// The episodes of part `n` of the series' split (see [`crate::split`]).
+    Part(usize),
 }
 
 impl<'a> DetailRow<'a> {
-    /// The item, unless this is a season link.
+    /// The item, unless this is a link to another entry or a divider.
     pub fn item(self) -> Option<&'a Item> {
         match self {
             Self::Item(it) => Some(it),
-            Self::Season { .. } => None,
+            Self::Season { .. } | Self::Related { .. } | Self::Divider(_) => None,
         }
     }
 }
 
-/// What a Detail row is: an index into the series' items, or into
-/// [`Library::series`] for the season it links to (`next`: after, rather
-/// than before).
+/// What a Detail row is: an index into the series' items, or the index (see
+/// [`Library::entry`]) of the season it links to (`next`: after, rather
+/// than before) or of a related entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailAt {
     Item(usize),
     Season { series: usize, next: bool },
+    Related { series: usize, n: usize },
+    Divider(Divider),
 }
 
 impl DetailAt {
-    /// The index of its item, unless it is a season link.
+    /// The index of its item, unless it is a link to another entry.
     fn item_ix(self) -> Option<usize> {
         match self {
             Self::Item(i) => Some(i),
-            Self::Season { .. } => None,
+            Self::Season { .. } | Self::Related { .. } | Self::Divider(_) => None,
+        }
+    }
+
+    /// The entry it links to, if it is a link.
+    fn linked(self) -> Option<usize> {
+        match self {
+            Self::Item(_) | Self::Divider(_) => None,
+            Self::Season { series, .. } | Self::Related { series, .. } => Some(series),
         }
     }
 }
@@ -332,6 +363,10 @@ enum RowId {
         /// The `▼` link, not the `▲` one.
         next: bool,
     },
+    /// A related entry's link in Detail, by the key of the entry it opens.
+    Related(String),
+    /// A divider in Detail.
+    Divider(Divider),
 }
 
 /// Live playback info.
@@ -466,6 +501,13 @@ pub struct App {
     pub episodes_shown: EpisodeFilter,
     /// Series shown in Detail.
     pub detail_key: Option<String>,
+    /// Sections of the series in Detail you collapsed (`true`) or expanded
+    /// by hand, over the default (see [`App::collapsed`]); forgotten when
+    /// another series is opened.
+    folds: HashMap<Divider, bool>,
+    /// The item a first Backspace marked to reset (series key, item): a
+    /// second resets it, any other key forgets it.
+    pub pending_reset: Option<(String, ItemKey)>,
     /// Play queue.
     pub queue: Vec<QueueEntry>,
     /// Open popup.
@@ -563,6 +605,8 @@ impl App {
             include_paused: false,
             episodes_shown: EpisodeFilter::default(),
             detail_key: None,
+            folds: HashMap::new(),
+            pending_reset: None,
             queue: Vec::new(),
             popup: None,
             messages: Vec::new(),
@@ -865,8 +909,10 @@ impl App {
             View::Detail => match *self.detail_ix.get(i)? {
                 DetailAt::Item(n) => RowId::Item(self.detail_series()?.items.get(n)?.key.clone()),
                 DetailAt::Season { series, next } => {
-                    RowId::Season { key: self.lib.series.get(series)?.key.clone(), next }
+                    RowId::Season { key: self.lib.get_entry(series)?.key.clone(), next }
                 }
+                DetailAt::Related { series, .. } => RowId::Related(self.lib.get_entry(series)?.key.clone()),
+                DetailAt::Divider(d) => RowId::Divider(d),
             },
         })
     }
@@ -994,9 +1040,11 @@ impl App {
                 .map(|(c, _)| c.0)
                 .collect();
             // Then every entry of a franchise the words name.
-            let q = query.words.to_lowercase();
+            // As typed: a quoted phrase's spaces are escaped for the matcher.
+            let q = query.words.replace("\\ ", " ").to_lowercase();
             for f in lib.franchises.iter().filter(|f| f.name.to_lowercase().contains(&q)) {
-                for i in f.series() {
+                // Series only: entries only on AniList aren't listed.
+                for i in f.series().into_iter().filter(|&i| i < lib.series.len()) {
                     if !hits.contains(&i) && accepts(&lib.series[i]) {
                         hits.push(i);
                     }
@@ -1011,30 +1059,179 @@ impl App {
     /// or the episode list's filters change).
     fn refresh_detail_rows(&mut self) {
         let EpisodeFilter { extras, missing } = self.episodes_shown;
-        let Some((at, s)) = self.detail_key.as_deref().and_then(|k| Some((self.lib.index_of(k)?, self.lib.get(k)?)))
+        let Some((at, s)) =
+            self.detail_key.as_deref().and_then(|k| Some((self.lib.index_any(k)?, self.lib.get_any(k)?)))
         else {
             self.detail_ix = Vec::new();
             return;
         };
         let (prev, next) = self.lib.franchise_neighbours(at);
         let season = |i: Option<usize>, next| i.map(|series| DetailAt::Season { series, next });
-        let items = s.ordered_indices(extras, missing).into_iter().map(DetailAt::Item);
-        self.detail_ix = season(prev, false).into_iter().chain(items).chain(season(next, true)).collect();
+        // A split series part by part: each part's heading (even when none
+        // of its episodes is listed), then its episodes unless it is
+        // collapsed; then the other items. The entries of a collapsed
+        // Related are left out too; its heading stays.
+        let listed = s.ordered_indices(extras, missing);
+        let mut rows = Vec::new();
+        match &s.split {
+            Some(split) => {
+                let part_of = |i: usize| s.part_of_item(&s.items[i]);
+                for n in 0..split.parts.len() {
+                    rows.push(DetailAt::Divider(Divider::Part(n)));
+                    if !self.collapsed(s, Divider::Part(n)) {
+                        rows.extend(listed.iter().copied().filter(|&i| part_of(i) == Some(n)).map(DetailAt::Item));
+                    }
+                }
+                rows.extend(listed.iter().copied().filter(|&i| part_of(i).is_none()).map(DetailAt::Item));
+            }
+            None => rows.extend(listed.into_iter().map(DetailAt::Item)),
+        }
+        // Related entries are listed whatever the episode filters hide.
+        let heading = (!s.related.is_empty()).then_some(DetailAt::Divider(Divider::Related));
+        let shown = !self.collapsed(s, Divider::Related);
+        let related =
+            s.related.iter().enumerate().filter(|_| shown).map(|(n, &(_, series))| DetailAt::Related { series, n });
+        self.detail_ix = season(prev, false)
+            .into_iter()
+            .chain(rows)
+            .chain(season(next, true))
+            .chain(heading)
+            .chain(related)
+            .collect();
+    }
+
+    /// Whether section `d` of series `s` in Detail is collapsed: as you left
+    /// it, else by default every part of a split series but the one holding
+    /// the next episode (the last when none is left), and Related open.
+    fn collapsed(&self, s: &Series, d: Divider) -> bool {
+        self.folds.get(&d).copied().unwrap_or_else(|| match (d, &s.split) {
+            (Divider::Part(n), Some(split)) => {
+                let home = s.next_up().and_then(|it| s.part_of_item(it)).unwrap_or(split.parts.len() - 1);
+                n != home
+            }
+            _ => false,
+        })
+    }
+
+    /// Whether section `d` of the series in Detail is collapsed (see `collapsed`).
+    pub fn detail_collapsed(&self, d: Divider) -> bool {
+        self.detail_series().is_some_and(|s| self.collapsed(s, d))
+    }
+
+    /// The part of the series in Detail the cursor is in, for a split
+    /// series: an episode's part (another item: the part of the nearest
+    /// episode above it), a part's divider's; on ▲, the first part, and on
+    /// ▼ or a related entry, the last.
+    pub fn detail_part(&self) -> Option<usize> {
+        let s = self.detail_series()?;
+        let split = s.split.as_ref()?;
+        let at = self.detail_state.selected()?;
+        let last = split.parts.len() - 1;
+        self.detail_ix.get(..=at)?.iter().rev().find_map(|r| match *r {
+            DetailAt::Item(i) => s.part_of_item(s.items.get(i)?),
+            DetailAt::Divider(Divider::Part(n)) => Some(n),
+            DetailAt::Season { next: false, .. } => Some(0),
+            DetailAt::Season { next: true, .. } | DetailAt::Related { .. } | DetailAt::Divider(Divider::Related) => {
+                Some(last)
+            }
+        })
+    }
+
+    /// Step to part `n` of the split series in Detail: open it if it is
+    /// collapsed, and put the cursor on its first episode (its divider when
+    /// none is listed).
+    fn step_to_part(&mut self, n: usize) -> bool {
+        self.folds.insert(Divider::Part(n), false);
+        self.refresh_detail_rows();
+        let Some(at) = self.detail_ix.iter().position(|r| *r == DetailAt::Divider(Divider::Part(n))) else {
+            return false;
+        };
+        let first = self.detail_ix.get(at + 1).filter(|r| r.item_ix().is_some()).map_or(at, |_| at + 1);
+        self.detail_state.select(Some(first));
+        true
+    }
+
+    /// Back to unwatched: item `it` of `series`, watched or started (its
+    /// resume point goes too).
+    fn reset_item(&mut self, series: &str, it: &Item) {
+        let Some(s) = self.lib.get(series) else { return };
+        let label = it.key.describe();
+        if matches!(it.state, crate::model::WatchState::Unwatched) {
+            return self.say(format!("{label} isn't started"));
+        }
+        // The first press asks (the row says so too), the second resets.
+        let this = (series.to_string(), it.key.clone());
+        if self.pending_reset.as_ref() != Some(&this) {
+            self.pending_reset = Some(this);
+            return self.say(format!("Backspace again to reset {label} to unwatched"));
+        }
+        self.pending_reset = None;
+        let res = self.ctx.mark(s, std::slice::from_ref(&it.key), false);
+        let ok = res.is_ok();
+        self.after_write(res);
+        if ok {
+            self.say(format!("{label} reset to unwatched"));
+        }
+    }
+
+    /// Record that episode `it` of `series` is the first of its linked
+    /// `AniList` entry (see [`EventBody::Numbering`]): the episodes before it
+    /// go to the entries before. On episode 1: no lead-in.
+    fn number_from(&mut self, series: &str, it: &Item) {
+        let Some(s) = self.lib.get(series) else { return };
+        let Some(title) = s.meta.as_ref().filter(|_| s.anilist_id().is_some()).and_then(|m| m.title.clone()) else {
+            return self.fail("not linked to AniList (L links it)");
+        };
+        let Some(first) = it.key.ep.map(crate::model::EpNo::whole) else { return };
+        let label = it.key.describe();
+        let anilist = s.anilist_id();
+        self.record([EventBody::Numbering { series: series.to_string(), first, anilist }]);
+        self.say(format!("{label} is now {title} 01"));
+    }
+
+    /// `]` (`next`) or `[` in Detail: in a split series, its next or
+    /// previous part as listed; past its last or first, the franchise's
+    /// entry after or before it, opened (at that part when it is split).
+    /// Without a franchise, or at either end, a message.
+    fn step_season(&mut self, next: bool) {
+        let lib = Arc::clone(&self.lib);
+        let nothing = if next { "nothing after this one" } else { "nothing before this one" };
+        let Some(at) = self.detail_key.as_deref().and_then(|k| lib.index_any(k)) else { return };
+        // Within a split series, its parts as listed (an empty one too); the
+        // part left collapses, so the one stepped to is what shows.
+        let parts = lib.entry(at).split.as_ref().map_or(0, |sp| sp.parts.len());
+        if let Some(p) = self.detail_part() {
+            let to = if next { Some(p + 1) } else { p.checked_sub(1) };
+            if let Some(n) = to.filter(|&n| n < parts) {
+                self.folds.insert(Divider::Part(p), true);
+                self.step_to_part(n);
+                return;
+            }
+        }
+        // Past its first or last: the franchise's entry before or after it.
+        let Some((f, _)) = lib.franchise_pos(at) else { return self.say(nothing) };
+        let mine: Vec<usize> = f.stops_of(at).collect();
+        let from = if next { mine.last() } else { mine.first() };
+        let to = from.and_then(|&n| if next { n.checked_add(1) } else { n.checked_sub(1) });
+        let Some(stop) = to.and_then(|n| f.stops.get(n)).filter(|st| st.series != at) else { return self.say(nothing) };
+        self.open_detail(lib.entry(stop.series).key.clone());
+        if let Some(n) = lib.stop_part(stop) {
+            self.step_to_part(n);
+        }
+    }
+
+    /// Collapse or expand section `d` of the series in Detail, keeping the
+    /// cursor on its divider.
+    fn toggle_fold(&mut self, d: Divider) {
+        let Some(s) = self.detail_series() else { return };
+        let now = !self.collapsed(s, d);
+        self.folds.insert(d, now);
+        self.reselect_detail(Some(&RowId::Divider(d)));
     }
 
     /// Whether the series in Detail has a season before or after it.
     pub fn detail_has_seasons(&self) -> bool {
-        self.detail_season(false).is_some() || self.detail_season(true).is_some()
-    }
-
-    /// The season (index) the Detail rows link to before or, `next`, after
-    /// the series: by the link's own `next`, not by where it is (with every
-    /// episode hidden, the `▼` link is the first row).
-    fn detail_season(&self, next: bool) -> Option<usize> {
-        self.detail_ix.iter().find_map(|r| match *r {
-            DetailAt::Season { series, next: n } if n == next => Some(series),
-            _ => None,
-        })
+        self.detail_ix.iter().any(|r| matches!(r, DetailAt::Season { .. }))
     }
 
     /// The first Detail row that is an item, else the first row.
@@ -1059,9 +1256,14 @@ impl App {
                     .position(|r| matches!(*r, DetailAt::Item(n) if s.items.get(n).is_some_and(|it| it.key == *k)))
             }
             RowId::Season { key, next } => {
-                let at = self.lib.index_of(key)?;
+                let at = self.lib.index_any(key)?;
                 let link = DetailAt::Season { series: at, next: *next };
                 self.detail_ix.iter().position(|r| *r == link)
+            }
+            RowId::Divider(d) => self.detail_ix.iter().position(|r| *r == DetailAt::Divider(*d)),
+            RowId::Related(key) => {
+                let at = self.lib.index_any(key)?;
+                self.detail_ix.iter().position(|r| matches!(*r, DetailAt::Related { series, .. } if series == at))
             }
             _ => None,
         }
@@ -1152,7 +1354,21 @@ impl App {
             }
         };
         self.detail_key.iter_mut().for_each(&resolve);
-        self.queue.iter_mut().map(|q| &mut q.series).for_each(&resolve);
+        // A queued item whose series' key changed (a season folded into its
+        // series) is the item its file is now: its number may have moved.
+        let cfg = &self.ctx.cfg;
+        for q in &mut self.queue {
+            let before = q.series.clone();
+            resolve(&mut q.series);
+            if q.series != before {
+                let (series, items) = lib.identify(cfg, &q.file);
+                if series == q.series
+                    && let Some(item) = items.into_iter().next()
+                {
+                    q.item = item;
+                }
+            }
+        }
         match &mut self.popup {
             Some(
                 Popup::Status { series, .. }
@@ -1175,7 +1391,7 @@ impl App {
 
     /// The series shown in Detail.
     pub fn detail_series(&self) -> Option<&Series> {
-        self.detail_key.as_deref().and_then(|k| self.lib.get(k))
+        self.detail_key.as_deref().and_then(|k| self.lib.get_any(k))
     }
 
     /// Detail rows: the season before, the items (extras right after their
@@ -1192,7 +1408,12 @@ impl App {
             .filter_map(|r| match *r {
                 DetailAt::Item(i) => s.items.get(i).map(DetailRow::Item),
                 DetailAt::Season { series, next } => {
-                    self.lib.series.get(series).map(|s| DetailRow::Season { series: s, index: series, next })
+                    self.lib.get_entry(series).map(|s| DetailRow::Season { series: s, index: series, next })
+                }
+                DetailAt::Divider(d) => Some(DetailRow::Divider(d)),
+                DetailAt::Related { series: index, n } => {
+                    let relation = s.related.get(n)?.0.as_str();
+                    self.lib.get_entry(index).map(|series| DetailRow::Related { series, index, relation })
                 }
             })
             .collect()
@@ -1414,10 +1635,19 @@ impl App {
         }
     }
 
-    /// Open the focused series' `AniList` page in the browser (or show its URL).
+    /// Open the focused series' `AniList` page in the browser (or show its
+    /// URL); in Detail, on a link to another entry, that entry's.
     fn open_anilist(&mut self) {
-        let Some(s) = self.focused_series() else { return self.say("no series under the cursor") };
-        let Some(id) = s.anilist_id() else {
+        let linked = (self.view == View::Detail)
+            .then(|| self.detail_state.selected().and_then(|i| self.detail_ix.get(i)?.linked()))
+            .flatten()
+            .and_then(|i| self.lib.get_entry(i));
+        let Some(s) = linked.or_else(|| self.focused_series()) else { return self.say("no series under the cursor") };
+        // In a split series, the part under the cursor's.
+        let part = (linked.is_none() && self.view == View::Detail)
+            .then(|| Some(s.split.as_ref()?.parts.get(self.detail_part()?)?.id()))
+            .flatten();
+        let Some(id) = part.or_else(|| s.anilist_id()) else {
             return self.fail(format!("{title}: not linked to AniList (L links it)", title = s.title));
         };
         let url = format!("https://anilist.co/anime/{id}");
@@ -1689,6 +1919,14 @@ impl App {
             self.on_popup_key(key);
             return;
         }
+        // A reset waits for its second Backspace, and only that.
+        if key.code != KeyCode::Backspace {
+            self.pending_reset = None;
+        }
+        if let Some(why) = self.refused_on_remote(key) {
+            self.say(why);
+            return;
+        }
         if self.on_global_key(key) {
             return;
         }
@@ -1699,6 +1937,24 @@ impl App {
             View::Files => self.on_files_key(key),
             View::Queue => self.on_queue_key(key),
             View::Detail => self.on_detail_key(key),
+        }
+    }
+
+    /// Why `key` does nothing in the Detail of an entry only on `AniList`
+    /// (nothing on disk, no history): there is nothing to play, mark or
+    /// queue, and it isn't a series to rename, link, merge or refresh yet.
+    fn refused_on_remote(&self, key: KeyEvent) -> Option<&'static str> {
+        // Keys that only look, move or open (and `s`/`C`, which record the
+        // link with the status) work; any other is refused, so a key added
+        // later can't record events for an entry that isn't a series.
+        const SAFE: &str = "jkgGhl[]sCopPyv?qr123456dxf ";
+        let remote = self.view == View::Detail && self.detail_series().is_some_and(|s| s.remote);
+        match key.code {
+            _ if !remote => None,
+            KeyCode::Char('M') => Some("only on AniList: refreshed with its franchise's relations"),
+            KeyCode::Char('m' | 'L' | 'R' | 'U') => Some("only on AniList: s sets a status to make it a series"),
+            KeyCode::Char(c) if !SAFE.contains(c) => Some("only on AniList: nothing on disk or watched"),
+            _ => None,
         }
     }
 
@@ -1819,6 +2075,10 @@ impl App {
         if self.view != View::Detail {
             self.back = self.view;
         }
+        // Another series starts from its default folds.
+        if self.detail_key.as_deref() != Some(key.as_str()) {
+            self.folds.clear();
+        }
         self.detail_key = Some(key);
         self.refresh_detail_rows();
         let first = self.detail_series().map(|s| {
@@ -1929,8 +2189,11 @@ impl App {
                 Ok(plan) if plan.events.is_empty() => self.say("caught up already"),
                 Ok(plan) => {
                     let (n, eps) = (plan.entries.len(), plan.episodes);
-                    let prompt =
-                        format!("{eps} episode(s) of {n} entries: {entries}", entries = plan.entries.join(", "));
+                    let entries = plan.entries.join(", ");
+                    let prompt = match plan.remote {
+                        0 => format!("{eps} episode(s) of {n} entries: {entries}"),
+                        remote => format!("{eps} episode(s) of {n} entries ({remote} only on AniList): {entries}"),
+                    };
                     self.popup = Some(Popup::CatchUp { series, prompt });
                 }
                 Err(e) => self.fail(format!("{e:#}")),
@@ -2118,18 +2381,26 @@ impl App {
             Some(DetailAt::Item(i)) => lib.get(&series).and_then(|s| s.items.get(i)),
             _ => None,
         };
+        let heading = match at {
+            Some(DetailAt::Divider(d)) => Some((d, self.detail_collapsed(d))),
+            _ => None,
+        };
         match (key.code, item) {
+            // ← on an open heading closes it, → on a closed one opens it.
+            (KeyCode::Char('h') | KeyCode::Left, None) if let Some((d, false)) = heading => self.toggle_fold(d),
+            (KeyCode::Char('l') | KeyCode::Right, None) if let Some((d, true)) = heading => self.toggle_fold(d),
             (KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left, _) => self.view = self.back,
+            // Backspace: the episode back to unwatched (a resume point too).
+            (KeyCode::Backspace, Some(it)) => self.reset_item(&series, it),
             // A season link opens that season; [ and ] open them from anywhere.
+            // ⏎ or Space on a divider collapses or expands what it heads.
+            (KeyCode::Enter | KeyCode::Char(' '), None) if let Some((d, _)) = heading => self.toggle_fold(d),
             (KeyCode::Enter, None) => {
-                if let Some(DetailAt::Season { series, .. }) = at {
-                    self.open_detail(lib.series[series].key.clone());
+                if let Some(i) = at.and_then(DetailAt::linked) {
+                    self.open_detail(lib.entry(i).key.clone());
                 }
             }
-            (KeyCode::Char(c @ ('[' | ']')), _) => match self.detail_season(c == ']') {
-                Some(i) => self.open_detail(lib.series[i].key.clone()),
-                None => self.say(if c == '[' { "nothing before this one" } else { "nothing after this one" }),
-            },
+            (KeyCode::Char(c @ ('[' | ']')), _) => self.step_season(c == ']'),
             (KeyCode::Char('x'), item) => {
                 let hiding = self.episodes_shown.extras;
                 // Keep the cursor on the same row if it is still shown, else
@@ -2163,6 +2434,8 @@ impl App {
                 }
             }
             (KeyCode::Char('w'), Some(it)) => self.toggle_watched(&series, std::slice::from_ref(it)),
+            // This episode is where the linked AniList entry starts.
+            (KeyCode::Char('N'), Some(it)) if it.key.kind == ItemKind::Episode => self.number_from(&series, it),
             (KeyCode::Char('W'), Some(it)) if it.key.kind == ItemKind::Episode => {
                 self.watched_through(&series, &it.key);
             }
@@ -2326,12 +2599,15 @@ impl App {
         let others = self.lib.series.iter().enumerate().filter(move |(i, _)| Some(*i) != from_ix).map(|(_, s)| s);
         if query.is_empty() {
             let from_title = self.lib.get(from).map(|s| s.title.as_str()).unwrap_or_default();
-            // Similarly named series first, then the rest.
+            // The suggested series (see `Library::merge_hint`), then similarly
+            // named ones, then the rest.
+            let hint = from_ix.and_then(|i| self.lib.merge_hint(i)).map(|j| &self.lib.series[j]);
             let first_word = from_title.split_whitespace().next().unwrap_or("");
-            let mut v: Vec<&Series> =
-                fuzzy_rank(others.clone(), first_word, |s| s.title.as_str().into()).into_iter().map(|x| x.0).collect();
-            let similar: HashSet<&str> = v.iter().map(|s| s.key.as_str()).collect();
-            v.extend(others.filter(|s| !similar.contains(s.key.as_str())));
+            let mut v: Vec<&Series> = hint.into_iter().collect();
+            v.extend(fuzzy_rank(others.clone(), first_word, |s| s.title.as_str().into()).into_iter().map(|x| x.0));
+            let mut listed: HashSet<&str> = HashSet::new();
+            v.retain(|s| listed.insert(s.key.as_str()));
+            v.extend(others.filter(|s| !listed.contains(s.key.as_str())));
             return v;
         }
         fuzzy_rank(others, query, |s| s.search_text().into()).into_iter().map(|x| x.0).collect()
@@ -3111,6 +3387,9 @@ mod tests {
         // A search finds every entry by the franchise's name.
         app.press("/monogatari series\n");
         assert_eq!(keys(&app).len(), 3);
+        // Quoted as a phrase too.
+        app.press("\x1b/\"monogatari series\"\n");
+        assert_eq!(keys(&app).len(), 3);
         // Folded, another entry you follow shows too.
         app.press("\x1bF");
         let res = app.ctx.set_status(&app.lib, "nekomonogatari", SeriesStatus::Following, None);
@@ -3384,7 +3663,7 @@ mod tests {
         assert!(app.lib.get("brand new show").is_some());
         assert_eq!(app.current_message(), Some("1 new show in your inbox (press 2)"));
         assert!(!app.pick_up_changes(), "once");
-        other.store_sync(&[], &[], None, &[], &[], &[], now()).unwrap();
+        other.store_sync(&[], &[], None, &crate::index::db::Fetched::default(), now()).unwrap();
         assert!(app.pick_up_changes());
         assert!(!app.pick_up_changes());
         // The TUI's own metadata reload doesn't hide a scan stored meanwhile.

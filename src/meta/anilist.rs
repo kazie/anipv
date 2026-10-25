@@ -1,9 +1,11 @@
-//! Anonymous `AniList` GraphQL queries: airing info and prequels by id (in
+//! Anonymous `AniList` GraphQL queries: airing info and relations by id (in
 //! batches of 50), and title searches (see [`super::search`]).
 //!
 //! Only public anime data is requested. No account or token is used; nothing
 //! about the user is sent, except the titles of series a title search looks
-//! up (only with `anilist_search`, or `meta match --search`).
+//! up (only with `anilist_search`, or `meta match --search`). Ids sent are
+//! those of linked series, and of their franchise entries `AniList` itself
+//! returned as related (see [`super::chain_frontier`]).
 //!
 //! What happens when `AniList` can't be asked, and why, is in
 //! `docs/anilist.md`, each rule with the tests that hold it.
@@ -438,7 +440,17 @@ const RELATIONS_QUERY: &str = "query ($ids: [Int]) {
   }
 }";
 
-/// The direct prequels and sequels (anime only) of an id.
+/// Related kinds (as [`Relations::related`] has them) whose entries are part
+/// of the franchise: a franchise walk follows them, as it follows prequels and
+/// sequels. Others ([`LISTED`]) are shown but not followed.
+pub const BRANCHES: [&str; 7] =
+    ["side_story", "spin_off", "summary", "alternative", "parent", "compilation", "contains"];
+
+/// Related kinds shown on an entry but not followed: they often lead out of
+/// the franchise (music videos, crossovers).
+pub const LISTED: [&str; 1] = ["other"];
+
+/// The direct relations (anime only) of an id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Relations {
     /// `AniList` id.
@@ -447,27 +459,38 @@ pub struct Relations {
     pub prequels: Vec<u64>,
     /// Its sequels' ids.
     pub sequels: Vec<u64>,
+    /// Its other related entries: relation (lowercase, `side_story`) and id,
+    /// of the kinds in [`BRANCHES`] and [`LISTED`] (`CHARACTER` links to
+    /// other franchises' works are left out).
+    pub related: Vec<(String, u64)>,
 }
 
-/// The direct prequels and sequels (anime only) of each id, for spotting new
-/// seasons and grouping franchises. Every requested id that `AniList` knows
-/// is returned, with empty lists when it has none.
+/// The direct relations (anime only) of each id, for spotting new seasons
+/// and grouping franchises. Every requested id that `AniList` knows is
+/// returned, with empty lists when it has none.
 pub fn fetch_relations(http: &dyn Http, ids: &[u64]) -> Batched<Relations> {
     query_media(http, RELATIONS_QUERY, ids, |media| {
         let mut out = Vec::new();
         for m in media.as_array().into_iter().flatten() {
             let Some(id) = m.get("id").and_then(Value::as_u64) else { continue };
-            let related = |kind: &str| -> Vec<u64> {
-                m.pointer("/relations/edges")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|e| e.get("relationType").and_then(Value::as_str) == Some(kind))
-                    .filter(|e| e.pointer("/node/type").and_then(Value::as_str) == Some("ANIME"))
-                    .filter_map(|e| e.pointer("/node/id").and_then(Value::as_u64))
-                    .collect()
-            };
-            out.push(Relations { id, prequels: related("PREQUEL"), sequels: related("SEQUEL") });
+            let edges: Vec<(String, u64)> = m
+                .pointer("/relations/edges")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|e| e.pointer("/node/type").and_then(Value::as_str) == Some("ANIME"))
+                .filter_map(|e| {
+                    let kind = e.get("relationType").and_then(Value::as_str)?.to_ascii_lowercase();
+                    Some((kind, e.pointer("/node/id").and_then(Value::as_u64)?))
+                })
+                .collect();
+            let of = |kind: &str| -> Vec<u64> { edges.iter().filter(|(k, _)| k == kind).map(|e| e.1).collect() };
+            let (prequels, sequels) = (of("prequel"), of("sequel"));
+            let related = edges
+                .into_iter()
+                .filter(|(k, _)| BRANCHES.contains(&k.as_str()) || LISTED.contains(&k.as_str()))
+                .collect();
+            out.push(Relations { id, prequels, sequels, related });
         }
         Ok(out)
     })
@@ -749,14 +772,19 @@ mod tests {
             {"id": 199_111, "relations": {"edges": [
                 {"relationType": "PREQUEL", "node": {"id": 182_309, "type": "ANIME"}},
                 {"relationType": "SEQUEL", "node": {"id": 5, "type": "ANIME"}},
-                {"relationType": "PREQUEL", "node": {"id": 7, "type": "MANGA"}}
+                {"relationType": "PREQUEL", "node": {"id": 7, "type": "MANGA"}},
+                {"relationType": "SIDE_STORY", "node": {"id": 8, "type": "ANIME"}},
+                {"relationType": "OTHER", "node": {"id": 9, "type": "ANIME"}},
+                {"relationType": "CHARACTER", "node": {"id": 10, "type": "ANIME"}},
+                {"relationType": "SPIN_OFF", "node": {"id": 11, "type": "MANGA"}}
             ]}},
             {"id": 100_922, "relations": {"edges": []}}
         ]}}});
         let fake = Fake { calls: RefCell::new(vec![]), reply };
         let got = fetch_relations(&fake, &[199_111, 100_922]).items;
-        let rel = |id, prequels, sequels| Relations { id, prequels, sequels };
-        assert_eq!(got, vec![rel(199_111, vec![182_309], vec![5]), rel(100_922, vec![], vec![])]);
+        let related = vec![("side_story".to_string(), 8), ("other".to_string(), 9)];
+        let rel = |id, prequels, sequels, related| Relations { id, prequels, sequels, related };
+        assert_eq!(got, vec![rel(199_111, vec![182_309], vec![5], related), rel(100_922, vec![], vec![], vec![])]);
     }
 
     /// docs/anilist.md R14: Regression: a failing batch no longer discards the batches that

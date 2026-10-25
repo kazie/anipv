@@ -23,6 +23,12 @@ impl EpNo {
         self.0
     }
 
+    /// This number `n` episodes on (`11` + 24 = `35`, `12.5` + 24 = `36.5`).
+    #[must_use]
+    pub fn plus(self, n: u32) -> Self {
+        Self(self.0.saturating_add(n.saturating_mul(10)))
+    }
+
     /// Whole part, e.g. `12` for `12.5`.
     pub fn whole(self) -> u32 {
         self.0 / 10

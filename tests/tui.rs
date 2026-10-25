@@ -181,6 +181,400 @@ fn detail_links_the_seasons_around_it() {
     assert_eq!(app.view, View::Series);
 }
 
+/// Dandadan S1 is only on AniList: the ▲ link and the header chain show it,
+/// a film of it is a related row, and ▲ opens its Detail, where what needs
+/// files is refused and `s` makes it a series. It isn't listed in Series.
+#[test]
+fn remote_entries_open_from_their_franchise() {
+    use anipv::model::SeriesStatus;
+    let (_d, mut app) = app();
+    app.opener = Box::new(|_| anyhow::bail!("no opener"));
+    app.press("3/dandadan\n");
+    let listed: Vec<String> = app.series_rows_in(0..usize::MAX).iter().map(|s| s.key.clone()).collect();
+    assert_eq!(listed, ["dandadan s2"], "remote entries aren't listed");
+    assert!(anipv::app::find_series(&app.lib, "dandadan").is_ok_and(|s| s.key == "dandadan s2"));
+    app.press("\n");
+    insta::assert_snapshot!("detail_remote_links", render(&mut app));
+    assert!(matches!(app.detail_rows().last(), Some(DetailRow::Related { relation: "compilation", .. })));
+    // o on the related row opens the film's page.
+    app.press("Gjj");
+    app.press("o");
+    assert_eq!(app.current_message(), Some("https://anilist.co/anime/990001"));
+    app.press("gk\n");
+    assert_eq!(app.detail_series().map(|s| (s.key.as_str(), s.remote)), Some(("dandadan", true)));
+    insta::assert_snapshot!("detail_remote", render(&mut app));
+    for (key, why) in [
+        ("M", "only on AniList: refreshed with its franchise's relations"),
+        ("R", "only on AniList: s sets a status to make it a series"),
+        ("w", "only on AniList: nothing on disk or watched"),
+    ] {
+        app.press(key);
+        assert_eq!(app.current_message(), Some(why), "{key}");
+        assert!(app.popup.is_none(), "{key}");
+    }
+    app.press("sc");
+    let s1 = app.lib.get("dandadan").unwrap();
+    assert_eq!((s1.status, s1.anilist_id()), (SeriesStatus::Completed, Some(171_018)));
+    assert_eq!(app.detail_series().map(|s| s.remote), Some(false));
+}
+
+/// Stardust Crusaders 01–48 on disk, linked to its first half (24), with
+/// the Egypt arc (24) cached: the episodes are split between the two,
+/// under a divider each, with the second half's own numbers.
+#[test]
+fn episodes_numbered_on_show_their_part() {
+    use anipv::index::db::{Fetched, SeriesMeta};
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = anipv::demo::setup(dir.path(), NOW).unwrap();
+    let dl = dir.path().join("media/Downloads");
+    for n in 1..=48 {
+        std::fs::write(
+            dl.join(format!("[GroupA] JoJo no Kimyou na Bouken Stardust Crusaders - {n:02} (1080p).mkv")),
+            b"",
+        )
+        .unwrap();
+    }
+    let mut ctx = ctx;
+    ctx.scan(None, &|_, _| {}).unwrap();
+    let half = |id: u64, title: &str, year: i32| SeriesMeta {
+        anilist: Some(id),
+        title: Some(title.into()),
+        titles: Some(vec![title.into()]),
+        format: Some("TV".into()),
+        year: Some(year),
+        episodes: Some(24),
+        status: Some("FINISHED".into()),
+        refreshed_at: Some(NOW),
+        ..SeriesMeta::default()
+    };
+    let key = "jojo no kimyou na bouken stardust crusaders";
+    let first = SeriesMeta { series: key.into(), ..half(20_474, "JoJo no Kimyou na Bouken: Stardust Crusaders", 2014) };
+    ctx.db.put_metas(&[first]).unwrap();
+    let egypt = [half(20_799, "JoJo no Kimyou na Bouken: Stardust Crusaders - Egypt-hen", 2015)];
+    let fetched = Fetched {
+        prequels: &[(20_799, vec![20_474])],
+        sequels: &[(20_474, vec![20_799]), (20_799, vec![])],
+        related: &[(20_474, vec![]), (20_799, vec![])],
+        media: &egypt,
+        checks: &[],
+    };
+    ctx.db.store_sync(&[], &[], None, &fetched, NOW).unwrap();
+    let mut app = App::new(ctx).unwrap();
+    app.clock = Some(NOW);
+    app.opener = Box::new(|_| anyhow::bail!("no opener"));
+    app.press("3/stardust\n\n");
+    assert_eq!(app.detail_series().map(|s| s.key.as_str()), Some(key));
+    // The half with the next episode is open, the other collapsed to its heading.
+    let dividers = app.detail_rows().iter().filter(|r| matches!(r, DetailRow::Divider(_))).count();
+    assert_eq!((dividers, app.rows_len(View::Detail)), (2, 26));
+    insta::assert_snapshot!("detail_split", render(&mut app));
+    // ] steps into the second half (opening it), [ back; the header follows.
+    app.press("]");
+    let ep = |app: &App| selected_item(app).and_then(|k| k.ep).map(anipv::model::EpNo::whole);
+    assert_eq!((ep(&app), app.detail_part()), (Some(25), Some(1)));
+    let s = render(&mut app);
+    assert!(s.contains("ⓐ20799") && s.contains("0/24") && s.contains("▸Egypt-hen◂"), "{s}");
+    insta::assert_snapshot!("detail_split_part2", s);
+    app.press("jjjjjo");
+    assert_eq!(app.current_message(), Some("https://anilist.co/anime/20799"));
+    app.press("]");
+    assert_eq!(app.current_message(), Some("nothing after this one"));
+    app.press("[");
+    assert_eq!(ep(&app), Some(1));
+    assert!(render(&mut app).contains("ⓐ20474"));
+    app.press("[");
+    assert_eq!(app.current_message(), Some("nothing before this one"));
+    // ⏎ on a heading collapses what it heads, and again opens it.
+    let band = |app: &App| app.detail_rows().iter().position(|r| matches!(r, DetailRow::Divider(_))).unwrap();
+    app.detail_state.select(Some(band(&app)));
+    app.press("\n");
+    // Stepping back collapsed the second half; now the first too.
+    assert_eq!(app.rows_len(View::Detail), 2, "both halves collapsed");
+    app.press(" ");
+    assert_eq!(app.rows_len(View::Detail), 2 + 24);
+    // ← (h) closes an open heading, → (l) opens a closed one.
+    app.detail_state.select(Some(band(&app)));
+    app.press("h");
+    assert_eq!(app.rows_len(View::Detail), 2, "← closed it");
+    app.press("l");
+    assert_eq!(app.rows_len(View::Detail), 2 + 24, "→ opened it");
+    assert_eq!(app.view, View::Detail);
+    // Backspace takes an episode back to unwatched.
+    app.press("j");
+    assert_eq!(ep(&app), Some(1));
+    app.press("w");
+    assert!(items(&app)[0].state.is_watched());
+    // The first press asks, on the row too; another key forgets it.
+    app.press("\x7f");
+    assert!(items(&app)[0].state.is_watched());
+    assert_eq!(app.current_message(), Some("Backspace again to reset 01 to unwatched"));
+    assert!(render(&mut app).contains("⌫ again"));
+    app.press("j");
+    app.press("k");
+    app.press("\x7f");
+    assert!(items(&app)[0].state.is_watched(), "asked again, not reset");
+    app.press("\x7f");
+    assert!(matches!(items(&app)[0].state, anipv::model::WatchState::Unwatched));
+    assert_eq!(app.current_message(), Some("01 reset to unwatched"));
+    app.press("\x7f");
+    assert_eq!(app.current_message(), Some("01 isn't started"));
+    // ← on an episode still goes back.
+    app.press("h");
+    assert_eq!(app.view, View::Series);
+    app.press("\n");
+    // A heading is a band: its background goes across the gaps between columns.
+    app.press("gk");
+    let mut t = Terminal::new(TestBackend::new(110, 40)).unwrap();
+    t.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let buf = t.backend().buffer().clone();
+    // A band the cursor isn't on (that one is the cursor's colour).
+    let band_rows: Vec<u16> =
+        (0..buf.area.height).filter(|&y| (0..6).any(|x| matches!(buf[(x, y)].symbol(), "▾" | "▸"))).collect();
+    let row = *band_rows.iter().find(|&&y| buf[(1, y)].symbol() != "▌").expect("a band without the cursor");
+    // Under the label, in the gap after it, and under the facts.
+    for x in [8, 30, 47, 90] {
+        assert_eq!(buf[(x, row)].bg, ratatui::style::Color::Indexed(236), "column {x} of row {row}");
+    }
+}
+
+/// Seasons 1 and 3 numbered on (01–24, 49–52), season 2 by itself in
+/// another release (01–24): it is folded in at 25–48, one series of three
+/// parts, and `]` / `[` walk S1 → S2 → S3 and back in its list.
+#[test]
+fn a_season_numbered_by_itself_is_a_part_of_the_series() {
+    use anipv::index::db::{Fetched, SeriesMeta};
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = anipv::demo::setup(dir.path(), NOW).unwrap();
+    let dl = dir.path().join("media/Downloads");
+    for n in (1..=24).chain(49..=52) {
+        std::fs::write(dl.join(format!("[GroupA] Hoshi no Kusari - {n:02} (1080p).mkv")), b"").unwrap();
+    }
+    for n in 1..=24 {
+        std::fs::write(dl.join(format!("[GroupB] Hoshi no Kusari S2 - {n:02} (1080p).mkv")), b"").unwrap();
+    }
+    ctx.scan(None, &|_, _| {}).unwrap();
+    let season = |id: u64, title: &str, episodes: u32, status: &str| SeriesMeta {
+        anilist: Some(id),
+        title: Some(title.into()),
+        titles: Some(vec![title.into()]),
+        format: Some("TV".into()),
+        episodes: Some(episodes),
+        status: Some(status.into()),
+        refreshed_at: Some(NOW),
+        ..SeriesMeta::default()
+    };
+    ctx.db
+        .put_metas(&[
+            SeriesMeta { series: "hoshi no kusari".into(), ..season(9001, "Hoshi no Kusari", 24, "FINISHED") },
+            SeriesMeta {
+                series: "hoshi no kusari s2".into(),
+                ..season(9002, "Hoshi no Kusari 2nd Season", 24, "FINISHED")
+            },
+        ])
+        .unwrap();
+    let media = [season(9003, "Hoshi no Kusari 3rd Season", 12, "RELEASING")];
+    let fetched = Fetched {
+        prequels: &[(9002, vec![9001]), (9003, vec![9002]), (9001, vec![])],
+        sequels: &[(9001, vec![9002]), (9002, vec![9003]), (9003, vec![])],
+        related: &[(9001, vec![]), (9002, vec![]), (9003, vec![])],
+        media: &media,
+        checks: &[],
+    };
+    ctx.db.store_sync(&[], &[], None, &fetched, NOW).unwrap();
+    let mut app = App::new(ctx).unwrap();
+    app.clock = Some(NOW);
+    app.press("3/hoshi no kusari\n");
+    let listed: Vec<String> = app.series_rows_in(0..usize::MAX).iter().map(|s| s.key.clone()).collect();
+    assert_eq!(listed, ["hoshi no kusari"], "the season's release isn't a series of its own");
+    app.press("\n");
+    let at = |app: &App| (app.detail_series().map(|s| s.key.clone()).unwrap_or_default(), app.detail_part());
+    let ep = |app: &App| selected_item(app).and_then(|k| k.ep).map(anipv::model::EpNo::whole);
+    assert_eq!(at(&app), ("hoshi no kusari".into(), Some(0)));
+    let s = render(&mut app);
+    assert!(!s.contains("also in another folder"), "{s}");
+    app.press("]");
+    assert_eq!((at(&app).1, ep(&app)), (Some(1), Some(25)));
+    let s = render(&mut app);
+    assert!(s.contains("25 (01)") && s.contains("[GroupB] Hoshi no Kusari S2 - 01"), "{s}");
+    app.press("]");
+    assert_eq!((at(&app).1, ep(&app)), (Some(2), Some(49)));
+    app.press("[[");
+    assert_eq!((at(&app).1, ep(&app)), (Some(0), Some(1)));
+    app.press("[");
+    assert_eq!(app.current_message(), Some("nothing before this one"));
+}
+
+/// Seasons 1 and 3 on disk (01–24, 49–52), the second not: its part is
+/// listed empty, and `]` / `[` step onto it between the others.
+#[test]
+fn brackets_step_onto_an_empty_part() {
+    use anipv::index::db::{Fetched, SeriesMeta};
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = anipv::demo::setup(dir.path(), NOW).unwrap();
+    let dl = dir.path().join("media/Downloads");
+    for n in (1..=24).chain(49..=52) {
+        std::fs::write(dl.join(format!("[GroupA] Hoshi no Kusari - {n:02} (1080p).mkv")), b"").unwrap();
+    }
+    ctx.scan(None, &|_, _| {}).unwrap();
+    let season = |id: u64, title: &str, episodes: u32, status: &str| SeriesMeta {
+        anilist: Some(id),
+        title: Some(title.into()),
+        titles: Some(vec![title.into()]),
+        format: Some("TV".into()),
+        episodes: Some(episodes),
+        status: Some(status.into()),
+        refreshed_at: Some(NOW),
+        ..SeriesMeta::default()
+    };
+    ctx.db
+        .put_metas(&[SeriesMeta {
+            series: "hoshi no kusari".into(),
+            ..season(9001, "Hoshi no Kusari", 24, "FINISHED")
+        }])
+        .unwrap();
+    let media = [
+        season(9002, "Hoshi no Kusari 2nd Season", 24, "FINISHED"),
+        season(9003, "Hoshi no Kusari 3rd Season", 12, "RELEASING"),
+    ];
+    let fetched = Fetched {
+        prequels: &[(9002, vec![9001]), (9003, vec![9002]), (9001, vec![])],
+        sequels: &[(9001, vec![9002]), (9002, vec![9003]), (9003, vec![])],
+        related: &[(9001, vec![]), (9002, vec![]), (9003, vec![])],
+        media: &media,
+        checks: &[],
+    };
+    ctx.db.store_sync(&[], &[], None, &fetched, NOW).unwrap();
+    let mut app = App::new(ctx).unwrap();
+    app.clock = Some(NOW);
+    app.press("3/hoshi no kusari\n\n");
+    assert_eq!(app.detail_part(), Some(0));
+    app.press("]");
+    assert_eq!(app.detail_part(), Some(1), "onto the empty second part");
+    app.press("]");
+    assert_eq!(app.detail_part(), Some(2));
+    app.press("[");
+    assert_eq!(app.detail_part(), Some(1));
+    app.press("[");
+    assert_eq!(app.detail_part(), Some(0));
+}
+
+/// A split whose first part is only in your history (BAKI-DOU's first
+/// cour): its heading is listed though `d` hides its episodes, says so,
+/// and `[` from the second part lands on it; `[` again: nothing before.
+#[test]
+fn a_part_known_only_from_history_keeps_its_heading() {
+    use anipv::events::EventBody;
+    use anipv::index::db::{Fetched, SeriesMeta};
+    use anipv::model::{EpNo, ItemKey};
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = anipv::demo::setup(dir.path(), NOW).unwrap();
+    let dl = dir.path().join("media/Downloads");
+    for n in 25..=48 {
+        std::fs::write(
+            dl.join(format!("[GroupA] JoJo no Kimyou na Bouken Stardust Crusaders - {n:02} (1080p).mkv")),
+            b"",
+        )
+        .unwrap();
+    }
+    ctx.scan(None, &|_, _| {}).unwrap();
+    let key = "jojo no kimyou na bouken stardust crusaders";
+    let watched =
+        (1..=24).map(|n| EventBody::Watched { series: key.into(), item: ItemKey::episode(EpNo::new(n)), file: None });
+    ctx.record(watched).unwrap();
+    let half = |id: u64, title: &str| SeriesMeta {
+        anilist: Some(id),
+        title: Some(title.into()),
+        titles: Some(vec![title.into()]),
+        format: Some("TV".into()),
+        episodes: Some(24),
+        status: Some("FINISHED".into()),
+        refreshed_at: Some(NOW),
+        ..SeriesMeta::default()
+    };
+    ctx.db.put_metas(&[SeriesMeta { series: key.into(), ..half(20_474, "Stardust Crusaders") }]).unwrap();
+    let egypt = [half(20_799, "Stardust Crusaders - Egypt-hen")];
+    let fetched = Fetched {
+        prequels: &[(20_799, vec![20_474])],
+        sequels: &[(20_474, vec![20_799]), (20_799, vec![])],
+        related: &[(20_474, vec![]), (20_799, vec![])],
+        media: &egypt,
+        checks: &[],
+    };
+    ctx.db.store_sync(&[], &[], None, &fetched, NOW).unwrap();
+    let mut app = App::new(ctx).unwrap();
+    app.clock = Some(NOW);
+    app.press("3/stardust\n\n");
+    assert!(matches!(app.detail_rows()[0], DetailRow::Divider(_)), "the first part's heading is there");
+    app.press("G[");
+    let at = app.detail_state.selected().unwrap();
+    assert!(matches!(app.detail_rows()[at], DetailRow::Divider(_)), "on the first part's heading");
+    assert_eq!(app.detail_part(), Some(0));
+    let s = render(&mut app);
+    assert!(s.contains("watched 24/24 ✓ · 24 not"), "{s}");
+    app.press("[");
+    assert_eq!(app.current_message(), Some("nothing before this one"));
+}
+
+/// Steel Ball Run 01–06 linked to its second part: the one-episode first
+/// part, aired that year, leads in (01 is it). `N` on 01 says the linked
+/// part starts there, and the split is gone; `N` on 02 brings it back.
+#[test]
+fn n_sets_where_the_linked_entry_starts() {
+    use anipv::index::db::{Fetched, SeriesMeta};
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = anipv::demo::setup(dir.path(), NOW).unwrap();
+    let dl = dir.path().join("media/Downloads");
+    for n in 1..=6 {
+        std::fs::write(dl.join(format!("[GroupA] Steel Ball Run - {n:02} (1080p).mkv")), b"").unwrap();
+    }
+    ctx.scan(None, &|_, _| {}).unwrap();
+    let ona = |id: u64, title: &str, episodes: u32, status: &str| SeriesMeta {
+        anilist: Some(id),
+        title: Some(title.into()),
+        titles: Some(vec![title.into()]),
+        format: Some("ONA".into()),
+        year: Some(2026),
+        episodes: Some(episodes),
+        status: Some(status.into()),
+        refreshed_at: Some(NOW),
+        ..SeriesMeta::default()
+    };
+    let key = "steel ball run";
+    ctx.db
+        .put_metas(&[SeriesMeta {
+            series: key.into(),
+            ..ona(210_482, "Steel Ball Run 2nd & 3rd STAGE", 11, "RELEASING")
+        }])
+        .unwrap();
+    let lead = [ona(190_327, "Steel Ball Run 1st STAGE", 1, "FINISHED")];
+    let fetched = Fetched {
+        prequels: &[(210_482, vec![190_327]), (190_327, vec![])],
+        sequels: &[(190_327, vec![210_482]), (210_482, vec![])],
+        related: &[(210_482, vec![]), (190_327, vec![])],
+        media: &lead,
+        checks: &[],
+    };
+    ctx.db.store_sync(&[], &[], None, &fetched, NOW).unwrap();
+    let mut app = App::new(ctx).unwrap();
+    app.clock = Some(NOW);
+    app.press("3/steel ball\n\n");
+    let parts = |app: &App| app.detail_series().and_then(|s| s.split.as_ref()).map(|sp| sp.parts.len());
+    assert_eq!(parts(&app), Some(2), "the first part leads in");
+    // On 01 (the cursor goes to the next episode, 01; it may sit in a collapsed part).
+    let row_of = |app: &App, n: u32| {
+        app.detail_rows()
+            .iter()
+            .position(|r| r.item().is_some_and(|it| it.key.ep.map(anipv::model::EpNo::whole) == Some(n)))
+    };
+    app.detail_state.select(row_of(&app, 1));
+    app.press("N");
+    assert_eq!(app.current_message(), Some("01 is now Steel Ball Run 2nd & 3rd STAGE 01"));
+    assert_eq!(parts(&app), None);
+    app.detail_state.select(row_of(&app, 2));
+    app.press("N");
+    assert_eq!(parts(&app), Some(2));
+}
+
 /// A status imported from fish history (`via`) shows as a little fish in
 /// the header's border; a note of yours is quoted, at the end of line 2,
 /// whatever it says; one anipv wrote itself isn't shown.
@@ -745,7 +1139,7 @@ fn help_that_fits_closes_on_any_key() {
     let (_d, mut app) = app();
     for key in ["j", " ", "k", "x"] {
         app.press("?");
-        let s = render_sized(&mut app, 110, 80);
+        let s = render_sized(&mut app, 110, 90);
         assert!(s.contains("Keys · any key closes"), "{s}");
         app.press(key);
         assert!(app.popup.is_none(), "{key:?} closes it");
