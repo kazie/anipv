@@ -24,7 +24,7 @@ Show
 # Up next: move down two rows, queue the next episode of two shows.
 Sleep 1.5s
 Down Sleep 400ms Down Sleep 400ms
-Space Sleep 500ms Space Sleep 800ms
+Space Sleep 500ms Down Sleep 400ms Space Sleep 800ms
 # Queue: move the first entry down.
 Type "5" Sleep 1.5s
 Type "J" Sleep 800ms

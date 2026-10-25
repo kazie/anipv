@@ -27,7 +27,7 @@ Press `?` in the TUI to see these at any time.
 
 | Key | Action |
 | --- | --- |
-| `space` | queue next new episode and move down |
+| `space` | queue next new episode; down when none are left |
 | `a` | queue all new episodes |
 | `w` | mark next episode watched without playing |
 | `i` | include paused series |
@@ -56,7 +56,7 @@ Press `?` in the TUI to see these at any time.
 | `L` | link AniList id |
 | `F` | fold franchises to the entry you're at |
 | `C` | catch up: this and earlier entries watched |
-| `⏎` | open series |
+| `⏎ / space` | open series |
 
 ## Episodes
 

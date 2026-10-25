@@ -18,6 +18,14 @@ fn app() -> (tempfile::TempDir, App) {
     (dir, app)
 }
 
+/// Queue the next episode of the first two series in Up next (Space stays
+/// on a series with more new episodes, so pick the second row by hand).
+fn queue_first_two(app: &mut App) {
+    app.press(" ");
+    app.upnext_state.select(Some(1));
+    app.press(" ");
+}
+
 fn render(app: &mut App) -> String {
     render_sized(app, 110, 28)
 }
@@ -64,7 +72,7 @@ fn up_next_lists_followed_series_with_new_episodes() {
 fn queue_and_play_flow() {
     let (_d, mut app) = app();
     // Queue next of the first two series, then look at the queue tab.
-    app.press("  ");
+    queue_first_two(&mut app);
     assert_eq!(app.queue.len(), 2);
     app.press("5");
     let s = render(&mut app);
@@ -424,7 +432,7 @@ fn wait_for_player(app: &mut App) {
 fn queue_survives_a_player_that_exits_immediately() {
     // The demo's player is `true`: it exits without ever opening the IPC socket.
     let (_d, mut app) = app();
-    app.press("  ");
+    queue_first_two(&mut app);
     app.play_queue(true);
     assert!(app.playing.is_some());
     wait_for_player(&mut app);

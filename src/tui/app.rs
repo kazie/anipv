@@ -1277,22 +1277,27 @@ impl App {
         }
     }
 
-    /// Queue the next new episode(s) of a series that aren't queued yet.
-    fn queue_next_of(&mut self, key: &str, all: bool) {
-        let Some(s) = self.lib.get(key) else { return };
+    /// Queue the next new episode(s) of a series that aren't queued yet;
+    /// true if it has more left to queue.
+    fn queue_next_of(&mut self, key: &str, all: bool) -> bool {
+        let Some(s) = self.lib.get(key) else { return false };
         let title = s.title.clone();
         // A multi-episode file is queued once: skip items whose file already is.
         let queued_file =
             |item: &ItemKey| s.item(item).and_then(Item::best_file).is_some_and(|f| self.is_file_queued(&f.path));
-        let entries =
-            queue_new(s, if all { usize::MAX } else { 1 }, |item| self.is_queued(key, item) || queued_file(item));
+        // One more than wanted tells whether any are left.
+        let want = if all { usize::MAX } else { 1 };
+        let mut entries = queue_new(s, want.saturating_add(1), |item| self.is_queued(key, item) || queued_file(item));
+        let more = entries.len() > want;
+        entries.truncate(want);
         if entries.is_empty() {
             self.say(format!("nothing new to queue for {title}"));
-            return;
+            return false;
         }
         let n = entries.len();
         self.queue.extend(entries);
         self.say(format!("queued {n} from {title} ({queue} in queue)", queue = self.queue.len()));
+        more
     }
 
     /// Keep events just recorded (without reading the log again), or report
@@ -1336,7 +1341,7 @@ impl App {
         let before = self.queue.len();
         if self.queue.is_empty() && self.playing.is_none() {
             match self.focused_series().map(|s| s.key.clone()) {
-                Some(key) => self.queue_next_of(&key, false),
+                Some(key) => _ = self.queue_next_of(&key, false),
                 None => self.say("queue is empty"),
             }
             if self.queue.is_empty() {
@@ -1828,7 +1833,10 @@ impl App {
             KeyCode::Char('f') => triage(SeriesStatus::Following, "following"),
             KeyCode::Char('s') => triage(SeriesStatus::Skipped, "skipped"),
             KeyCode::Char('z') => triage(SeriesStatus::Paused, "later:"),
-            KeyCode::Char(' ') => return self.queue_next_of(&key_s, false),
+            KeyCode::Char(' ') => {
+                self.queue_next_of(&key_s, false);
+                return;
+            }
             KeyCode::Enter | KeyCode::Right => return self.open_detail(key_s),
             _ => return self.series_actions(key, key_s),
         };
@@ -1848,11 +1856,13 @@ impl App {
         let Some(sel) = self.selected_upnext().map(|s| s.key.clone()) else { return };
         match key.code {
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.open_detail(sel),
+            // Stay put while there's more to queue, so Space can be pressed again.
             KeyCode::Char(' ') => {
-                self.queue_next_of(&sel, false);
-                self.move_cursor(1);
+                if !self.queue_next_of(&sel, false) {
+                    self.move_cursor(1);
+                }
             }
-            KeyCode::Char('a') => self.queue_next_of(&sel, true),
+            KeyCode::Char('a') => _ = self.queue_next_of(&sel, true),
             KeyCode::Char('w') => {
                 let next = self.lib.get(&sel).and_then(|s| s.next_up().cloned());
                 if let Some(item) = next {
@@ -1892,8 +1902,8 @@ impl App {
         let Some(s) = self.selected_series() else { return };
         let key_s = s.key.clone();
         match key.code {
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.open_detail(key_s),
-            KeyCode::Char(' ') => self.queue_next_of(&key_s, false),
+            // Space opens too: episodes are queued from inside a series.
+            KeyCode::Enter | KeyCode::Char('l' | ' ') | KeyCode::Right => self.open_detail(key_s),
             _ => self.series_actions(key, key_s),
         }
     }
@@ -2152,7 +2162,7 @@ impl App {
             (KeyCode::Char('W'), Some(it)) if it.key.kind == ItemKind::Episode => {
                 self.watched_through(&series, &it.key);
             }
-            (KeyCode::Char('a'), _) => self.queue_next_of(&series, true),
+            (KeyCode::Char('a'), _) => _ = self.queue_next_of(&series, true),
             // Play from here: just this item, whatever is queued stays queued
             // (and an item not on disk says so rather than play something else).
             // `P`, or shift-⏎ where the terminal tells it from ⏎, from the beginning.
@@ -2719,6 +2729,36 @@ mod tests {
     fn demo_app() -> (tempfile::TempDir, App) {
         let (dir, ctx) = crate::demo::ctx();
         (dir, App::new(ctx).unwrap())
+    }
+
+    /// Space in Up next stays on a series while it has more new episodes
+    /// to queue, and moves on once it has none.
+    #[test]
+    fn upnext_space_stays_while_more_to_queue() {
+        let (_dir, mut app) = demo_app();
+        let new_of = |app: &App, i: usize| queue_new(&app.lib.series[app.upnext_ix[i]], usize::MAX, |_| false).len();
+        let row = (0..app.upnext_ix.len().saturating_sub(1))
+            .find(|&i| new_of(&app, i) >= 2)
+            .expect("a demo series in Up next with 2+ new episodes, and a row below it");
+        let n = new_of(&app, row);
+        app.upnext_state.select(Some(row));
+        for queued in 1..n {
+            app.press(" ");
+            assert_eq!(app.queue.len(), queued);
+            assert_eq!(app.upnext_state.selected(), Some(row), "more to queue: stays");
+        }
+        app.press(" ");
+        assert_eq!(app.queue.len(), n);
+        assert_eq!(app.upnext_state.selected(), Some(row + 1), "nothing left: moves on");
+    }
+
+    /// Space in Series opens the series rather than queueing from it.
+    #[test]
+    fn series_space_opens_the_series() {
+        let (_dir, mut app) = demo_app();
+        app.press("3 ");
+        assert_eq!(app.view, View::Detail);
+        assert!(app.queue.is_empty());
     }
 
     /// The Files view's tree: drill down and up, queue and mark whole

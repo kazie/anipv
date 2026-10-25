@@ -95,6 +95,13 @@ project uses [Semantic Versioning](https://semver.org/).
 
 - Up next: `i` (was `P`) includes paused series.
 
+- Up next: space stays on a series while it has more new episodes to
+  queue, so pressing it again queues the next one; after the last one it
+  moves down. Catching up on one series no longer means space, up, space.
+
+- Series: space opens the series (like ⏎) instead of queueing its next
+  episode; queue episodes from inside it.
+
 - A queued episode stays in the queue until it is watched (played to the
   end, or past `watched_threshold`), not just until it starts. One started
   by mistake, stopped partway or skipped in mpv is still queued, and `p`
