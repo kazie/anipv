@@ -85,7 +85,11 @@ fn fold(title: &str, voiced: bool) -> String {
         .collect::<String>()
         .to_lowercase()
         .replace(['\'', '’', '`'], "")
-        .replace('&', " and ");
+        .replace('&', " and ")
+        // The season regex's `\b` takes these as part of a word, but the key
+        // ends a word there: `s1_` was no season marker, yet its key `s1` is.
+        // (Other punctuation already ends a word for both.)
+        .replace(['_', '‿', '⁀', '⁔', '\u{200C}', '\u{200D}'], " ");
 
     // Every season marker has a digit: most titles skip the regex (which is
     // slow on non-ASCII text).
@@ -312,6 +316,18 @@ mod tests {
             let k = series_key(&t);
             prop_assert_eq!(series_key(&k), k);
         }
+    }
+
+    /// `_` ends a word for the season markers as it does for the key, so a
+    /// key is its own key (proptest found `s¹_`: its key `s1` had an empty key).
+    #[test]
+    fn underscores_end_season_markers() {
+        assert_eq!(series_key("s¹_"), "");
+        assert_eq!(series_key("Show_S2_"), "show s2");
+        assert_eq!(series_key("Show_Season_2"), "show s2");
+        assert_eq!(series_key("Show_2nd_Season"), "show s2");
+        assert_eq!(series_key("Show\u{200D}S1"), "show");
+        assert_eq!(series_key("The-Show"), "the show", "other punctuation is as it was");
     }
 
     #[test]

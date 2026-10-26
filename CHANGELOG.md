@@ -17,6 +17,9 @@ change too: it may be migrated or compacted (see
 
 - If mpv exits at once (a file it can't play), the error shown is mpv's own
   instead of "mpv IPC: Broken pipe".
+- A title whose season is set off by underscores (`Show_Season_2`,
+  `Show_S1_`) is that season, as with spaces. File names written with
+  underscores throughout were already read this way.
 
 ## [0.2.0] - 2026-10-26
 
