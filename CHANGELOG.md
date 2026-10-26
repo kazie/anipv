@@ -1,8 +1,15 @@
 # Changelog
 
 All notable changes to this project are documented here.
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
-project uses [Semantic Versioning](https://semver.org/).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+Versions are `0.X.Y`, and stay that way: X goes up with new features or
+changes, Y with fixes only. anipv is an application, not a library, so there's
+no compatibility promise: a release may rename a config key, drop a flag or
+move a key binding. When it does, a **Breaking** line under Changed says what
+to do. Your history is kept across versions, but the event log's format can
+change too: it may be migrated or compacted (see
+[the event log](docs/events.md#compatibility)), and such a release says so.
 
 ## [Unreleased]
 

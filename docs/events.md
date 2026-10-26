@@ -111,10 +111,12 @@ share an item, so it doesn't matter which file you played.
 
 ## Compatibility
 
-The log is the one format that lives forever and is read by every version you
-run on any machine, so it only ever changes in compatible ways:
+The log is your history: everything else is derived from it, so what it
+records is never lost. Its *format* isn't frozen, though. The log may be read
+by every version you run on any machine, so day to day it only changes in
+compatible ways:
 
-* **Additive only.** New kinds and new optional fields may be added; existing
+* **Additive by default.** New kinds and new optional fields may be added; existing
   kinds and fields are never renamed or given a new meaning. A new meaning gets
   a new kind (that is why `unlink` is not "a `meta` without an id").
 * **Old readers skip what they don't know.** Unknown event kinds are ignored,
@@ -130,6 +132,20 @@ run on any machine, so it only ever changes in compatible ways:
 * **Evidence is kept.** `watched`, `progress` and `unwatched` record the file
   name involved, so if identity rules ever had to change, keys could be
   recomputed from the log itself instead of migrated.
+
+When the additive rules get in the way, the log can be changed on purpose,
+as in any event-sourced design:
+
+* **Migration.** Old events are rewritten into a new shape (or upcast when
+  read), so a kind or field can be renamed or given a new meaning.
+* **Compaction.** A snapshot of the state replays to the same result as the
+  events before it, which can then be archived.
+
+Either is a deliberate step: done by an explicit command, after a backup of
+the original files, in a release whose CHANGELOG marks it **Breaking**. Every
+machine that shares the log through sync has to run that version or newer
+first, because an older one would misread the result. Nothing like this has
+been needed yet.
 
 Everything else (`index.db`) is a cache: it is dropped and rebuilt whenever
 its schema version changes, so it hardly needs migrations either (a version
