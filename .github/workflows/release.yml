@@ -98,11 +98,18 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Create the GitHub Release
+      # A release made by hand for the tag gets the files, title and notes
+      # instead of failing.
+      - name: Create or update the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           contrib/release-notes.sh "$VERSION" > notes.md
-          gh release create "$GITHUB_REF_NAME" --verify-tag \
-            --title "anipv $VERSION" --notes-file notes.md dist/*
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "anipv $VERSION" --notes-file notes.md
+            gh release upload "$GITHUB_REF_NAME" --clobber dist/*
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "anipv $VERSION" --notes-file notes.md dist/*
+          fi
