@@ -13,6 +13,8 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 Franchises and seasons from AniList, a better search, remote control for mpv
 and unattended updates:
 
