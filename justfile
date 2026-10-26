@@ -43,6 +43,39 @@ fix:
     cargo clippy --fix --allow-dirty --all-targets
     cargo fmt --all
 
+# Print a version's CHANGELOG section, as its GitHub Release will show it.
+release-notes version:
+    contrib/release-notes.sh {{version}}
+
+# Bump, date the CHANGELOG, commit and tag, e.g. `just release 0.2.0` (runs `ci` first; doesn't push).
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    v={{quote(trim_start_match(version, "v"))}}
+    fail() { echo "error: $*" >&2; exit 1; }
+    [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must be X.Y.Z, got '$v'"
+    current=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "anipv") | .version')
+    [[ $v != "$current" && $(printf '%s\n' "$current" "$v" | sort -V | tail -1) == "$v" ]] \
+        || fail "$v isn't newer than the current version $current"
+    [[ $(git branch --show-current) == master ]] || fail "not on master"
+    [[ -z $(git status --porcelain) ]] || fail "the working tree isn't clean"
+    git fetch -q origin master
+    [[ $(git rev-parse HEAD) == $(git rev-parse origin/master) ]] || fail "master isn't the same as origin/master"
+    ! git rev-parse -q --verify "refs/tags/v$v" >/dev/null || fail "tag v$v already exists"
+    unreleased=$(awk 'index($0, "## [") == 1 { if (on) exit; if ($0 == "## [Unreleased]") { on = 1; next } } on && NF' CHANGELOG.md)
+    [[ -n $unreleased ]] || fail "CHANGELOG.md has nothing under ## [Unreleased]"
+
+    just ci
+
+    sed -i "0,/^version = \".*\"/s//version = \"$v\"/" Cargo.toml
+    cargo update --workspace --offline --quiet
+    sed -i "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [$v] - $(date +%F)/" CHANGELOG.md
+    git add Cargo.toml Cargo.lock CHANGELOG.md
+    git commit -q -m "release: v$v"
+    git tag -a "v$v" -m "anipv $v"
+    echo "Committed and tagged v$v. Check it (git show), then publish it:"
+    echo "    git push origin master v$v"
+
 # Install anipv to ~/.cargo/bin (release build).
 install:
     cargo install --path . --locked

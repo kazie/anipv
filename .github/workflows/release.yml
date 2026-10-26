@@ -1,0 +1,108 @@
+name: Release
+
+# Builds Linux binaries and publishes a GitHub Release when a `v*` tag is
+# pushed (`just release X.Y.Z` makes the commit and tag). The notes are the
+# tag's CHANGELOG.md section. Run it by hand from the Actions tab for a dry
+# run: it builds and uploads the tarballs as workflow artifacts, but publishes
+# nothing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - id: version
+        name: Version matches the tag and the CHANGELOG
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "anipv") | .version')
+          if [[ $GITHUB_REF_TYPE == tag && $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml's version $version"
+            exit 1
+          fi
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            contrib/release-notes.sh "$version" > /dev/null
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: verify
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    env:
+      NAME: anipv-v${{ needs.verify.outputs.version }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # The C compiler and linker for the target (rusqlite bundles SQLite;
+      # rustls needs ring), and qemu so `cargo run` works for aarch64 too.
+      - uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          run() { cargo run -q --release --locked --target ${{ matrix.target }} -- "$@"; }
+          mkdir -p "dist/$NAME/completions"
+          cp "target/${{ matrix.target }}/release/anipv" "dist/$NAME/"
+          run --version
+          run man > "dist/$NAME/anipv.1"
+          run completions bash > "dist/$NAME/completions/anipv.bash"
+          run completions fish > "dist/$NAME/completions/anipv.fish"
+          run completions zsh > "dist/$NAME/completions/_anipv"
+          cp -r README.md CHANGELOG.md config.example.toml contrib/systemd "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          (cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          tar -tzf "dist/$NAME.tar.gz"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: [verify, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          contrib/release-notes.sh "$VERSION" > notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "anipv $VERSION" --notes-file notes.md dist/*

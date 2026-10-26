@@ -30,9 +30,21 @@ history. anipv replaces that:
 
 ## Install
 
-There are no prebuilt binaries; build it yourself (Rust 1.99+). anipv is
-Unix-only (mpv is controlled over a Unix socket, so Windows isn't supported)
-and is developed and tested on Linux.
+anipv is Unix-only (mpv is controlled over a Unix socket, so Windows isn't
+supported) and is developed and tested on Linux.
+
+Each [release](https://github.com/kazie/anipv/releases) has Linux binaries
+for x86_64 and aarch64. The `musl` ones are static and run on any distro;
+the `gnu` one is built on Ubuntu 24.04 and needs a glibc at least that new.
+Each tarball also holds the man page, shell completions, the systemd timer and
+an example config:
+
+```sh
+tar xf anipv-v*-x86_64-unknown-linux-musl.tar.gz
+install -Dm755 anipv-v*/anipv ~/.local/bin/anipv
+```
+
+Or build it yourself (Rust 1.99+):
 
 ```sh
 git clone https://github.com/kazie/anipv && cd anipv
@@ -45,10 +57,13 @@ Without `just`, run that command yourself (add `--root ~` to install as
 `~/bin/anipv` instead), or skip the checkout:
 
 ```sh
-cargo install --git https://github.com/kazie/anipv --locked
+cargo install --git https://github.com/kazie/anipv --locked              # latest master
+cargo install --git https://github.com/kazie/anipv --locked --tag v0.2.0 # a release
 ```
 
-Re-run it after `git pull` to update.
+Re-run it after `git pull` to update. Versions stay at `0.X.Y`, and a release
+may change config keys, flags or key bindings: check the
+[CHANGELOG](CHANGELOG.md) for **Breaking** lines before you update.
 
 Needs [`mpv`](https://mpv.io) on your `PATH`. fish is only needed for
 `import-fish`. Shell completions and a man page:
@@ -231,6 +246,7 @@ just update-fixtures  # update golden files after an intentional change, then re
 just clean            # remove build artifacts
 just gc               # garbage-collect stale build artifacts (>14 days old, or e.g. `just gc 3`)
 just install          # install a release build to ~/.cargo/bin
+just release 0.2.0    # bump, date the CHANGELOG, commit and tag (then push; CI publishes the release)
 ```
 
 - Tests are unit, property, snapshot and end-to-end tests (`cargo test`). After an
