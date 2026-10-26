@@ -13,6 +13,23 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+Franchises and seasons from AniList, a better search, remote control for mpv
+and unattended updates:
+
+- **Franchises from AniList**: seasons, side stories and films are linked
+  (also the ones you don't have), and a series numbered on across seasons
+  is split into AniList's seasons, each a section of the episode list.
+- **Search** by any AniList title (romaji, English, native) and filter by
+  `studio:`, `year:`, `season:`, `score>` or `#hashtag`.
+- **Remote mode**: while mpv plays, your keys go to mpv, so pause, seek and
+  quit without switching windows.
+- **`anipv update`** scans and refreshes metadata unattended;
+  `just install-timer` runs it every 15 minutes.
+- Episodes resume where you stopped, the queue keeps an episode until it's
+  watched, and AniList's rate limits are respected instead of failing.
+
+Check the **Breaking** lines under Changed before you update.
+
 ### Added
 
 - Episodes numbered on through several seasons (Kusuriya no Hitorigoto
@@ -80,7 +97,6 @@ change too: it may be migrated or compacted (see
 - Titles, studios, season and hashtags come with the AniList refresh. Tracked
   series refreshed before this are asked about once more; others get them
   with their monthly refresh (with `refresh_untracked = true`).
-
 - `P` plays from the beginning: the queue (or the next episode here), and
   in the episode list the episode under the cursor. Shift-⏎ does too in the
   episode list and the Queue view, on terminals with the kitty keyboard
@@ -114,7 +130,6 @@ change too: it may be migrated or compacted (see
 - The TUI skips its scan on start when every folder was looked at within
   `scan_fresh_for` minutes (30 by default), and picks up what another
   process (the timer) stored while it is open.
-
 - Remote mode in the TUI: while mpv plays, keys are pressed in mpv (over its
   IPC socket, as mpv key names), so your own `input.conf` decides what they
   do: pause, seek, quit and so on, without reaching for the player window.
@@ -127,7 +142,6 @@ change too: it may be migrated or compacted (see
   away), and remote mode can be tried without real videos. The
   README recording now shows playing an episode, skipping, pausing and
   quitting the player from anipv.
-
 - `anilist_search = true` (off by default) and `anipv meta match --search`:
   series the offline database has no match for are looked up on AniList by
   title, so shows newer than the dataset can still get episode totals and
@@ -138,70 +152,30 @@ change too: it may be migrated or compacted (see
   downloaded offline database every series without a link counts as
   unmatched; a failed search keeps the answer from the last one.
 
-### Fixed
-
-- In an archive series folder, a named folder holding a later season by its
-  own title (`Kusuriya no Hitorigoto/Kusuriya no Hitorigoto 2nd Season
-  (BD)/… 2nd Season - 01.mkv`) is that season, and one named after another
-  show (`…/MaomaoNoHitorigoto/S1/Maomao no Hitorigoto - S01E01.mkv`) is that
-  show: their episodes no longer land on the first season's 01–24. History
-  follows the files.
-- A series numbered on past a season released by itself (Kusuriya 01–24
-  and 49–52, the second season a BD numbered 01–24) keeps its third season,
-  with the second folded in between.
-- In a split series, `[` from a later part reaches a part whose episodes
-  are all hidden (not on disk): every part keeps its heading, which says how
-  many are hidden.
-- Relations fetched before related entries were kept are fetched again,
-  instead of a month later: a franchise's films and specials (One Piece's)
-  were missing until then.
-- The first file of a playback session was often not tracked: mpv had
-  usually started it before anipv connected to its IPC socket, so that
-  episode was neither marked watched nor counted in the playing bar. anipv
-  now follows the file mpv is already on when it connects. Since mpv only
-  reports a value that changed, each file also starts out with the last
-  path and duration mpv reported (two files of the same length in a row
-  could lose the duration).
-- A special's kind in brackets by the episode number makes the file a
-  special, as the bare word does: `Show - 01 (OVA).mkv` and
-  `Show (OVA) - 01.mkv` are OVA 1, not a copy of episode 1 (playing one
-  marked episode 1 watched, and either file could be played for it). Only the
-  kind changes, never the title or number, and a tag after an episode's
-  title changes nothing (`Show 01 Title [Special]` is still episode 1).
-- A release version in brackets (`[v2]`, `(V2)`) counts, so of two copies of
-  an episode the newer version is played, as with `05v2`.
-- With nothing followed, Up next points to the Series tab as `3`, not `2`
-  (the Inbox).
-- Ctrl-C and Ctrl-R work with Caps Lock on.
-
 ### Changed
 
 - A partly watched episode resumes where you stopped, not at the furthest
   point you reached: seek ahead, back to the start and quit, and it starts
   from the beginning next time. How far you got still decides whether it
   counts as watched.
-
-- Up next: `i` (was `P`) includes paused series.
-
+- **Breaking:** Up next: `i` (was `P`) includes paused series; `P` now
+  plays from the beginning.
 - Up next: space stays on a series while it has more new episodes to
   queue, so pressing it again queues the next one; after the last one it
   moves down. Catching up on one series no longer means space, up, space.
-
-- Series: space opens the series (like ⏎) instead of queueing its next
-  episode; queue episodes from inside it.
-
+- **Breaking:** Series: space opens the series (like ⏎) instead of
+  queueing its next episode; queue episodes from inside it.
 - A queued episode stays in the queue until it is watched (played to the
   end, or past `watched_threshold`), not just until it starts. One started
   by mistake, stopped partway or skipped in mpv is still queued, and `p`
   resumes it. The Queue view highlights the file mpv is on.
-
-- How you set a status, when not by hand, is recorded on the event (`via`:
-  `fish_import`, `catch_up`) instead of in its note, so a note is always
-  yours and shows as such, whatever it says. A log written before this
-  keeps such statuses as notes ("from fish history", "caught up"), which now
-  show as yours: rewrite those lines once to `"via":"fish_import"` /
-  `"via":"catch_up"` without the note (see docs/events.md).
-
+- **Breaking:** How you set a status, when not by hand, is recorded on
+  the event (`via`: `fish_import`, `catch_up`) instead of in its note, so a
+  note is always yours and shows as such, whatever it says. A log written
+  before this keeps such statuses as notes ("from fish history", "caught
+  up"), which now show as yours: rewrite those lines once to
+  `"via":"fish_import"` / `"via":"catch_up"` without the note (see
+  docs/events.md).
 - The series header is calmer. The franchise's name is in its border, the
   title is coloured by status (no status word), and the small facts (★,
   members, the AniList id as `ⓐ12345`, `+2 names` merged into it) sit at the
@@ -226,7 +200,6 @@ change too: it may be migrated or compacted (see
 - `anipv demo` and `anipv fake-mpv` are only built with the new `demo` Cargo
   feature: a regular build carries no demo or test tooling. Tests and
   examples enable it themselves; `just demo` and `just record` pass it.
-
 - The offline anime database now comes from the community continuation
   (`cedya77/anime-offline-database`) because the original manami-project
   dataset was archived after its 2026-27 release (2026-07-04). The archived
@@ -263,6 +236,39 @@ change too: it may be migrated or compacted (see
 
 ### Fixed
 
+- In an archive series folder, a named folder holding a later season by its
+  own title (`Kusuriya no Hitorigoto/Kusuriya no Hitorigoto 2nd Season
+  (BD)/… 2nd Season - 01.mkv`) is that season, and one named after another
+  show (`…/MaomaoNoHitorigoto/S1/Maomao no Hitorigoto - S01E01.mkv`) is that
+  show: their episodes no longer land on the first season's 01–24. History
+  follows the files.
+- A series numbered on past a season released by itself (Kusuriya 01–24
+  and 49–52, the second season a BD numbered 01–24) keeps its third season,
+  with the second folded in between.
+- In a split series, `[` from a later part reaches a part whose episodes
+  are all hidden (not on disk): every part keeps its heading, which says how
+  many are hidden.
+- Relations fetched before related entries were kept are fetched again,
+  instead of a month later: a franchise's films and specials (One Piece's)
+  were missing until then.
+- The first file of a playback session was often not tracked: mpv had
+  usually started it before anipv connected to its IPC socket, so that
+  episode was neither marked watched nor counted in the playing bar. anipv
+  now follows the file mpv is already on when it connects. Since mpv only
+  reports a value that changed, each file also starts out with the last
+  path and duration mpv reported (two files of the same length in a row
+  could lose the duration).
+- A special's kind in brackets by the episode number makes the file a
+  special, as the bare word does: `Show - 01 (OVA).mkv` and
+  `Show (OVA) - 01.mkv` are OVA 1, not a copy of episode 1 (playing one
+  marked episode 1 watched, and either file could be played for it). Only the
+  kind changes, never the title or number, and a tag after an episode's
+  title changes nothing (`Show 01 Title [Special]` is still episode 1).
+- A release version in brackets (`[v2]`, `(V2)`) counts, so of two copies of
+  an episode the newer version is played, as with `05v2`.
+- With nothing followed, Up next points to the Series tab as `3`, not `2`
+  (the Inbox).
+- Ctrl-C and Ctrl-R work with Caps Lock on.
 - A special word after an episode number followed by more words is the
   episode's title: `Show - 05 Special Training` is episode 5, not a special
   (`Show - 05 OVA` still is one). Watch state recorded for such a file as a
@@ -299,7 +305,8 @@ change too: it may be migrated or compacted (see
   start match the whole library again.
 - A status chosen for a series that is already finished and fully watched
   stays (e.g. following it for a rewatch) instead of being completed again
-  at once, until you change the status again. Older versions ignore the new `keep` field in the event log.
+  at once, until you change the status again. Older versions ignore the
+  new `keep` field in the event log.
 - Progress on the playing episode is kept when the connection to mpv breaks
   (e.g. mpv crashes).
 - The position of each new episode in a queue shows up right away.
