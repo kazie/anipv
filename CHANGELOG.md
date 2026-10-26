@@ -13,6 +13,11 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+### Fixed
+
+- If mpv exits at once (a file it can't play), the error shown is mpv's own
+  instead of "mpv IPC: Broken pipe".
+
 ## [0.2.0] - 2026-10-26
 
 Franchises and seasons from AniList, a better search, remote control for mpv

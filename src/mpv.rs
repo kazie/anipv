@@ -336,7 +336,13 @@ fn close(cur: &mut Option<Current>, eof: bool, emit: &dyn Fn(PlayerEvent)) {
 pub(crate) fn follow(reader: impl std::io::Read, remote: &Remote, emit: &dyn Fn(PlayerEvent)) -> Result<()> {
     let mut reader = BufReader::new(reader);
     for (id, prop) in [(1, "path"), (2, "time-pos"), (3, "duration"), (4, "pause")] {
-        remote.send(&serde_json::json!({ "command": ["observe_property", id, prop] }))?;
+        match remote.send(&serde_json::json!({ "command": ["observe_property", id, prop] })) {
+            // mpv quit while we were still observing (it played its files
+            // after the first observes): what it sent before is still to be
+            // read, up to the end of the stream.
+            Err(e) if closed(&e) => break,
+            res => res?,
+        }
     }
 
     let mut known = Known::default();
@@ -897,6 +903,33 @@ mod tests {
                     eof: false
                 },
             ]
+        );
+    }
+
+    /// mpv may play its files and quit before every observe is sent (it
+    /// starts once some are): the observe that finds it gone isn't an error,
+    /// and what it sent before is still followed.
+    #[test]
+    fn follow_reads_on_when_mpv_quit_while_observing() {
+        let msgs = [
+            r#"{"event":"start-file","playlist_entry_id":1}"#,
+            r#"{"event":"property-change","id":1,"name":"path","data":"/a.mkv"}"#,
+            r#"{"event":"property-change","id":3,"name":"duration","data":1440.0}"#,
+            r#"{"event":"property-change","id":2,"name":"time-pos","data":1440.0}"#,
+            r#"{"event":"end-file","reason":"eof","playlist_entry_id":1}"#,
+        ];
+        let data = (msgs.join("\n") + "\n").into_bytes();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        // Shut down, not just dropped (see `sending_to_an_mpv_that_quit_fails_as_closed`).
+        theirs.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(theirs);
+        let evs = std::cell::RefCell::new(Vec::new());
+        follow(std::io::Cursor::new(data), &Remote::new(ours), &|e| evs.borrow_mut().push(e))
+            .expect("a closed connection while observing is no error");
+        let evs: Vec<_> = evs.into_inner().into_iter().filter(|e| !matches!(e, PlayerEvent::Progress { .. })).collect();
+        assert_eq!(
+            evs,
+            vec![PlayerEvent::Started { path: "/a.mkv".into() }, ended("/a.mkv".into(), 1440.0, Some(1440.0), true),]
         );
     }
 
