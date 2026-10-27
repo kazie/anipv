@@ -20,6 +20,15 @@ change too: it may be migrated or compacted (see
 - A title whose season is set off by underscores (`Show_Season_2`,
   `Show_S1_`) is that season, as with spaces. File names written with
   underscores throughout were already read this way.
+- A file's season is worked out the same way in every folder layout: from
+  its name's marker (`S02E05`), its title (`2nd Season`, `Season 2`, `S2`,
+  when the title is the show its folder names) or a `Season 2` folder.
+  Before, a later season's files lying straight in the
+  show's folder (`Kusuriya no Hitorigoto/Kusuriya no Hitorigoto 2nd Season -
+  01.mkv`, or `K-ON!!/K-ON! S2 - 01.mkv`) counted as the first season's
+  episodes, so watching or resetting one could land on the other season's
+  file. A folder that names its season its own way (`Mob Psycho 100 II`,
+  `Lupin III Part 2`) still holds that season, not one more.
 
 ## [0.2.0] - 2026-10-26
 

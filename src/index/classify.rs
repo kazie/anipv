@@ -27,10 +27,11 @@ pub struct Classified {
     pub parsed: Parsed,
     /// The numbered entry folder of a franchise folder this file sits in.
     pub entry: Option<Entry>,
-    /// The key an archive file deeper than its series folder had before
-    /// entry folders (and folders split off a series) became series of their
-    /// own: the series folder's. History recorded under it follows the file
-    /// (see `library::moved`).
+    /// The key an older version gave the file, when it differs: an archive
+    /// file's series folder's (before entry folders, folders split off a
+    /// series and seasons by title counted), an ongoing file's title alone
+    /// (before `Season N` folders counted for it). History recorded under it
+    /// follows the file (see `library::moved`).
     pub earlier: Option<String>,
 }
 
@@ -113,52 +114,36 @@ pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<us
     };
     let mut parsed = parse(file);
     let stem = crate::parse::stem(file);
-    let earlier = match (kind, dirs) {
-        (RootKind::Archive, [top, inner @ ..]) if !inner.is_empty() => {
-            let season = parsed.season.or_else(|| season_from_dirs(inner));
-            Some(series_name(&clean_dir_name(top), season).0).filter(|k| !k.is_empty())
-        }
+    // An archive file's series folder, cleaned.
+    let top = match (kind, dirs.first()) {
+        (RootKind::Archive, Some(top)) => Some(clean_dir_name(top)),
         _ => None,
     };
-
-    // The innermost `Season N` folder, if any.
-    let dir_season = season_from_dirs(dirs);
     let mut entry = None;
-    // The name the series is called by, and its season.
-    let (name, season) = if let Some(n) = split
+    // The name the series is called by, and the folders below that name
+    // (whose `Season N` folders count). Only the name differs by layout: the
+    // season comes from [`file_season`], the same way for every file.
+    let (name, below) = if let Some(n) = split
         && let Some(dir) = n.checked_sub(1).and_then(|i| dirs.get(i))
     {
-        entry_name(&parsed, dir, &dirs[n..])
-    } else if let (RootKind::Archive, Some(top), Some((no, name))) =
-        (kind, dirs.first(), dirs.get(1).and_then(|d| entry_dir(d)))
-    {
+        (entry_name(&parsed, dir), &dirs[n..])
+    } else if let (Some(top), Some((no, name))) = (&top, dirs.get(1).and_then(|d| entry_dir(d))) {
         // `Franchise/03 - Entry/…`: each numbered entry is a series of its own.
-        entry = Some(Entry { franchise: clean_dir_name(top), no, name: name.to_string() });
-        entry_name(&parsed, name, &dirs[2..])
-    } else if let (RootKind::Archive, Some(top)) = (kind, dirs.first()) {
-        // The folder names the show; a later season inside it (`S02E01` in the
-        // file name, or a `Season 2` folder) must not collapse into season 1.
-        // A named folder inside it may hold a season or a show of its own.
-        let top = clean_dir_name(top);
-        sub_series(cfg, &top, &dirs[1..], &parsed)
-            .unwrap_or_else(|| (top, parsed.season.or_else(|| season_from_dirs(&dirs[1..]))))
+        entry = Some(Entry { franchise: top.clone(), no, name: name.to_string() });
+        (entry_name(&parsed, name), &dirs[2..])
+    } else if let Some(top) = &top {
+        // The folder names the show. A named folder inside it may hold a
+        // show of its own.
+        (sub_series(cfg, top, &dirs[1..], &parsed).unwrap_or_else(|| top.clone()), &dirs[1..])
+    } else if parsed.title.is_empty() {
+        // `Batch/01 - Name.mkv`: borrow the nearest named folder (a `Season 2`
+        // folder is not a name).
+        let named = dirs.iter().rev().find(|d| !is_generic_dir(cfg, d));
+        (named.map_or_else(|| file.to_string(), |d| clean_dir_name(d)), dirs)
     } else {
-        let mut title = parsed.title.clone();
-        let mut season = parsed.season;
-        // `Batch/01 - Name.mkv`: borrow the nearest named folder. A `Season 2`
-        // folder is not a name: it gives the season (unless the file name has
-        // one), and the show's folder above it gives the title.
-        if title.is_empty()
-            && let Some(d) = dirs.iter().rev().find(|d| !is_generic_dir(cfg, d))
-        {
-            title = clean_dir_name(d);
-            season = season.or(dir_season);
-        }
-        if title.is_empty() {
-            title = file.to_string();
-        }
-        (title, season)
+        (parsed.title.clone(), dirs)
     };
+    let season = file_season(&parsed, &name, below);
     // `JoJos.Bizarre.Adventure.S06E02` → "JoJos Bizarre Adventure S6".
     let (mut series, title) = series_name(&name, season);
     let mut legacy_series = legacy_name_key(&series, &name, season);
@@ -166,6 +151,20 @@ pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<us
         series = series_key(file);
         legacy_series = legacy_name_key(&series, file, None);
     }
+    // The key an older version gave the file, for its history to follow it;
+    // only worked out when its name or season differs from today's.
+    let earlier = match (&top, dirs) {
+        (Some(top), [_, inner @ ..]) => {
+            let then = parsed.season.or_else(|| season_from_dirs(inner));
+            (name != *top || then != season).then(|| series_name(top, then).0)
+        }
+        // A titled ongoing file took no season from its folders.
+        (None, [_, ..]) if kind == RootKind::Ongoing && !parsed.title.is_empty() => {
+            (name != parsed.title || parsed.season != season).then(|| series_name(&parsed.title, parsed.season).0)
+        }
+        _ => None,
+    }
+    .filter(|k| !k.is_empty() && *k != series);
 
     let in_dir = |is: fn(&Config, &str) -> bool| dirs.iter().any(|d| is(cfg, d));
     if in_dir(Config::is_extras_dir) && parsed.kind != ItemKind::Extra {
@@ -179,9 +178,7 @@ pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<us
         }
         parsed.ep = None;
         parsed.ep_end = None;
-    } else if parsed.kind == ItemKind::Episode
-        && (in_dir(Config::is_specials_dir) || parsed.season.or(dir_season) == Some(0))
-    {
+    } else if parsed.kind == ItemKind::Episode && (in_dir(Config::is_specials_dir) || season == Some(0)) {
         // A `Season 0` / `S00` folder holds specials (like an `S00E05` name),
         // unless the file name says another season.
         parsed.make_special();
@@ -191,12 +188,10 @@ pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<us
     if parsed.kind == ItemKind::Movie && parsed.label.is_empty() && parsed.title.is_empty() {
         parsed.title = stem.to_string();
     }
-    // Only a key that differs from today's is worth remembering.
-    let earlier = earlier.filter(|k| *k != series);
     Classified { series, legacy_series, title, parsed, entry, earlier }
 }
 
-/// The name and season of a file in a named folder (not a season or kind
+/// The name of the series of a file in a named folder (not a season or kind
 /// folder) inside the series folder `top`, when it isn't simply `top`'s:
 /// - a later season of `top` by its own title (or the folder's name):
 ///   `Kusuriya no Hitorigoto/Kusuriya no Hitorigoto 2nd Season (BD) [Group]/
@@ -207,14 +202,16 @@ pub fn classify_split(cfg: &Config, kind: RootKind, rel: &Path, split: Option<us
 ///
 /// A release in a folder of its own (an English title of the same show, a
 /// batch, omake) stays with `top`.
-fn sub_series(cfg: &Config, top: &str, inner: &[&str], parsed: &Parsed) -> Option<(String, Option<u32>)> {
+fn sub_series(cfg: &Config, top: &str, inner: &[&str], parsed: &Parsed) -> Option<String> {
     let at = inner.iter().position(|d| !is_generic_dir(cfg, d))?;
     let sub = clean_dir_name(inner[at]);
     let title = if parsed.title.is_empty() { sub.clone() } else { parsed.title.clone() };
-    let season = parsed.season.or_else(|| season_from_dirs(inner));
-    let (top_key, key) = (series_key(top), series_name(&title, season).0);
+    let top_key = series_key(top);
+    // The title's own season words are in its key already.
+    let key = series_name(&title, parsed.season.or_else(|| season_from_dirs(inner))).0;
+    // A later season of `top` by its own title (or the folder's name).
     if crate::identity::season_suffix(&key).is_some_and(|(base, n)| base == top_key && n >= 2) {
-        return Some((title, season));
+        return Some(title);
     }
     let compact = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
     // Named alike: one name starts with the other (a special's title runs on
@@ -237,7 +234,36 @@ fn sub_series(cfg: &Config, top: &str, inner: &[&str], parsed: &Parsed) -> Optio
     // USJ Special Part 1`): the show is the words that spell the name.
     let words: Vec<&str> = title.split_whitespace().collect();
     let named = (1..=words.len()).map(|n| words[..n].join(" ")).find(|w| compact(w) == sub);
-    Some((named.unwrap_or(title), season))
+    Some(named.unwrap_or(title))
+}
+
+/// The season of a parsed file, the same way for every layout: its name's
+/// marker (`S02E05`, `2x05`), else its title's words (`2nd Season`, `Season
+/// 2`, `S2`), else the innermost `Season N` folder of `dirs` (the folders
+/// below the one that names the series).
+///
+/// The title's words count only when the title is the show `name` names:
+/// `Kusuriya no Hitorigoto/Kusuriya no Hitorigoto 2nd Season - 01.mkv` is
+/// season 2, but in `Mob Psycho 100 II/Mob Psycho 100 S2 - 01.mkv` the
+/// folder names that season already, its own way.
+fn file_season(parsed: &Parsed, name: &str, dirs: &[&str]) -> Option<u32> {
+    let titled = || {
+        // Every season marker has a digit: most titles skip folding.
+        if !parsed.title.contains(char::is_numeric) {
+            return None;
+        }
+        let key = series_key(&parsed.title);
+        let n = crate::identity::key_season(&key)?;
+        (name == parsed.title || bare_key(&key) == bare_key(&series_key(name))).then_some(n)
+    };
+    parsed.season.or_else(titled).or_else(|| season_from_dirs(dirs))
+}
+
+/// A series key without its season words (`s2`) and a trailing year (`Show
+/// (2023)` is the show `Show 2nd Season` names).
+fn bare_key(key: &str) -> String {
+    let bare = key.split(' ').filter(|w| crate::identity::season_word(w).is_none()).collect::<Vec<_>>().join(" ");
+    crate::identity::base_key(&bare).to_string()
 }
 
 /// A numbered entry folder (`Monogatari Series/03 - Nisemonogatari`, see
@@ -265,13 +291,12 @@ pub fn entry_dir(name: &str) -> Option<(u32, &str)> {
     Some((c[1].parse().ok()?, c.get(2)?.as_str()))
 }
 
-/// Name and season of a file in its own folder `dir` (a franchise entry, or a
-/// folder split off its series), with `inner` the folders below it: the
-/// file's own title, as in an ongoing root (an entry may hold part of a longer
-/// anime, `Second Season - 06`), else the folder's name.
-pub fn entry_name(parsed: &Parsed, dir: &str, inner: &[&str]) -> (String, Option<u32>) {
-    let season = parsed.season.or_else(|| season_from_dirs(inner));
-    if parsed.title.is_empty() { (clean_dir_name(dir), season) } else { (parsed.title.clone(), season) }
+/// Name of a file in its own folder `dir` (a franchise entry, or a folder
+/// split off its series): the file's own title, as in an ongoing root (an
+/// entry may hold part of a longer anime, `Second Season - 06`), else the
+/// folder's name.
+fn entry_name(parsed: &Parsed, dir: &str) -> String {
+    if parsed.title.is_empty() { clean_dir_name(dir) } else { parsed.title.clone() }
 }
 
 /// The season given by the innermost `Season N` folder, if any.
@@ -544,6 +569,12 @@ mod tests {
             &format!("{top}/MaomaoNoHitorigoto/USJ Special/[GroupB] Maomao no Hitorigoto - USJ Special Part 1.mkv"),
         );
         assert_eq!(usj.series, "maomao no hitorigoto");
+        // A later season by its own title, straight in the series folder.
+        assert_eq!(
+            key(&format!("{top}/Kusuriya no Hitorigoto 2nd Season - 23 (BD 1080p HEVC Opus) [GroupK].mkv")),
+            "kusuriya no hitorigoto s2"
+        );
+        assert_eq!(key(&format!("{top}/Kusuriya no Hitorigoto - 23 (1080p).mkv")), "kusuriya no hitorigoto");
         // The show's own files, whatever they are titled, and anything else.
         assert_eq!(
             key(&format!("{top}/[GroupM] The Apothecary Diaries - 01 (BD 1080p) [AB12CD34].mkv")),
@@ -552,7 +583,7 @@ mod tests {
         assert_eq!(
             key(&format!("{top}/Apothecary S2 BD/[GroupE] The Apothecary Diaries S2 - 01.mkv")),
             "kusuriya no hitorigoto",
-            "as before: no other show, no season of its own"
+            "no other show; its title isn't the folder's, so its season words don't count"
         );
         assert_eq!(key(&format!("{top}/Bonus/[GroupE] The Apothecary Diaries - 01.mkv")), "kusuriya no hitorigoto");
         assert_eq!(
@@ -569,10 +600,101 @@ mod tests {
         let english = format!("{top}/The Apothecary Diaries/Season 2/[GroupE] The Apothecary Diaries S2 - 01.mkv");
         assert_eq!(key(&english), "kusuriya no hitorigoto s2", "the same show by its English title");
         assert_eq!(key("Bubblegum Crisis/Extras/Promo Videos/Promo Video (Bubblegum crisis).mkv"), "bubblegum crisis");
+        // A later season's own folder keeps its title for the series.
+        let x =
+            c(RootKind::Archive, &format!("{top}/{s2}/Kusuriya no Hitorigoto 2nd Season - 01 (BD 1080p) [GroupK].mkv"));
+        assert_eq!(x.title, "Kusuriya no Hitorigoto 2nd Season");
+        // History of files whose key changed follows them from the key they had.
+        let x = c(RootKind::Archive, &format!("{top}/Kusuriya no Hitorigoto 2nd Season - 23 (BD 1080p) [GroupK].mkv"));
+        assert_eq!(x.earlier.as_deref(), Some("kusuriya no hitorigoto"));
+        let x = c(RootKind::Ongoing, "Show/Season 2/Show - 05.mkv");
+        assert_eq!((x.series.as_str(), x.earlier.as_deref()), ("show s2", Some("show")));
+        assert_eq!(c(RootKind::Archive, &format!("{top}/[GroupM] The Apothecary Diaries - 01.mkv")).earlier, None);
         // History of these files follows them from the folder's key.
         let m =
             c(RootKind::Archive, &format!("{top}/MaomaoNoHitorigoto/S1/[GroupB] Maomao no Hitorigoto - S01E01.mkv"));
         assert_eq!(m.earlier.as_deref(), Some("kusuriya no hitorigoto"));
+    }
+
+    /// Every way of saying a season, in every layout, gives that season:
+    /// which folder names the series must never decide whether the season
+    /// counts. Also the guard for layouts and spellings added later.
+    #[test]
+    fn every_layout_keeps_every_season_spelling() {
+        let ordinal = |n: u32| match n {
+            2 => "2nd".to_string(),
+            3 => "3rd".to_string(),
+            n => format!("{n}th"),
+        };
+        for show in ["Show", "Kusuriya no Hitorigoto", "Re Zero kara Hajimeru Isekai Seikatsu"] {
+            for n in [1, 2, 3, 4, 11] {
+                // File names that say the season themselves.
+                let named = [
+                    format!("{show} S{n:02}E05.mkv"),
+                    format!("[Grp] {show} - S{n:02}E05 (1080p).mkv"),
+                    format!("{dotted}.S{n:02}E05.1080p.WEB.mkv", dotted = show.replace(' ', ".")),
+                    format!("{show} {n}x05.mkv"),
+                    format!("[Grp] {show} {nth} Season - 05 (BD 1080p) [ABCD1234].mkv", nth = ordinal(n)),
+                    format!("{show} Season {n} - 05.mkv"),
+                    format!("{under}_Season_{n}_-_05.mkv", under = show.replace(' ', "_")),
+                    format!("[Grp] {show} S{n} - 05 [1080p].mkv"),
+                ];
+                let mut cases: Vec<(RootKind, String)> = Vec::new();
+                for f in &named {
+                    cases.extend([
+                        (RootKind::Ongoing, f.clone()),
+                        (RootKind::Ongoing, format!("{show}/{f}")),
+                        (RootKind::Ongoing, format!("Downloads/{f}")),
+                        (RootKind::Archive, f.clone()),
+                        (RootKind::Archive, format!("{show}/{f}")),
+                        (RootKind::Archive, format!("{show}/[Grp] {show} (BD 1080p)/{f}")),
+                        (RootKind::Archive, format!("{show}/Batch/{f}")),
+                        (RootKind::Archive, format!("Franchise/03 - {show}/{f}")),
+                    ]);
+                }
+                // Untitled or plain files in a season folder.
+                for f in ["05.mkv", "Episode 05.mkv", &format!("{show} - 05.mkv")] {
+                    for dir in [format!("Season {n}"), format!("S{n:02}"), format!("Season {n:02}")] {
+                        cases.extend([
+                            (RootKind::Ongoing, format!("{show}/{dir}/{f}")),
+                            (RootKind::Archive, format!("{show}/{dir}/{f}")),
+                            (RootKind::Archive, format!("{show}/[Grp] {show} (BD)/{dir}/{f}")),
+                        ]);
+                    }
+                }
+                let base = series_key(show);
+                let want = if n == 1 { base } else { format!("{base} s{n}") };
+                for (kind, rel) in cases {
+                    let x = c(kind, &rel);
+                    assert_eq!(x.series, want, "{kind:?} {rel}");
+                    assert_eq!(x.items(), vec![ItemKey::episode(EpNo::new(5))], "{kind:?} {rel}");
+                }
+            }
+        }
+    }
+
+    /// A series folder that names its season its own way (`II`, `Part 2`,
+    /// `2`, `Second Season`, `!!`) holds that season: the files' `S2` is
+    /// the same season, not one more.
+    #[test]
+    fn a_folder_naming_its_season_is_that_season() {
+        let key = |rel: &str| c(RootKind::Archive, rel).series;
+        assert_eq!(key("Mob Psycho 100 II/[Grp] Mob Psycho 100 S2 - 01 (BD 1080p).mkv"), "mob psycho 100 ii");
+        assert_eq!(key("Lupin III Part 2/Lupin III S2 - 001 - The Return of Lupin III [720p].mkv"), "lupin iii part 2");
+        assert_eq!(key("Kemono Friends 2/[Grp] Kemono Friends S2 - 01 [1080p].mkv"), "kemono friends 2");
+        assert_eq!(
+            key("Yama no Susume Second Season/[Grp] S2 - 01 - Sleeping in a Tent [BD].mkv"),
+            "yama no susume second season"
+        );
+        // A year in the folder's name is still the show's name.
+        assert_eq!(
+            key("Kusuriya no Hitorigoto (2023)/Kusuriya no Hitorigoto 2nd Season - 01.mkv"),
+            "kusuriya no hitorigoto 2023 s2"
+        );
+        // Unless the folder's name is the show's alone: `K-ON!!` is keyed as
+        // `K-ON!` is, so its files' season tells the two apart.
+        assert_eq!(key("K-ON!!/[Grp] K-ON! S2 - 01 (BD 1080p).mkv"), "k on s2");
+        assert_eq!(key("K-ON!/[Grp] K-ON! - 01 (BD 1080p).mkv"), "k on");
     }
 
     #[test]

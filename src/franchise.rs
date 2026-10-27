@@ -147,8 +147,7 @@ pub fn short_labels<'a>(name: &str, labels: &[&'a str]) -> Vec<String> {
         let text = text.strip_suffix(')').filter(|_| unbalanced('(', ')')).unwrap_or(text);
         let text = text.strip_suffix(']').filter(|_| unbalanced('[', ']')).unwrap_or(text);
         let key = crate::identity::series_key(text);
-        let season = key.strip_prefix('s').filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-        match season.and_then(|n| n.parse().ok()) {
+        match crate::identity::season_word(&key) {
             _ if key.is_empty() => Rest::Nothing,
             Some(n) => Rest::Season(n),
             None => Rest::Text(text),

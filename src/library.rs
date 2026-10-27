@@ -1371,7 +1371,7 @@ fn moved(cfg: &Config, events: &[Event], canonical: &HashMap<String, String>, in
         if !seen.insert((key, file)) {
             continue;
         }
-        // Files deeper than their series folder whose key changed, by name.
+        // Files whose key changed, by name.
         let by_name = by_name.get_or_insert_with(|| {
             let kinds = cfg.root_kinds();
             let mut m: HashMap<String, Vec<(&IndexedFile, String)>> = HashMap::new();

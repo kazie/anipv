@@ -195,6 +195,26 @@ pub fn base_key(key: &str) -> &str {
     }
 }
 
+/// The later season (2 and up) a series key's season words name (`2nd
+/// Season`, `Season 2` and `S2` are all `s2` in a key): the last one.
+///
+/// ```
+/// use anipv::identity::{key_season, series_key};
+/// assert_eq!(key_season(&series_key("Kusuriya no Hitorigoto 2nd Season")), Some(2));
+/// assert_eq!(key_season(&series_key("Show_Season_3")), Some(3));
+/// assert_eq!(key_season(&series_key("Owarimonogatari S1")), None);
+/// assert_eq!(key_season(&series_key("Blue Seed 2")), None);
+/// ```
+pub fn key_season(key: &str) -> Option<u32> {
+    key.split(' ').rev().find_map(season_word).filter(|n| *n >= 2)
+}
+
+/// The season a word of a series key stands for (`s2` → 2), if it is a
+/// season marker.
+pub fn season_word(word: &str) -> Option<u32> {
+    word.strip_prefix('s').filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))?.parse().ok()
+}
+
 /// A key's trailing season marker, with what comes before it.
 ///
 /// ```
@@ -207,8 +227,7 @@ pub fn base_key(key: &str) -> &str {
 /// ```
 pub fn season_suffix(key: &str) -> Option<(&str, u32)> {
     let (head, last) = key.rsplit_once(' ')?;
-    let n = last.strip_prefix('s').filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))?;
-    Some((head, n.parse().ok()?)).filter(|(head, _)| !head.is_empty())
+    Some((head, season_word(last)?)).filter(|(head, _)| !head.is_empty())
 }
 
 #[cfg(test)]
