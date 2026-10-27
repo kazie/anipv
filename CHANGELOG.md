@@ -13,6 +13,8 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-27
+
 ### Fixed
 
 - If mpv exits at once (a file it can't play), the error shown is mpv's own
