@@ -13,6 +13,8 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-01
+
 ### Fixed
 
 - Esc does something on every tab: it backs out one level (in the folder
