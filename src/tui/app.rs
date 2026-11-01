@@ -1992,6 +1992,11 @@ impl App {
                 None => self.say("mpv is not running"),
             },
             KeyCode::Char('q') => self.request_quit(),
+            KeyCode::Esc => {
+                if !self.back_out() {
+                    self.request_quit();
+                }
+            }
             KeyCode::Char('?') => {
                 self.popup = Some(Popup::Help { scroll: 0, fits: false });
             }
@@ -2034,6 +2039,21 @@ impl App {
                 self.detail_state.select(Some(row));
             }
             code if let Some(delta) = cursor_delta(vi_alias(code)) => self.move_cursor(delta),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Esc outside a popup: back out one level (Episodes back to where it was
+    /// opened from, a kept search cleared, the tree up a folder). False if
+    /// there was nothing to back out of; then Esc asks to quit.
+    fn back_out(&mut self) -> bool {
+        let tree = self.view == View::Files && self.files_mode == FilesMode::Tree;
+        match self.view {
+            View::Detail => self.view = self.back,
+            View::Series if !self.query.is_empty() => self.clear_search(),
+            _ if tree && !self.tree_query.is_empty() => self.end_tree_search(),
+            _ if tree && !self.tree_at.is_top() => self.tree_up(),
             _ => return false,
         }
         true
@@ -2142,10 +2162,6 @@ impl App {
         match key.code {
             KeyCode::Char('/') => {
                 self.popup = Some(Popup::Search);
-                return;
-            }
-            KeyCode::Esc if !self.query.is_empty() => {
-                self.clear_search();
                 return;
             }
             KeyCode::Char('F') => {
@@ -2269,13 +2285,7 @@ impl App {
         let folder = self.selected_entry().and_then(Entry::dir).cloned();
         match (key.code, folder) {
             (KeyCode::Char('/'), _) => self.popup = Some(Popup::Search),
-            (KeyCode::Esc, _) if !self.tree_query.is_empty() => self.end_tree_search(),
-            (KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace, _) => {
-                if let Some(up) = self.tree_at.parent() {
-                    let came_from = RowId::Dir(self.tree_at.clone());
-                    self.open_dir(up, Some(came_from));
-                }
-            }
+            (KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace, _) => self.tree_up(),
             (KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right, Some(dir)) => self.open_dir(dir, None),
             (KeyCode::Char(' '), Some(dir)) => {
                 self.toggle_queue_folder(&dir);
@@ -2285,6 +2295,15 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Up a folder in the tree (at the top, nothing), the cursor on the
+    /// folder it came from.
+    fn tree_up(&mut self) {
+        if let Some(up) = self.tree_at.parent() {
+            let came_from = RowId::Dir(self.tree_at.clone());
+            self.open_dir(up, Some(came_from));
+        }
     }
 
     /// Queue the unwatched files below `dir` in path order (those not queued
@@ -2389,7 +2408,7 @@ impl App {
             // ← on an open heading closes it, → on a closed one opens it.
             (KeyCode::Char('h') | KeyCode::Left, None) if let Some((d, false)) = heading => self.toggle_fold(d),
             (KeyCode::Char('l') | KeyCode::Right, None) if let Some((d, true)) = heading => self.toggle_fold(d),
-            (KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left, _) => self.view = self.back,
+            (KeyCode::Char('h') | KeyCode::Left, _) => self.view = self.back,
             // Backspace: the episode back to unwatched (a resume point too).
             (KeyCode::Backspace, Some(it)) => self.reset_item(&series, it),
             // A season link opens that season; [ and ] open them from anywhere.
@@ -2469,8 +2488,10 @@ impl App {
                 };
                 self.popup = Some(Popup::Help { scroll, fits });
             }
+            // Not Enter: Esc opens this prompt too, and Esc, Esc, ⏎ to open
+            // something must not quit.
             Popup::ConfirmQuit => {
-                if matches!(key.code, KeyCode::Char('y' | 'q') | KeyCode::Enter) {
+                if matches!(key.code, KeyCode::Char('y' | 'q')) {
                     self.quit = true;
                 }
             }
@@ -3163,20 +3184,20 @@ mod tests {
     }
 
     /// `q` and Ctrl-C (Caps Lock on too) ask first, playing or not; at the
-    /// prompt `q`, `y`, Enter or a second Ctrl-C quits, any other key cancels.
+    /// prompt `q`, `y` or a second Ctrl-C quits, any other key (⏎ too) cancels.
     #[test]
     fn quitting_asks_first() {
         let (_dir, mut app) = demo_app();
         for playing in [true, false] {
             app.playing = playing.then(|| NowPlaying::starting(1));
-            for quit in ["q", "y", "\n", "ctrl-c", "ctrl-C"] {
+            for quit in ["q", "y", "ctrl-c", "ctrl-C"] {
                 for first in ["q", "ctrl-c", "ctrl-C"] {
                     let press = |app: &mut App, k: &str| match k {
                         "ctrl-c" => ctrl_c(app, 'c'),
                         "ctrl-C" => ctrl_c(app, 'C'),
                         _ => app.press(k),
                     };
-                    for cancel in ["n", "\x1b", "x"] {
+                    for cancel in ["n", "\x1b", "\n", "x"] {
                         press(&mut app, first);
                         assert!(!app.quit, "{first} alone doesn't quit");
                         assert_eq!(app.popup, Some(Popup::ConfirmQuit));
@@ -3190,6 +3211,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Esc backs out one level at a time (a search, a folder, Episodes) and,
+    /// with nothing left to back out of, asks to quit like `q`. Esc at the
+    /// prompt cancels it, so Esc alone never quits.
+    #[test]
+    fn esc_backs_out_then_asks_to_quit() {
+        let (_dir, mut app) = demo_app();
+        let asks = |app: &mut App, at: &str| {
+            app.press("\x1b");
+            assert_eq!(app.popup, Some(Popup::ConfirmQuit), "{at}: Esc asks to quit");
+            app.press("\x1b");
+            assert!(app.popup.is_none() && !app.quit, "{at}: Esc again cancels");
+        };
+        for tab in ["1", "2", "5", "3", "4"] {
+            app.press(tab);
+            asks(&mut app, tab);
+        }
+        // A kept search is cleared first.
+        app.press("3/mono\n");
+        assert_eq!(app.query, "mono");
+        app.press("\x1b");
+        assert_eq!((app.query.as_str(), app.popup.clone()), ("", None));
+        asks(&mut app, "series");
+        // Episodes goes back to where it was opened from.
+        app.press("\n");
+        assert_eq!(app.view, View::Detail);
+        app.press("\x1b");
+        assert_eq!((app.view, app.popup.clone()), (View::Series, None));
+        // In the folder tree, a search is cleared first (the folder stays),
+        // then up a folder, then the prompt at the top.
+        app.press("44j\n/nise\n");
+        assert_eq!((app.files_mode, app.tree_query.as_str()), (FilesMode::Tree, "nise"));
+        let at = app.tree_at.clone();
+        assert!(!at.is_top());
+        app.press("\x1b");
+        assert_eq!((&app.tree_at, app.tree_query.as_str(), app.popup.clone()), (&at, "", None));
+        app.press("\x1b");
+        assert!(app.tree_at.is_top() && app.popup.is_none(), "up to the roots");
+        asks(&mut app, "tree");
     }
 
     /// Ctrl-C closes any popup but the quit prompt (and a draft in it) like

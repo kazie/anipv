@@ -123,7 +123,7 @@ they come with the `demo` Cargo feature (`cargo run --features demo -- demo targ
 
 Common keys: `1`–`5` switch views, `space` queues, `p` plays, `s` sets the
 status, `/` searches, `M` refreshes metadata for the series under the cursor,
-`ctrl-r` refreshes all of it, `o` opens the series on AniList, `q` or `ctrl-c` quits (after asking), `?` shows everything. Full list: [docs/keybindings.md](docs/keybindings.md).
+`ctrl-r` refreshes all of it, `o` opens the series on AniList, `esc` backs out, `q` or `ctrl-c` quits (after asking; so does `esc` with nothing left to close), `?` shows everything. Full list: [docs/keybindings.md](docs/keybindings.md).
 
 ## The CLI
 
