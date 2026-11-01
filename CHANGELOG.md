@@ -13,14 +13,14 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- Esc backs out one level everywhere: in the folder tree it goes up a
-  folder, and on a tab with nothing left to close it asks to quit, like `q`.
-  Esc on the quit prompt cancels it.
+- Esc does something on every tab: it backs out one level (in the folder
+  tree it goes up a folder), and with nothing left to close it asks to quit,
+  like `q`. Esc on the quit prompt cancels it.
 - ⏎ no longer confirms the quit prompt (it cancels, like any other key);
-  `q`, `y` or a second `ctrl-c` quits. Pressing Esc once too often and then
-  ⏎ to open something no longer quits.
+  `q`, `y` or a second `ctrl-c` quits, so Esc once too often and then ⏎ to
+  open something doesn't quit.
 
 ## [0.2.1] - 2026-10-27
 

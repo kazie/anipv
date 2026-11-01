@@ -3419,7 +3419,7 @@
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 1-24 of 79 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 1-24 of 80 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
 │ #   Series                  │Everywhere                                                    │                             │
 │ 1   One Piece               │  1-5 / Tab   switch view; again: other mode / next filter    │080p).mkv                    │
 │▌2   Nisemonogatari          │  j/k ↑/↓     move                                            │ [BD 1080p].mkv              │
@@ -3435,6 +3435,7 @@
 │                             │  ctrl-r      refresh all metadata (and an old anime DB)      │                             │
 │                             │  ?           this help                                       │                             │
 │                             │  q / ctrl-c  quit (asks first); ctrl-c closes a popup first  │                             │
+│                             │  esc         back out; with nothing to close, asks to quit   │                             │
 │                             │                                                              │                             │
 │                             │Up next                                                       │                             │
 │                             │  space       queue next new episode; down when none are left │                             │
@@ -3443,12 +3444,11 @@
 │                             │  i           include paused series                           │                             │
 │                             │  ⏎           open series                                     │                             │
 │                             │                                                              │                             │
-│                             │Inbox                                                         │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 1-24 of 79 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
+╭ Queue · plays in this order ╭ Keys 1-24 of 80 · j/k scroll · other keys close ─────────────╮─────────────────────────────╮
 │ #   Series                  │Everywhere                                                    │                             │
 │ 1   One Piece               │  1-5 / Tab   switch view; again: other mode / next filter    │080p).mkv                    │
 │▌2   Nisemonogatari          │  j/k ↑/↓     move                                            │ [BD 1080p].mkv              │
@@ -3464,6 +3464,7 @@
 │                             │  ctrl-r      refresh all metadata (and an old anime DB)      │                             │
 │                             │  ?           this help                                       │                             │
 │                             │  q / ctrl-c  quit (asks first); ctrl-c closes a popup first  │                             │
+│                             │  esc         back out; with nothing to close, asks to quit   │                             │
 │                             │                                                              │                             │
 │                             │Up next                                                       │                             │
 │                             │  space       queue next new episode; down when none are left │                             │
@@ -3472,19 +3473,19 @@
 │                             │  i           include paused series                           │                             │
 │                             │  ⏎           open series                                     │                             │
 │                             │                                                              │                             │
-│                             │Inbox                                                         │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 16-39 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │                                                              │                             │
-│ 1   One Piece               │Up next                                                       │080p).mkv                    │
-│▌2   Nisemonogatari          │  space       queue next new episode; down when none are left │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  a           queue all new episodes                          │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  w           mark next episode watched without playing       │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  i           include paused series                           │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  ⏎           open series                                     │ck) - 04 [BD 1080p].mkv      │
+╭ Queue · plays in this order ╭ Keys 16-39 of 80 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  esc         back out; with nothing to close, asks to quit   │                             │
+│ 1   One Piece               │                                                              │080p).mkv                    │
+│▌2   Nisemonogatari          │Up next                                                       │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  space       queue next new episode; down when none are left │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  a           queue all new episodes                          │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  w           mark next episode watched without playing       │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  i           include paused series                           │ck) - 04 [BD 1080p].mkv      │
+│                             │  ⏎           open series                                     │                             │
 │                             │                                                              │                             │
 │                             │Inbox                                                         │                             │
 │                             │  f           follow: moves it to Up next                     │                             │
@@ -3501,19 +3502,19 @@
 │                             │  m           merge into another series                       │                             │
 │                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
-│                             │  L           link AniList id                                 │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 16-39 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │                                                              │                             │
-│ 1   One Piece               │Up next                                                       │080p).mkv                    │
-│▌2   Nisemonogatari          │  space       queue next new episode; down when none are left │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  a           queue all new episodes                          │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  w           mark next episode watched without playing       │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  i           include paused series                           │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  ⏎           open series                                     │ck) - 04 [BD 1080p].mkv      │
+╭ Queue · plays in this order ╭ Keys 16-39 of 80 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  esc         back out; with nothing to close, asks to quit   │                             │
+│ 1   One Piece               │                                                              │080p).mkv                    │
+│▌2   Nisemonogatari          │Up next                                                       │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  space       queue next new episode; down when none are left │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  a           queue all new episodes                          │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  w           mark next episode watched without playing       │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  i           include paused series                           │ck) - 04 [BD 1080p].mkv      │
+│                             │  ⏎           open series                                     │                             │
 │                             │                                                              │                             │
 │                             │Inbox                                                         │                             │
 │                             │  f           follow: moves it to Up next                     │                             │
@@ -3530,19 +3531,19 @@
 │                             │  m           merge into another series                       │                             │
 │                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
-│                             │  L           link AniList id                                 │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 31-54 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │                                                              │                             │
-│ 1   One Piece               │Series                                                        │080p).mkv                    │
-│▌2   Nisemonogatari          │  /           fuzzy search (⏎ keeps it, Esc clears)           │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  / filters   studio:x year:2023 season:fall score>80 #tag    │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  m           merge into another series                       │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  U           undo merges into this series                    │ck) - 04 [BD 1080p].mkv      │
+╭ Queue · plays in this order ╭ Keys 31-54 of 80 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  m           merge with another series (duplicate names)     │                             │
+│ 1   One Piece               │                                                              │080p).mkv                    │
+│▌2   Nisemonogatari          │Series                                                        │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  /           fuzzy search (⏎ keeps it, Esc clears)           │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  / filters   studio:x year:2023 season:fall score>80 #tag    │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  m           merge into another series                       │ck) - 04 [BD 1080p].mkv      │
+│                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
 │                             │  F           fold franchises to the entry you're at          │                             │
@@ -3559,19 +3560,19 @@
 │                             │  ← / →       on a heading: collapse / expand it              │                             │
 │                             │  backspace ×2episode back to unwatched (resume too)          │                             │
 │                             │  N           this episode starts the linked AniList entry    │                             │
-│                             │  w           toggle watched                                  │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 31-54 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │                                                              │                             │
-│ 1   One Piece               │Series                                                        │080p).mkv                    │
-│▌2   Nisemonogatari          │  /           fuzzy search (⏎ keeps it, Esc clears)           │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  / filters   studio:x year:2023 season:fall score>80 #tag    │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  m           merge into another series                       │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  U           undo merges into this series                    │ck) - 04 [BD 1080p].mkv      │
+╭ Queue · plays in this order ╭ Keys 31-54 of 80 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  m           merge with another series (duplicate names)     │                             │
+│ 1   One Piece               │                                                              │080p).mkv                    │
+│▌2   Nisemonogatari          │Series                                                        │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  /           fuzzy search (⏎ keeps it, Esc clears)           │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  / filters   studio:x year:2023 season:fall score>80 #tag    │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  f / 3       next status filter (works with a search)        │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  m           merge into another series                       │ck) - 04 [BD 1080p].mkv      │
+│                             │  U           undo merges into this series                    │                             │
 │                             │  R           rename                                          │                             │
 │                             │  L           link AniList id                                 │                             │
 │                             │  F           fold franchises to the entry you're at          │                             │
@@ -3588,19 +3589,19 @@
 │                             │  ← / →       on a heading: collapse / expand it              │                             │
 │                             │  backspace ×2episode back to unwatched (resume too)          │                             │
 │                             │  N           this episode starts the linked AniList entry    │                             │
-│                             │  w           toggle watched                                  │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  queued 4 from 03 - Nekomonogatari (Black) (6 in queue)
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 46-69 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │                             │
-│ 1   One Piece               │  o           on a ▲ ▼ ↳ link: open that one on AniList       │080p).mkv                    │
-│▌2   Nisemonogatari          │  P / shift-⏎ play this episode from the beginning            │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  [ ]         previous / next season (or part of this one)    │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  ⏎ / space   on a heading: collapse / expand it              │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  ← / →       on a heading: collapse / expand it              │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  backspace ×2episode back to unwatched (resume too)          │ck) - 04 [BD 1080p].mkv      │
+╭ Queue · plays in this order ╭ Keys 46-69 of 80 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  space       add / remove from queue                         │                             │
+│ 1   One Piece               │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │080p).mkv                    │
+│▌2   Nisemonogatari          │  o           on a ▲ ▼ ↳ link: open that one on AniList       │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  P / shift-⏎ play this episode from the beginning            │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  [ ]         previous / next season (or part of this one)    │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  ⏎ / space   on a heading: collapse / expand it              │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  ← / →       on a heading: collapse / expand it              │ck) - 04 [BD 1080p].mkv      │
+│                             │  backspace ×2episode back to unwatched (resume too)          │                             │
 │                             │  N           this episode starts the linked AniList entry    │                             │
 │                             │  w           toggle watched                                  │                             │
 │                             │  W           mark everything up to here watched              │                             │
@@ -3615,21 +3616,21 @@
 │                             │  space       queue a file, or a folder's unwatched           │                             │
 │                             │  w           toggle watched (a folder: all of it)            │                             │
 │                             │  ⏎ / → / l   open folder (a file: its series)                │                             │
-│                             │  ← / h / ⌫   up a folder                                     │                             │
+│                             │  ←/h/⌫/esc   up a folder                                     │                             │
 │                             │  /           search below here (⏎ keeps it, Esc clears)      │                             │
-│                             │                                                              │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  ⏎/p play  J/K move  d remove  c clear  y copy cmd  ? help
 ────────────────────────────────────────────────────────────────────────────────
  anipv  1 Up next(5)  2 Inbox(5)  3 Series  4 Files  5 Queue(6)                                                     desktop
-╭ Queue · plays in this order ╭ Keys 46-69 of 79 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
-│ #   Series                  │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │                             │
-│ 1   One Piece               │  o           on a ▲ ▼ ↳ link: open that one on AniList       │080p).mkv                    │
-│▌2   Nisemonogatari          │  P / shift-⏎ play this episode from the beginning            │ [BD 1080p].mkv              │
-│ 3   Nekomonogatari          │  [ ]         previous / next season (or part of this one)    │ck) - 01 [BD 1080p].mkv      │
-│ 4   Nekomonogatari          │  ⏎ / space   on a heading: collapse / expand it              │ck) - 02 [BD 1080p].mkv      │
-│ 5   Nekomonogatari          │  ← / →       on a heading: collapse / expand it              │ck) - 03 [BD 1080p].mkv      │
-│ 6   Nekomonogatari          │  backspace ×2episode back to unwatched (resume too)          │ck) - 04 [BD 1080p].mkv      │
+╭ Queue · plays in this order ╭ Keys 46-69 of 80 · j/k scroll · other keys close ────────────╮─────────────────────────────╮
+│ #   Series                  │  space       add / remove from queue                         │                             │
+│ 1   One Piece               │  ⏎           play this episode (or open a ▲ ▼ ↳ link)        │080p).mkv                    │
+│▌2   Nisemonogatari          │  o           on a ▲ ▼ ↳ link: open that one on AniList       │ [BD 1080p].mkv              │
+│ 3   Nekomonogatari          │  P / shift-⏎ play this episode from the beginning            │ck) - 01 [BD 1080p].mkv      │
+│ 4   Nekomonogatari          │  [ ]         previous / next season (or part of this one)    │ck) - 02 [BD 1080p].mkv      │
+│ 5   Nekomonogatari          │  ⏎ / space   on a heading: collapse / expand it              │ck) - 03 [BD 1080p].mkv      │
+│ 6   Nekomonogatari          │  ← / →       on a heading: collapse / expand it              │ck) - 04 [BD 1080p].mkv      │
+│                             │  backspace ×2episode back to unwatched (resume too)          │                             │
 │                             │  N           this episode starts the linked AniList entry    │                             │
 │                             │  w           toggle watched                                  │                             │
 │                             │  W           mark everything up to here watched              │                             │
@@ -3644,9 +3645,8 @@
 │                             │  space       queue a file, or a folder's unwatched           │                             │
 │                             │  w           toggle watched (a folder: all of it)            │                             │
 │                             │  ⏎ / → / l   open folder (a file: its series)                │                             │
-│                             │  ← / h / ⌫   up a folder                                     │                             │
+│                             │  ←/h/⌫/esc   up a folder                                     │                             │
 │                             │  /           search below here (⏎ keeps it, Esc clears)      │                             │
-│                             │                                                              │                             │
 ╰─────────────────────────────╰──────────────────────────────────────────────────────────────╯─────────────────────────────╯
  ⏎/p play  J/K move  d remove  c clear  y copy cmd  ? help
 ────────────────────────────────────────────────────────────────────────────────
@@ -3780,7 +3780,7 @@
 │                                                                                                                          │
 │                                 ╭ Quit? ───────────────────────────────────────────────╮                                 │
 │                                 │                      Quit anipv?                     │                                 │
-│                                 │        q/y/Enter quits, any other key cancels        │                                 │
+│                                 │           q/y quits, any other key cancels           │                                 │
 │                                 ╰──────────────────────────────────────────────────────╯                                 │
 │                                                                                                                          │
 │                                                                                                                          │
@@ -3809,7 +3809,7 @@
 │                                                                                                                          │
 │                                 ╭ Quit? ───────────────────────────────────────────────╮                                 │
 │                                 │                      Quit anipv?                     │                                 │
-│                                 │        q/y/Enter quits, any other key cancels        │                                 │
+│                                 │           q/y quits, any other key cancels           │                                 │
 │                                 ╰──────────────────────────────────────────────────────╯                                 │
 │                                                                                                                          │
 │                                                                                                                          │
