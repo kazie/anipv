@@ -1236,6 +1236,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("ctrl-r", "refresh all metadata (and an old anime DB)"),
             ("?", "this help"),
             ("q / ctrl-c", "quit (asks first); ctrl-c closes a popup first"),
+            ("esc", "back out; with nothing to close, asks to quit"),
         ],
     ),
     (
@@ -1302,7 +1303,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("space", "queue a file, or a folder's unwatched"),
             ("w", "toggle watched (a folder: all of it)"),
             ("⏎ / → / l", "open folder (a file: its series)"),
-            ("← / h / ⌫", "up a folder"),
+            ("←/h/⌫/esc", "up a folder"),
             ("/", "search below here (⏎ keeps it, Esc clears)"),
         ],
     ),
@@ -1431,9 +1432,9 @@ fn draw_confirm(f: &mut Frame, playing: bool) {
     let area = centered(f.area(), 56, 4);
     f.render_widget(Clear, area);
     let lines = if playing {
-        ["mpv is still playing; progress won't be recorded.", "Quit anyway? q/y/Enter quits, any other key cancels"]
+        ["mpv is still playing; progress won't be recorded.", "Quit anyway? q/y quits, any other key cancels"]
     } else {
-        ["Quit anipv?", "q/y/Enter quits, any other key cancels"]
+        ["Quit anipv?", "q/y quits, any other key cancels"]
     };
     f.render_widget(
         Paragraph::new(lines.map(Line::from).to_vec())

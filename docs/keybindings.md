@@ -22,6 +22,7 @@ Press `?` in the TUI to see these at any time.
 | `ctrl-r` | refresh all metadata (and an old anime DB) |
 | `?` | this help |
 | `q / ctrl-c` | quit (asks first); ctrl-c closes a popup first |
+| `esc` | back out; with nothing to close, asks to quit |
 
 ## Up next
 
@@ -88,7 +89,7 @@ Press `?` in the TUI to see these at any time.
 | `space` | queue a file, or a folder's unwatched |
 | `w` | toggle watched (a folder: all of it) |
 | `⏎ / → / l` | open folder (a file: its series) |
-| `← / h / ⌫` | up a folder |
+| `←/h/⌫/esc` | up a folder |
 | `/` | search below here (⏎ keeps it, Esc clears) |
 
 ## Queue
