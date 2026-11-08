@@ -34,9 +34,12 @@ doc:
 deny:
     cargo deny check
 
-# Build with the minimum supported Rust version (rustup toolchain 1.99).
+# Cargo.toml's rust-version, the minimum supported Rust version.
+msrv_version := `sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml`
+
+# Build with the minimum supported Rust version (rustup's toolchain, or the Nix shell's).
 msrv:
-    cargo +1.99 check --all-targets --locked
+    {{ env("ANIPV_MSRV_CARGO", "cargo +" + msrv_version) }} check --all-targets --locked
 
 # Apply clippy's suggestions, then format.
 fix:
@@ -76,9 +79,17 @@ release version:
     echo "Committed and tagged v$v. Check it (git show), then publish it:"
     echo "    git push origin master v$v"
 
-# Install anipv to ~/.cargo/bin (release build).
+# Install anipv to ~/.cargo/bin (release build, with your own toolchain also in the direnv shell).
 install:
-    cargo install --path . --locked
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # In a Nix shell, Nix's compiler would link anipv against the glibc in
+    # /nix/store, which a garbage collection removes. `direnv exec /` runs cargo
+    # in your environment from before direnv loaded the flake.
+    if [[ -z ${IN_NIX_SHELL:-} ]]; then exec cargo install --path . --locked; fi
+    if [[ -n ${DIRENV_DIR:-} ]]; then exec direnv exec / cargo install --path . --locked; fi
+    echo "error: just install builds with your own toolchain: exit the Nix shell first" >&2
+    exit 1
 
 # Where `cargo install` (`just install`) puts anipv.
 anipv_bin := env("CARGO_INSTALL_ROOT", env("CARGO_HOME", env("HOME") / ".cargo")) / "bin/anipv"

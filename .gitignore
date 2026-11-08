@@ -8,3 +8,4 @@ lcov.info
 *.orig
 *.rej
 /anipv.1
+/.direnv/
