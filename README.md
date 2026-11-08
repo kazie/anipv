@@ -249,6 +249,15 @@ just install          # install a release build to ~/.cargo/bin
 just release 0.2.0    # bump, date the CHANGELOG, commit and tag (then push; CI publishes the release)
 ```
 
+With Nix (flakes), `nix develop` (or `direnv allow` once with
+[nix-direnv](https://github.com/nix-community/nix-direnv)) gives a shell with the
+toolchain from `rust-toolchain.toml` and the tools the `justfile` uses; `just msrv`
+fetches the MSRV toolchain the first time. `nix develop .#record` adds vhs and
+ttyd for `just record`. mpv and ffmpeg come from your system, and so does the
+toolchain `just install` builds with (a binary built with Nix's would depend on
+the Nix store): it uses yours by itself under direnv, and asks you to leave a
+`nix develop` shell first.
+
 - Tests are unit, property, snapshot and end-to-end tests (`cargo test`). After an
   intentional UI change, review snapshots with `cargo insta review`.
 - The parser is tested against `tests/fixtures/filenames.tsv`, one example per naming convention.
@@ -263,8 +272,9 @@ just release 0.2.0    # bump, date the CHANGELOG, commit and tag (then push; CI 
   `git diff assets/tapes/all.txt` shows nothing, the demo didn't change (only
   timing or colors can differ) and `git restore assets/img/demo.gif` drops the
   new GIF.
-- CI runs fmt, clippy, tests on stable and MSRV, docs and `cargo-deny`.
-  Dependabot keeps crates and actions current.
+- CI runs fmt, clippy, tests on stable and MSRV, docs and `cargo-deny`, and
+  checks the Nix flake when it changes. Dependabot keeps crates and actions
+  current; a weekly workflow opens a pull request to update `flake.lock`.
 
 [anime-offline-database]: https://github.com/cedya77/anime-offline-database
 [manami-project]: https://github.com/manami-project/anime-offline-database

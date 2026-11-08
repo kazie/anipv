@@ -1,0 +1,27 @@
+name: Nix
+
+# Runs `nix flake check` (CI covers the project itself), only when what the
+# shells are made of changes.
+on:
+  push:
+    branches: [master]
+    paths: &flake-inputs [flake.nix, flake.lock, rust-toolchain.toml, Cargo.toml, .github/workflows/nix.yml]
+  pull_request:
+    paths: *flake-inputs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      # Evaluates both systems before building anything; builds this one's checks.
+      - run: nix flake check --all-systems
