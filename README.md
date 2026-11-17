@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/kazie/anipv/actions/workflows/ci.yml"><img src="https://github.com/kazie/anipv/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
-  <img src="https://img.shields.io/badge/rust-1.99%2B-orange.svg" alt="MSRV 1.99">
+  <img src="https://img.shields.io/badge/rust-1.100%2B-orange.svg" alt="MSRV 1.100">
 </p>
 
 <p align="center"><img src="assets/img/demo.gif" alt="anipv demo: queueing episodes from Up next, reordering the queue, searching the series list, playing an episode and controlling the player from anipv, browsing extras, setting a status, browsing folders and queueing a whole folder" width="900"></p>
@@ -44,7 +44,7 @@ tar xf anipv-v*-x86_64-unknown-linux-musl.tar.gz
 install -Dm755 anipv-v*/anipv ~/.local/bin/anipv
 ```
 
-Or build it yourself (Rust 1.99+):
+Or build it yourself (Rust 1.100+):
 
 ```sh
 git clone https://github.com/kazie/anipv && cd anipv
@@ -238,7 +238,7 @@ command you can copy from the `justfile`.
 
 ```sh
 just check            # fmt, clippy, tests, docs and cargo-deny (needs cargo-deny)
-just ci               # check, then the MSRV build (Rust 1.99): the local version of CI
+just ci               # check, then the MSRV build (Rust 1.100): the local version of CI
 just demo             # try the TUI against a throwaway demo library
 just screenshots      # regenerate the SVGs in this README
 just record           # re-record the demo GIF and assets/tapes/all.txt (needs vhs and ttyd)

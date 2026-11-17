@@ -62,7 +62,7 @@ pub fn ago(ts: i64, now: i64) -> String {
 
 /// [`ago`] for an optional timestamp; empty when there is none.
 pub fn ago_opt(ts: Option<i64>, now: i64) -> String {
-    ts.map(|t| ago(t, now)).unwrap_or_default()
+    ts.map_or_default(|t| ago(t, now))
 }
 
 /// Compact relative time in the future: `in 3h`, `in 2d 4h`, `aired`.

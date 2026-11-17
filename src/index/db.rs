@@ -211,7 +211,7 @@ fn path_bytes(p: &Path) -> &[u8] {
 /// Last path component as a `String` (empty when there is none), lossily
 /// as text: what events record.
 pub fn file_name_lossy(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    p.file_name().map_or_default(|n| n.to_string_lossy().into_owned())
 }
 
 fn bytes_path(b: Vec<u8>) -> PathBuf {
@@ -959,8 +959,8 @@ fn meta_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SeriesMeta> {
         score: r.get(11)?,
         popularity: r.get(12)?,
         titles: r.get::<_, Option<String>>(13)?.map(|j| json_list(&j)),
-        hashtags: r.get::<_, Option<String>>(14)?.map(|j| json_list(&j)).unwrap_or_default(),
-        studios: r.get::<_, Option<String>>(15)?.map(|j| json_list(&j)).unwrap_or_default(),
+        hashtags: r.get::<_, Option<String>>(14)?.map_or_default(|j| json_list(&j)),
+        studios: r.get::<_, Option<String>>(15)?.map_or_default(|j| json_list(&j)),
         season: r.get(16)?,
     })
 }

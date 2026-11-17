@@ -505,7 +505,7 @@ fn with_episode(s: &str, hit: &Hit, mut out: Parsed) -> Parsed {
     if let Some(c) = EXTRA_KW.captures(&title).filter(|c| kw(c).start() > 0) {
         // `Show - Drama CD 3 - 1` → extra, the number is part of the extra.
         let kw = kw(&c);
-        let ep = out.ep.take().map(|e| e.to_string()).unwrap_or_default();
+        let ep = out.ep.take().map_or_default(|e| e.to_string());
         out.kind = ItemKind::Extra;
         out.label = label_of(&format!("{title} {ep}", title = &title[kw.start()..]));
         title.truncate(kw.start());

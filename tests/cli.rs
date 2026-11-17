@@ -1,5 +1,4 @@
 //! End-to-end tests of the `anipv` binary against the demo library.
-#![expect(clippy::unwrap_used, reason = "test helpers outside #[test] fns")]
 #![expect(clippy::print_stderr, reason = "explains why a test is skipped")]
 
 use std::path::Path;
@@ -461,7 +460,7 @@ const UNSAFE_IN_COMPLETIONS: &[char] = &['"', '`', '$', '\\'];
 fn possible_values(cmd: &clap::Command, at: &str, out: &mut Vec<(String, String, String)>) {
     for arg in cmd.get_arguments() {
         for v in arg.get_possible_values() {
-            let help = v.get_help().map(ToString::to_string).unwrap_or_default();
+            let help = v.get_help().map_or_default(ToString::to_string);
             out.push((format!("{at} --{arg}", arg = arg.get_id()), v.get_name().to_string(), help));
         }
     }

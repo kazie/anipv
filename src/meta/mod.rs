@@ -74,7 +74,7 @@ pub struct Unlinked {
 /// One line about an anime, for lists of candidates:
 /// `Yuru Camp (TV 2018, 12 eps) anilist:98444`, with `?` for what isn't known.
 pub fn describe_anime(title: &str, format: Option<&str>, year: Option<i32>, episodes: Option<u32>, id: u64) -> String {
-    let year = year.map(|y| format!(" {y}")).unwrap_or_default();
+    let year = year.map_or_default(|y| format!(" {y}"));
     let episodes = episodes.map_or_else(|| "?".to_string(), |n| n.to_string());
     format!("{title} ({format}{year}, {episodes} eps) anilist:{id}", format = format.unwrap_or("?"))
 }

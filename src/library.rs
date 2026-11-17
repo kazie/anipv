@@ -401,7 +401,7 @@ impl Series {
 
     /// The airing summary alone (see [`Series::airing`]), empty without metadata.
     pub fn airing_text(&self, now: i64) -> String {
-        self.airing(now).map(|a| a.0).unwrap_or_default()
+        self.airing(now).map_or_default(|a| a.0)
     }
 
     /// What fuzzy search matches against: title and merged-in names, plus the
@@ -1282,7 +1282,7 @@ fn merge_hint(series: &[Series], i: usize, state: &State, targets: &[(usize, Vec
         return None;
     }
     let mut words = name_words(&s.key);
-    words.extend(state.file_hints.get(&s.key).map(|f| name_words(f)).unwrap_or_default());
+    words.extend(state.file_hints.get(&s.key).map_or_default(|f| name_words(f)));
     // A key of a later season (`… s6`) is only hinted to a series known to
     // come after another: not to a first season, whose bare name it spells.
     let later = crate::identity::season_suffix(&s.key).is_some_and(|(_, n)| n >= 2);
@@ -2335,7 +2335,7 @@ pub fn title_case(key: &str) -> String {
     key.split(' ')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+            c.next().map_or_default(|f| f.to_uppercase().chain(c).collect())
         })
         .collect::<Vec<String>>()
         .join(" ")

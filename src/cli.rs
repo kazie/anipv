@@ -693,7 +693,7 @@ fn inbox(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
     )?;
     for e in &entries {
         let s = &lib.series[e.index];
-        let text = e.hint.map(|h| h.describe(&lib)).unwrap_or_default();
+        let text = e.hint.map_or_default(|h| h.describe(&lib));
         let (title, hint) = match e.hint {
             Some(Hint::NewSeasonOf(_)) => (bold(&pad(&s.title, 44)), magenta(&text)),
             Some(Hint::PartOf(_)) => (dim(&pad(&s.title, 44)), dim(&text)),
@@ -861,7 +861,7 @@ fn show(ctx: &Ctx, query: &str, all: bool, out: &mut impl Write) -> Result<()> {
         };
         let file = it.best_file().map_or_else(|| red("(not on disk)"), crate::library::FileRef::name);
         let extra = match it.state {
-            WatchState::Started { .. } => it.state.percent().map(|p| yellow(&format!(" {p}"))).unwrap_or_default(),
+            WatchState::Started { .. } => it.state.percent().map_or_default(|p| yellow(&format!(" {p}"))),
             WatchState::Watched { at } => dim(&format!(" {when}", when = ago(at, now))),
             WatchState::Unwatched => String::new(),
         };
