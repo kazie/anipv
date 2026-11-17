@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{ItemKey, ItemKind, SeriesStatus, WatchState};
 
+pub mod backup;
+
 /// Current unix time in seconds.
 pub fn now() -> i64 {
     unix_secs(std::time::SystemTime::now())
@@ -241,6 +243,32 @@ pub enum EventBody {
 pub struct EventLog {
     dir: PathBuf,
     device: String,
+    guard: Option<Guard>,
+}
+
+/// What [`EventLog::guarded`] keeps: where this device's log length is
+/// recorded, and where backups are (named when the guard refuses to append).
+#[derive(Debug, Clone)]
+struct Guard {
+    length_file: PathBuf,
+    backups: PathBuf,
+}
+
+/// This device's log is shorter than the length recorded after anipv last
+/// appended to it (see [`EventLog::guarded`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shrunk {
+    /// Its length now (0 when it is gone).
+    pub now: u64,
+    /// The length recorded.
+    pub recorded: u64,
+}
+
+impl std::fmt::Display for Shrunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { now, recorded } = self;
+        write!(f, "is {now} bytes, shorter than the {recorded} anipv last wrote")
+    }
 }
 
 impl EventLog {
@@ -249,7 +277,63 @@ impl EventLog {
         let dir = dir.into();
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {dir}", dir = dir.display()))?;
         let device = sanitize_device(&device.into());
-        Ok(Self { dir, device })
+        Ok(Self { dir, device, guard: None })
+    }
+
+    /// Guard this device's log against appending to it once it was cut
+    /// short or replaced (a crash, a sync tool restoring an older copy,
+    /// another device with the same name): after each append its length is
+    /// recorded in `guard_dir`, and an append to a log shorter than that is
+    /// refused, naming `backups` (see [`backup`]), so the history that is
+    /// gone isn't buried under new events and synced to other devices.
+    ///
+    /// The log only ever grows, so a length recorded by another anipv
+    /// process appending at the same time is never more than the file holds.
+    #[must_use]
+    pub fn guarded(mut self, guard_dir: &Path, backups: &Path) -> Self {
+        let length_file = guard_dir.join(format!("{device}.jsonl.length", device = self.device));
+        self.guard = Some(Guard { length_file, backups: backups.to_path_buf() });
+        self
+    }
+
+    /// Whether this device's log is shorter than the guard recorded (see
+    /// [`EventLog::guarded`]); `None` when it isn't, nothing is recorded for
+    /// this log, or its length can't be told.
+    pub fn shrunk(&self) -> Option<Shrunk> {
+        let guard = self.guard.as_ref()?;
+        let text = std::fs::read_to_string(&guard.length_file).ok()?;
+        let mut lines = text.lines();
+        let (recorded, file) = (lines.next()?.parse().ok()?, lines.next()?);
+        let own = self.own_file();
+        // Recorded for another folder's log (`events_dir` changed): says nothing about this one.
+        if Path::new(file) != own {
+            return None;
+        }
+        // A folder that is gone (an unmounted share) or a file that can't be
+        // looked at isn't a log that was cut: writing fails on its own then.
+        let now = match std::fs::metadata(&own) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.dir.is_dir() => 0,
+            Err(_) => return None,
+        };
+        (now < recorded).then_some(Shrunk { now, recorded })
+    }
+
+    /// The error [`EventLog::append_events`] refuses with when the log shrank.
+    fn shrunk_error(&self, s: Shrunk, guard: &Guard) -> anyhow::Error {
+        let length_file = guard.length_file.display();
+        let restore = match backup::newest(&guard.backups) {
+            Some(dir) => format!("restore it from {dir}", dir = dir.display()),
+            None => format!("restore it if you can (no backup is in {dir} yet)", dir = guard.backups.display()),
+        };
+        anyhow::anyhow!(
+            "{own} {s}: it was cut short or replaced (a crash, a sync tool, another device named {device:?}?), \
+             so nothing was written to it. Keep a copy of it (it may hold events newer than any backup), \
+             {restore}, then delete {length_file} so anipv writes to it again; if you shortened it on purpose, \
+             only delete {length_file}",
+            own = self.own_file().display(),
+            device = self.device,
+        )
     }
 
     /// The device name used for new events.
@@ -288,6 +372,9 @@ impl EventLog {
             lines.push_str(&serde_json::to_string(e)?);
             lines.push('\n');
         }
+        if let (Some(s), Some(guard)) = (self.shrunk(), &self.guard) {
+            return Err(self.shrunk_error(s, guard));
+        }
         let path = self.own_file();
         let mut f = OpenOptions::new()
             .create(true)
@@ -303,6 +390,16 @@ impl EventLog {
         }
         f.write_all(lines.as_bytes())?;
         f.sync_data()?;
+        // The events are written either way; a length that can't be recorded
+        // only leaves the guard with an older, smaller one.
+        // A hint, not history: written without waiting for the disk (lost in
+        // a crash, it is just an older, smaller length).
+        if let Some(guard) = &self.guard
+            && let Ok(m) = f.metadata()
+        {
+            let text = format!("{len}\n{own}\n", len = m.len(), own = path.display());
+            let _ = crate::config::replace_file_with(&guard.length_file, text.as_bytes(), false);
+        }
         Ok(written)
     }
 
@@ -1346,6 +1443,68 @@ mod tests {
         let loaded = log.load_all().unwrap();
         assert_eq!(loaded.events.iter().map(|e| e.ts).collect::<Vec<_>>(), [1, 3]);
         assert_eq!(loaded.errors.len(), 1, "{errors:?}", errors = loaded.errors);
+    }
+
+    /// A guarded log that was cut short or replaced takes no more events, and
+    /// the error says where a backup is and how to go on; other devices' logs
+    /// don't count, and a log without a recorded length (a new guard, a new
+    /// data folder) is appended to as before.
+    #[test]
+    fn a_guarded_log_that_shrank_takes_no_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let (events, data) = (dir.path().join("events"), dir.path().join("data"));
+        std::fs::create_dir_all(&data).unwrap();
+        let log = EventLog::open(&events, "desk").unwrap().guarded(&data, &data.join("backups"));
+        log.append_events(&[ev(1, "desk", watched("x", 1))]).unwrap();
+        log.append_events(&[ev(2, "desk", watched("x", 2))]).unwrap();
+        let own = events.join("desk.jsonl");
+        let full = std::fs::read(&own).unwrap();
+        assert_eq!(log.shrunk(), None);
+        EventLog::open(&events, "laptop").unwrap().append_events(&[ev(3, "laptop", watched("y", 1))]).unwrap();
+
+        std::fs::write(&own, "").unwrap();
+        let len = u64::try_from(full.len()).unwrap();
+        assert_eq!(log.shrunk(), Some(Shrunk { now: 0, recorded: len }));
+        let err = format!("{err:#}", err = log.append_events(&[ev(4, "desk", watched("x", 3))]).unwrap_err());
+        assert!(err.contains("nothing was written") && err.contains("no backup is in"), "{err}");
+        assert!(err.contains("desk.jsonl.length"), "says how to go on: {err}");
+        assert_eq!(std::fs::read(&own).unwrap(), b"", "untouched");
+        std::fs::remove_file(&own).unwrap();
+        assert!(log.append_events(&[ev(4, "desk", watched("x", 3))]).is_err(), "a log that is gone counts too");
+
+        std::fs::create_dir_all(data.join("backups").join("2026-11-17")).unwrap();
+        let err = format!("{err:#}", err = log.append_events(&[ev(4, "desk", watched("x", 3))]).unwrap_err());
+        assert!(err.contains("restore it from") && err.contains("2026-11-17"), "{err}");
+
+        // Restored: appending goes on.
+        std::fs::write(&own, &full).unwrap();
+        log.append_events(&[ev(4, "desk", watched("x", 3))]).unwrap();
+        assert_eq!(log.load_all().unwrap().events.len(), 4);
+
+        // A backup older than the last append is still shorter: refused until
+        // the recorded length is deleted, as the error says.
+        let older = &full[..full.len() / 2];
+        std::fs::write(&own, older).unwrap();
+        let err = format!("{err:#}", err = log.append_events(&[ev(5, "desk", watched("x", 4))]).unwrap_err());
+        assert!(err.contains("then delete"), "{err}");
+
+        // Another events folder (`events_dir` changed) isn't held to this one's length.
+        let elsewhere =
+            EventLog::open(dir.path().join("synced"), "desk").unwrap().guarded(&data, &data.join("backups"));
+        assert_eq!(elsewhere.shrunk(), None);
+        elsewhere.append_events(&[ev(5, "desk", watched("x", 4))]).unwrap();
+        // A folder that is gone (an unmounted share) isn't a log that was cut.
+        std::fs::remove_dir_all(dir.path().join("synced")).unwrap();
+        assert_eq!(elsewhere.shrunk(), None);
+        std::fs::write(&own, older).unwrap();
+
+        // Deleting the recorded length (shortened on purpose) lets it go on too.
+        std::fs::write(&own, "").unwrap();
+        std::fs::remove_file(data.join("desk.jsonl.length")).unwrap();
+        log.append_events(&[ev(5, "desk", watched("x", 4))]).unwrap();
+        // An unguarded log never checks.
+        std::fs::write(&own, "").unwrap();
+        EventLog::open(&events, "desk").unwrap().append_events(&[ev(6, "desk", watched("x", 5))]).unwrap();
     }
 
     /// A cached log takes this device's appends without reading again, and

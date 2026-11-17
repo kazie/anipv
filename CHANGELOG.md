@@ -13,9 +13,30 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+### Added
+
+- `anipv update` keeps dated copies of the event log in
+  `~/.local/share/anipv/backups/` (the newest 30, at most one a day, made
+  only when it grew); `anipv doctor` names the newest. A log that got
+  shorter, was replaced or is gone never displaces its last good copy:
+  that copy is carried into every later backup, and `update` warns.
+- If this device's event log gets shorter (cut short by a crash, replaced
+  by a sync tool or by another device with the same name), anipv writes
+  nothing more to it and says which backup to restore (and how to let it
+  go on), so new events don't bury what is missing. See
+  [the event log](docs/events.md#backups-and-the-shrink-guard).
+
 ### Changed
 
 - Building anipv needs Rust 1.100 or newer (was 1.99).
+
+### Fixed
+
+- A cached anime database that a crash left empty or cut off is downloaded
+  again (one that fails to load is removed). Before, it counted as fresh for
+  a week, failed to load on every start, and `ctrl-r` didn't replace it.
+- The config file and the anime database are flushed to disk before they
+  replace the old copy, so a crash right after saving can't leave them empty.
 
 ## [0.2.2] - 2026-11-01
 

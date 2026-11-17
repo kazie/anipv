@@ -212,11 +212,14 @@ impl OfflineDb {
         self.version.as_deref().unwrap_or("")
     }
 
-    /// True if the database was never downloaded or is older than
-    /// [`super::OFFLINE_DB_MAX_AGE`].
+    /// True if the database was never downloaded, is older than
+    /// [`super::OFFLINE_DB_MAX_AGE`], or isn't whole (it doesn't end like a JSON object):
+    /// a copy a crash left empty or cut off would otherwise count as fresh
+    /// for a week, failing to load on every start meanwhile.
     pub fn needs_update(cache_dir: &Path) -> bool {
         let max_age = std::time::Duration::from_secs(super::OFFLINE_DB_MAX_AGE.unsigned_abs());
         modified(cache_dir).and_then(|t| t.elapsed().ok()).is_none_or(|age| age > max_age)
+            || !looks_whole(&Self::path(cache_dir))
     }
 
     /// Location of the cached database file.
@@ -262,11 +265,19 @@ impl OfflineDb {
         })
     }
 
-    /// Load from the cache, if it has been downloaded.
+    /// Load from the cache, if it has been downloaded. A cached copy that
+    /// doesn't parse is removed (and the error says so).
     pub fn load(cache_dir: &Path) -> Result<Option<Self>> {
         let p = Self::path(cache_dir);
         match std::fs::read(&p) {
-            Ok(json) => Ok(Some(Self::from_slice(&json)?)),
+            // Only a copy that parsed is ever stored (see `download_with`), so
+            // one that doesn't is broken (a crash cut it after a `}` that
+            // `needs_update` took for its end): removed, it is downloaded again.
+            Ok(json) => Self::from_slice(&json).map(Some).map_err(|e| {
+                let removed = std::fs::remove_file(&p).is_ok();
+                let next = if removed { "; removed it, so the next update downloads it again" } else { "" };
+                e.context(format!("{path} is broken{next}", path = p.display()))
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("reading {path}", path = p.display())),
         }
@@ -278,8 +289,9 @@ impl OfflineDb {
     ///
     /// Only the first URL is tried when a copy is cached already: falling back
     /// to the next one (an older, archived source) could replace the cached
-    /// copy with an older one. Without a cached copy every URL is tried, and
-    /// the error names each failure.
+    /// copy with an older one. Without a cached copy (or with one a crash left
+    /// broken, see [`OfflineDb::needs_update`]) every URL is tried, and the
+    /// error names each failure.
     pub fn download(cache_dir: &Path, urls: &[String]) -> Result<(Self, Vec<String>)> {
         let (db, source) = Self::download_with(cache_dir, urls, &fetch)?;
         let first = urls.first().map_or("", String::as_str);
@@ -295,7 +307,8 @@ impl OfflineDb {
         fetch: &dyn Fn(&str) -> Result<Vec<u8>>,
     ) -> Result<(Self, String)> {
         std::fs::create_dir_all(cache_dir)?;
-        let cached = Self::path(cache_dir).exists();
+        // A copy that isn't whole is nothing to keep: any source may replace it.
+        let cached = looks_whole(&Self::path(cache_dir));
         let tried = if cached { &urls[..urls.len().min(1)] } else { urls };
         let mut errors = Vec::new();
         for url in tried {
@@ -421,6 +434,24 @@ impl OfflineCache {
 /// Modification time of the cached database file.
 fn modified(cache_dir: &Path) -> Option<SystemTime> {
     std::fs::metadata(OfflineDb::path(cache_dir)).and_then(|m| m.modified()).ok()
+}
+
+/// True if the file at `path` ends the way the database's JSON object does
+/// (`}`, then whitespace at most). What a crash leaves behind (an empty file,
+/// one cut off, or one whose end is zero bytes) doesn't, and telling takes
+/// reading only its last bytes, not parsing 40 MB. False when it can't be read.
+fn looks_whole(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 64;
+    let tail = || -> std::io::Result<Vec<u8>> {
+        let mut f = std::fs::File::open(path)?;
+        let len = f.metadata()?.len();
+        f.seek(SeekFrom::Start(len.saturating_sub(TAIL)))?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        Ok(buf)
+    };
+    tail().is_ok_and(|buf| buf.trim_ascii_end().ends_with(b"}"))
 }
 
 #[cfg(test)]
@@ -553,6 +584,32 @@ pub(crate) mod tests {
         }
     }
 
+    /// What a crash leaves of the cached copy (nothing, a cut-off file, one
+    /// ending in zero bytes) is due for a download however new it is, and any
+    /// source may replace it, the archived fallback too.
+    #[test]
+    fn a_copy_a_crash_broke_is_downloaded_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = OfflineDb::path(dir.path());
+        let cut = &SAMPLE.as_bytes()[..SAMPLE.len() / 2];
+        let zeroed = [SAMPLE.as_bytes(), &[0; 4096]].concat();
+        for broken in [&[][..], cut, &zeroed] {
+            std::fs::write(&path, broken).unwrap();
+            assert!(OfflineDb::needs_update(dir.path()), "{len} bytes", len = broken.len());
+        }
+        for whole in [SAMPLE.to_string(), format!("{SAMPLE}\n")] {
+            std::fs::write(&path, &whole).unwrap();
+            assert!(!OfflineDb::needs_update(dir.path()), "whole and fresh");
+        }
+
+        std::fs::write(&path, "").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let (db, source) = OfflineDb::download_with(dir.path(), &urls(&["down", "a"]), &fake(&asked)).unwrap();
+        assert_eq!((source.as_str(), db.entries.len()), ("a", 5), "the fallback replaced it");
+        assert_eq!(*asked.borrow(), ["down", "a"]);
+        assert!(!OfflineDb::needs_update(dir.path()));
+    }
+
     #[test]
     fn download_falls_back_only_without_a_cached_copy() {
         let asked = std::cell::RefCell::new(Vec::new());
@@ -642,5 +699,19 @@ pub(crate) mod tests {
         assert!(OfflineDb::load(dir.path()).unwrap().is_none());
         std::fs::write(OfflineDb::path(dir.path()), SAMPLE).unwrap();
         assert_eq!(OfflineDb::load(dir.path()).unwrap().unwrap().entries.len(), 5);
+    }
+
+    /// A copy cut right after an inner `}` passes for whole, but fails to
+    /// load: it is removed then, so the next update downloads it.
+    #[test]
+    fn a_copy_that_fails_to_load_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cut = &SAMPLE[..=SAMPLE.find("}},").unwrap()];
+        std::fs::write(OfflineDb::path(dir.path()), cut).unwrap();
+        assert!(!OfflineDb::needs_update(dir.path()), "looks whole");
+        let err = format!("{err:#}", err = OfflineDb::load(dir.path()).unwrap_err());
+        assert!(err.contains("removed it"), "{err}");
+        assert!(OfflineDb::load(dir.path()).unwrap().is_none());
+        assert!(OfflineDb::needs_update(dir.path()), "downloaded again");
     }
 }

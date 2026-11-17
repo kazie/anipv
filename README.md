@@ -171,6 +171,10 @@ because a folder couldn't be read. With `refresh_untracked = true` it also
 refreshes the series you don't track, a few at a time (see
 [Privacy](#privacy)).
 
+Each run also first keeps a dated copy of your event log (one for each day
+it grew, the newest 30) in `~/.local/share/anipv/backups/`; see
+[docs/events.md](docs/events.md#backups-and-the-shrink-guard).
+
 ## How it works
 
 ```
