@@ -38,12 +38,19 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
 
   test:
-    name: test (${{ matrix.toolchain }})
+    # Named `test (stable)` and `test (msrv)`, not after the version: the
+    # master ruleset requires these checks by name, so an MSRV bump only
+    # changes `toolchain` below.
+    name: test (${{ matrix.name }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, "1.100"]
+        include:
+          - name: stable
+            toolchain: stable
+          - name: msrv
+            toolchain: "1.100"
     env:
       # Overrides rust-toolchain.toml so the MSRV job really builds with 1.100.
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
