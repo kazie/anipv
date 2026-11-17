@@ -31,7 +31,7 @@
       );
       forAllSystems = f: lib.mapAttrs (_: f) pkgsFor;
 
-      # Cargo.toml's rust-version, e.g. "1.99". Raising it past what the locked
+      # Cargo.toml's rust-version, e.g. "1.100". Raising it past what the locked
       # rust-overlay knows needs `nix flake update rust-overlay`.
       rustVersion = (lib.importTOML ./Cargo.toml).package.rust-version;
 
@@ -52,7 +52,7 @@
         );
     in
     {
-      # The newest release of rust-version, as rustup's `+1.99` and CI's "1.99"
+      # The newest release of rust-version, as rustup's `+1.100` and CI's "1.100"
       # pick it; stable itself while that is the MSRV (each toolchain is
       # 170+ MiB of its own). Not in the shell: `just msrv` builds it.
       packages = forAllSystems (
@@ -89,7 +89,7 @@
               # `just record` with the system's vhs runs in this shell.
               pkgs.bashInteractive
             ];
-            # `just msrv` runs this instead of rustup's `cargo +1.99` (with the
+            # `just msrv` runs this instead of rustup's `cargo +1.100` (with the
             # flag, as direnv's `use flake` doesn't need flakes in nix.conf).
             ANIPV_MSRV_CARGO = "nix --extra-experimental-features 'nix-command flakes' shell .#msrv --command cargo";
             # mpv and ffmpeg come from the system: a Nix mpv would shadow it

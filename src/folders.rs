@@ -33,7 +33,7 @@ impl Dir {
     /// The folder the file `rel` of root `root` is in.
     #[must_use]
     pub fn of_file(root: &str, rel: &Path) -> Self {
-        Self { root: root.to_string(), rel: rel.parent().map(Path::to_path_buf).unwrap_or_default() }
+        Self { root: root.to_string(), rel: rel.parent().map_or_default(Path::to_path_buf) }
     }
 
     /// True for the top.
@@ -48,7 +48,7 @@ impl Dir {
         } else if self.rel.as_os_str().is_empty() {
             Some(Self::top())
         } else {
-            Some(Self { root: self.root.clone(), rel: self.rel.parent().map(Path::to_path_buf).unwrap_or_default() })
+            Some(Self { root: self.root.clone(), rel: self.rel.parent().map_or_default(Path::to_path_buf) })
         }
     }
 
@@ -187,7 +187,7 @@ impl Folders {
         let mut states: HashMap<&str, HashMap<&crate::model::ItemKey, WatchState>> = HashMap::new();
         for (i, f) in lib.files.iter().enumerate().filter(|(_, f)| f.file.present) {
             let of_series = states.entry(f.series.as_str()).or_insert_with(|| {
-                lib.get(&f.series).map(|s| s.items.iter().map(|it| (&it.key, it.state)).collect()).unwrap_or_default()
+                lib.get(&f.series).map_or_default(|s| s.items.iter().map(|it| (&it.key, it.state)).collect())
             });
             let (watched, started) = state_of(&f.items, |k| of_series.get(k).copied());
             let mut dir = Dir::root(&f.file.root);

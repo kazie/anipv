@@ -1,6 +1,5 @@
 //! Render the TUI against the demo library on a fake terminal and snapshot
 //! each screen. Run `cargo insta review` after intentional UI changes.
-#![expect(clippy::unwrap_used, reason = "test helpers outside #[test] fns")]
 
 use anipv::tui::app::{DetailRow, View};
 use anipv::tui::{App, ui};
@@ -387,7 +386,7 @@ fn a_season_numbered_by_itself_is_a_part_of_the_series() {
     let listed: Vec<String> = app.series_rows_in(0..usize::MAX).iter().map(|s| s.key.clone()).collect();
     assert_eq!(listed, ["hoshi no kusari"], "the season's release isn't a series of its own");
     app.press("\n");
-    let at = |app: &App| (app.detail_series().map(|s| s.key.clone()).unwrap_or_default(), app.detail_part());
+    let at = |app: &App| (app.detail_series().map_or_default(|s| s.key.clone()), app.detail_part());
     let ep = |app: &App| selected_item(app).and_then(|k| k.ep).map(anipv::model::EpNo::whole);
     assert_eq!(at(&app), ("hoshi no kusari".into(), Some(0)));
     let s = render(&mut app);

@@ -13,6 +13,10 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+### Changed
+
+- Building anipv needs Rust 1.100 or newer (was 1.99).
+
 ## [0.2.2] - 2026-11-01
 
 ### Fixed

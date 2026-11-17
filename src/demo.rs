@@ -224,11 +224,9 @@ pub fn setup(home: &Path, ts: i64) -> Result<Ctx> {
         search_linked: false,
         score: score(id).map(|s| s.0),
         popularity: score(id).map(|s| s.1),
-        titles: Some(about(id).map(|a| strings(a.0)).unwrap_or_default()),
-        hashtags: about(id)
-            .map(|a| strings(&[a.4]).into_iter().filter(|h| !h.is_empty()).collect())
-            .unwrap_or_default(),
-        studios: about(id).map(|a| vec![a.1.to_string()]).unwrap_or_default(),
+        titles: Some(about(id).map_or_default(|a| strings(a.0))),
+        hashtags: about(id).map_or_default(|a| strings(&[a.4]).into_iter().filter(|h| !h.is_empty()).collect()),
+        studios: about(id).map_or_default(|a| vec![a.1.to_string()]),
         season: about(id).map(|a| a.2.to_string()),
     };
     ctx.db.put_metas(&[

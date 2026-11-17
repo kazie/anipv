@@ -265,7 +265,7 @@ fn draw_upnext(f: &mut Frame, app: &mut App, area: Rect) {
             let next = new.first().copied();
             let queued = new.iter().filter(|i| queued_set.contains(&(s.key.as_str(), &i.key))).count();
             let next_txt = next.map_or_else(|| "—".into(), |i| i.key.describe());
-            let started = next.and_then(|i| i.state.percent()).map(|p| format!(" ◐{p}")).unwrap_or_default();
+            let started = next.and_then(|i| i.state.percent()).map_or_default(|p| format!(" ◐{p}"));
             let title_style =
                 if s.status == SeriesStatus::Paused { Style::new().fg(Color::Yellow) } else { Style::new() };
             let new_cell = match (new.len(), queued) {
@@ -325,7 +325,7 @@ fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
         .inbox_rows_in(window.range.clone())
         .iter()
         .map(|(s, hint)| {
-            let hint_text = hint.map(|h| h.describe(&app.lib)).unwrap_or_default();
+            let hint_text = hint.map_or_default(|h| h.describe(&app.lib));
             let style = match hint {
                 Some(Hint::NewSeasonOf(_)) => Style::new().fg(ACCENT).bold(),
                 Some(Hint::PartOf(_)) => Style::new().dark_gray(),
@@ -377,7 +377,7 @@ fn draw_series(f: &mut Frame, app: &mut App, area: Rect) {
         .series_rows_in(window.range.clone())
         .iter()
         .map(|s| {
-            let latest = s.latest_on_disk().map(|e| e.to_string()).unwrap_or_default();
+            let latest = s.latest_on_disk().map_or_default(|e| e.to_string());
             let disk_style = if s.present() { Style::new() } else { Style::new().dark_gray() };
             let mut title = titled(app, s, Style::new());
             // Found by another name: which one.
@@ -435,14 +435,17 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|fi| {
             let series = app.lib.get(&fi.series);
             let item: Option<&Item> = series.and_then(|s| fi.items.first().and_then(|k| s.item(k)));
-            let state = item.map(|i| i.state).unwrap_or_default();
+            let state = item.map_or_default(|i| i.state);
             let queued = fi.items.iter().any(|k| queued_set.contains(&(fi.series.as_str(), k)));
-            let status = series.map(|s| s.status).unwrap_or_default();
+            let status = series.map_or_default(|s| s.status);
             Row::new(vec![
                 Cell::from(Line::from(mark_span(queued, &state))),
                 Cell::from(ago(fi.file.added(), ts)).dark_gray(),
-                Cell::from(series.map(|s| s.title.clone()).unwrap_or_default())
-                    .fg(if status == SeriesStatus::Untracked { Color::Reset } else { status_color(status) }),
+                Cell::from(series.map_or_default(|s| s.title.clone())).fg(if status == SeriesStatus::Untracked {
+                    Color::Reset
+                } else {
+                    status_color(status)
+                }),
                 Cell::from(fi.items.iter().map(ItemKey::describe).collect::<Vec<_>>().join(",")),
                 Cell::from(fi.file.rel.to_string_lossy().into_owned()).dark_gray(),
             ])
@@ -472,8 +475,8 @@ fn draw_queue(f: &mut Frame, app: &mut App, area: Rect) {
         .zip(window.range.clone())
         .map(|(q, i)| {
             let s = app.lib.get(&q.series);
-            let st = s.and_then(|s| s.item(&q.item)).map(|i| i.state).unwrap_or_default();
-            let resume = st.resume_at().and_then(|_| st.percent()).map(|p| format!("resume {p}")).unwrap_or_default();
+            let st = s.and_then(|s| s.item(&q.item)).map_or_default(|i| i.state);
+            let resume = st.resume_at().and_then(|_| st.percent()).map_or_default(|p| format!("resume {p}"));
             let row = Row::new(vec![
                 Cell::from((i + 1).to_string()).dark_gray(),
                 Cell::from(app.lib.title_of(&q.series).to_string()),
@@ -1459,59 +1462,59 @@ fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
     let len = app.rows_len(View::Files);
     let window = Window::of_table(&app.tree_state, len, area, true);
     let searching = !app.tree_query.is_empty();
-    let rows: Vec<Row> = app
-        .tree_rows_in(window.range.clone())
-        .iter()
-        .map(|e| match e {
-            Entry::Folder(dir) => {
-                let empty = crate::folders::Stats::default();
-                let stats = app.folders.stats(dir).unwrap_or(&empty);
-                // The folder as one item: all watched, partly, or not at all.
-                let state = if stats.videos > 0 && stats.watched == stats.videos {
-                    WatchState::Watched { at: stats.added }
-                } else if stats.watched > 0 || stats.started > 0 {
-                    WatchState::Started { pos: 0.0, dur: None, at: stats.added }
-                } else {
-                    WatchState::Unwatched
-                };
-                let mark = mark_span(queued_dirs.iter().any(|d| dir.contains(d)), &state);
-                // A search hit shows where it is, from the folder you're in.
-                let name = if searching { e.path_from(&app.tree_at, &app.lib) } else { dir.name() };
-                let series = match stats.series.len() {
-                    1 => stats
-                        .series
-                        .first()
-                        .and_then(|k| app.lib.get(k))
-                        .map_or_else(|| Cell::from(""), |s| Cell::from(s.title.clone()).fg(status_color(s.status))),
-                    n => Cell::from(format!("{n} series")).dark_gray(),
-                };
-                Row::new(vec![
-                    Cell::from(Line::from(mark)),
-                    Cell::from(format!("{name}/")).bold(),
-                    Cell::from(format!("{watched}/{videos}", watched = stats.watched, videos = stats.videos)),
-                    Cell::from(ago(stats.added, ts)).dark_gray(),
-                    series,
-                ])
-            }
-            Entry::File(i) => {
-                let fi = &app.lib.files[*i];
-                let series = app.lib.get(&fi.series);
-                let item: Option<&Item> = series.and_then(|s| fi.items.first().and_then(|k| s.item(k)));
-                let state = item.map(|i| i.state).unwrap_or_default();
-                let queued = fi.items.iter().any(|k| queued_set.contains(&(fi.series.as_str(), k)));
-                let items = fi.items.iter().map(ItemKey::describe).collect::<Vec<_>>().join(",");
-                let status = series.map(|s| s.status).unwrap_or_default();
-                Row::new(vec![
-                    Cell::from(Line::from(mark_span(queued, &state))),
-                    Cell::from(if searching { e.path_from(&app.tree_at, &app.lib) } else { fi.file.name() }),
-                    Cell::from(items),
-                    Cell::from(ago(fi.file.added(), ts)).dark_gray(),
-                    Cell::from(series.map(|s| s.title.clone()).unwrap_or_default())
-                        .fg(if status == SeriesStatus::Untracked { Color::Reset } else { status_color(status) }),
-                ])
-            }
-        })
-        .collect();
+    let rows: Vec<Row> =
+        app.tree_rows_in(window.range.clone())
+            .iter()
+            .map(|e| match e {
+                Entry::Folder(dir) => {
+                    let empty = crate::folders::Stats::default();
+                    let stats = app.folders.stats(dir).unwrap_or(&empty);
+                    // The folder as one item: all watched, partly, or not at all.
+                    let state = if stats.videos > 0 && stats.watched == stats.videos {
+                        WatchState::Watched { at: stats.added }
+                    } else if stats.watched > 0 || stats.started > 0 {
+                        WatchState::Started { pos: 0.0, dur: None, at: stats.added }
+                    } else {
+                        WatchState::Unwatched
+                    };
+                    let mark = mark_span(queued_dirs.iter().any(|d| dir.contains(d)), &state);
+                    // A search hit shows where it is, from the folder you're in.
+                    let name = if searching { e.path_from(&app.tree_at, &app.lib) } else { dir.name() };
+                    let series = match stats.series.len() {
+                        1 => stats
+                            .series
+                            .first()
+                            .and_then(|k| app.lib.get(k))
+                            .map_or_else(|| Cell::from(""), |s| Cell::from(s.title.clone()).fg(status_color(s.status))),
+                        n => Cell::from(format!("{n} series")).dark_gray(),
+                    };
+                    Row::new(vec![
+                        Cell::from(Line::from(mark)),
+                        Cell::from(format!("{name}/")).bold(),
+                        Cell::from(format!("{watched}/{videos}", watched = stats.watched, videos = stats.videos)),
+                        Cell::from(ago(stats.added, ts)).dark_gray(),
+                        series,
+                    ])
+                }
+                Entry::File(i) => {
+                    let fi = &app.lib.files[*i];
+                    let series = app.lib.get(&fi.series);
+                    let item: Option<&Item> = series.and_then(|s| fi.items.first().and_then(|k| s.item(k)));
+                    let state = item.map_or_default(|i| i.state);
+                    let queued = fi.items.iter().any(|k| queued_set.contains(&(fi.series.as_str(), k)));
+                    let items = fi.items.iter().map(ItemKey::describe).collect::<Vec<_>>().join(",");
+                    let status = series.map_or_default(|s| s.status);
+                    Row::new(vec![
+                        Cell::from(Line::from(mark_span(queued, &state))),
+                        Cell::from(if searching { e.path_from(&app.tree_at, &app.lib) } else { fi.file.name() }),
+                        Cell::from(items),
+                        Cell::from(ago(fi.file.added(), ts)).dark_gray(),
+                        Cell::from(series.map_or_default(|s| s.title.clone()))
+                            .fg(if status == SeriesStatus::Untracked { Color::Reset } else { status_color(status) }),
+                    ])
+                }
+            })
+            .collect();
     let at = if app.tree_at.is_top() { "all folders".to_string() } else { app.tree_at.display() };
     let mut title =
         vec![Span::raw(format!(" Files · {at} · ")), Span::styled(format!("{len} "), Style::new().dark_gray())];

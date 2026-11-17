@@ -2193,12 +2193,11 @@ impl App {
         match key.code {
             KeyCode::Char('m') => self.popup = Some(Popup::Merge(MergePicker::new(self, &series))),
             KeyCode::Char('R') => {
-                let text = self.lib.get(&series).map(|s| s.title.clone()).unwrap_or_default();
+                let text = self.lib.get(&series).map_or_default(|s| s.title.clone());
                 self.popup = Some(Popup::Input { series, purpose: InputPurpose::Rename, text });
             }
             KeyCode::Char('L') => {
-                let text =
-                    self.lib.get(&series).and_then(Series::anilist_id).map(|i| i.to_string()).unwrap_or_default();
+                let text = self.lib.get(&series).and_then(Series::anilist_id).map_or_default(|i| i.to_string());
                 self.popup = Some(Popup::Input { series, purpose: InputPurpose::Link, text });
             }
             KeyCode::Char('C') => match crate::app::catch_up(&self.lib, &series) {
@@ -2215,7 +2214,7 @@ impl App {
                 Err(e) => self.fail(format!("{e:#}")),
             },
             KeyCode::Char('U') => {
-                let aliases = self.lib.get(&series).map(|s| s.aliases.clone()).unwrap_or_default();
+                let aliases = self.lib.get(&series).map_or_default(|s| s.aliases.clone());
                 if aliases.is_empty() {
                     self.say("nothing merged into this series");
                 } else {
@@ -2498,7 +2497,7 @@ impl App {
             Popup::Unmerge { series, names } => {
                 // The names you were shown that are still merged into it (a
                 // reload may have changed them): never one you weren't shown.
-                let now = self.lib.get(&series).map(|s| s.aliases.clone()).unwrap_or_default();
+                let now = self.lib.get(&series).map_or_default(|s| s.aliases.clone());
                 let names: Vec<String> = names.into_iter().filter(|n| now.contains(n)).collect();
                 if is_yes(key.code) && !names.is_empty() {
                     self.say(format!("split off {n} merged name(s)", n = names.len()));
@@ -2619,7 +2618,7 @@ impl App {
         let from_ix = self.lib.index_of(from);
         let others = self.lib.series.iter().enumerate().filter(move |(i, _)| Some(*i) != from_ix).map(|(_, s)| s);
         if query.is_empty() {
-            let from_title = self.lib.get(from).map(|s| s.title.as_str()).unwrap_or_default();
+            let from_title = self.lib.get(from).map_or_default(|s| s.title.as_str());
             // The suggested series (see `Library::merge_hint`), then similarly
             // named ones, then the rest.
             let hint = from_ix.and_then(|i| self.lib.merge_hint(i)).map(|j| &self.lib.series[j]);
