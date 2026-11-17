@@ -44,6 +44,11 @@ predicates = "3.1.4"
 proptest = "1.11.0"
 tempfile = "3.27.0"
 
+# `just rekey-check`; its tests run with `cargo test` (examples' don't by default).
+[[example]]
+name = "rekey_check"
+test = true
+
 [profile.dev]
 debug = "line-tables-only"
 
