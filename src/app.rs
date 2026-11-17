@@ -214,7 +214,7 @@ impl Ctx {
     /// Build a context from explicit config and paths (tests, demos).
     pub fn open(cfg: Config, paths: Paths) -> Result<Self> {
         paths.ensure()?;
-        let log = EventLog::open(&paths.events_dir, cfg.device_name())?;
+        let log = EventLog::open(&paths.events_dir, cfg.device_name())?.guarded(&paths.guard_dir, &paths.backups_dir);
         let db = Db::open(&paths.db_file)?;
         Ok(Self { cfg, paths, log, db })
     }

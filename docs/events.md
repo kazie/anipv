@@ -152,6 +152,35 @@ its schema version changes, so it hardly needs migrations either (a version
 that only adds tables is upgraded in place instead, keeping the files'
 first-seen times).
 
+## Backups and the shrink guard
+
+The log is the one thing anipv can't rebuild, so `anipv update` (on its
+timer, say) keeps dated copies of it: `~/.local/share/anipv/backups/<date>/`
+holds every `*.jsonl` of the events folder as it was that day (UTC). A copy
+is made only when some log grew since the newest one, and the newest 30 are
+kept. A new backup is filled under a temporary name and renamed into place,
+so one that exists is whole. `anipv doctor` names the newest.
+
+A log only grows, so a backup takes a log only when it starts with its copy
+in the newest backup. One that doesn't (cut short, or replaced by another
+file however long) or that is gone keeps that copy, carried into every later
+backup, and `anipv update` warns about it on every run. So the newest backup
+always holds the last good copy, and pruning never drops the only copy of a
+log that stopped changing. To let a log you shortened or removed on purpose
+go, delete its copy from the newest backup.
+
+After each append anipv also records the length of this device's file
+(`~/.local/share/anipv/<device>.jsonl.length`, never in the events folder).
+If the file is ever shorter than that (cut short by a crash, replaced by a
+sync tool or by another device with the same name), anipv writes nothing
+more to it, so new events don't bury what is missing and get synced to your
+other devices. Commands that record something fail, naming the newest
+backup, and `anipv doctor` says so. Keep a copy of the short file (it may
+hold events newer than any backup), restore the backup, then delete the
+`.length` file. If you shortened the log on purpose, only delete it. A
+folder that can't be reached (an unmounted share) doesn't count as a log
+that was cut, and moving `events_dir` elsewhere starts the guard afresh.
+
 ## Tips
 
 * `anipv export` prints the replayed state as JSON.

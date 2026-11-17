@@ -139,6 +139,13 @@ pub struct Paths {
     pub events_dir: PathBuf,
     /// Rebuildable SQLite cache.
     pub db_file: PathBuf,
+    /// Dated copies of the event log (see [`crate::events::backup`]).
+    pub backups_dir: PathBuf,
+    /// What anipv keeps about its own event log file: its length, for the
+    /// guard against appending to one that was cut short (see
+    /// [`crate::events::EventLog::guarded`]). Next to the index, never in
+    /// `events_dir`, which may be synced.
+    pub guard_dir: PathBuf,
     /// Cache dir (offline metadata DB, …).
     pub cache_dir: PathBuf,
     /// mpv IPC sockets.
@@ -167,6 +174,8 @@ impl Paths {
             config_file: config_dir.join("config.toml"),
             events_dir: data_dir.join("events"),
             db_file: data_dir.join("index.db"),
+            backups_dir: data_dir.join("backups"),
+            guard_dir: data_dir.to_path_buf(),
             runtime_dir: cache_dir.clone(),
             cache_dir,
         }
@@ -373,18 +382,42 @@ impl Config {
 /// Write `bytes` to `path` through a temporary file next to it (unique per
 /// process and call) that is renamed into place, so nothing ever reads half a
 /// file. The temporary file never stays behind.
+///
+/// The temporary file is flushed to disk before the rename, and the folder
+/// after it. Without that, a crash soon after can leave `path` empty: the
+/// rename reaches the disk before the data does (seen on btrfs).
 pub fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_file_with(path, bytes, true)
+}
+
+/// [`replace_file`], waiting for the disk only when `durable`: a file that is
+/// only a hint (lost in a crash, it is just older) needn't.
+pub fn replace_file_with(path: &Path, bytes: &[u8], durable: bool) -> std::io::Result<()> {
+    use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".part.{id}.{nanos}.{seq}", id = std::process::id()));
-    let res = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        if durable { f.sync_all() } else { Ok(()) }
+    };
+    let res = write().and_then(|()| std::fs::rename(&tmp, path));
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    res
+    res?;
+    if durable {
+        // The file is in place either way; this only makes the rename durable
+        // sooner. A folder that can't be opened or synced (some network file
+        // systems) is no reason to report the write as failed.
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
 }
 
 /// True if `name` is in `list` (directory names, any case).

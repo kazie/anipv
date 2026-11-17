@@ -2024,7 +2024,8 @@ mod tests {
         use std::time::{Duration, SystemTime};
         let dir = tempfile::tempdir().unwrap();
         assert!(OfflineDb::needs_update(dir.path()), "missing");
-        let file = std::fs::File::create(OfflineDb::path(dir.path())).unwrap();
+        std::fs::write(OfflineDb::path(dir.path()), offline::tests::SAMPLE).unwrap();
+        let file = std::fs::File::options().write(true).open(OfflineDb::path(dir.path())).unwrap();
         assert!(!OfflineDb::needs_update(dir.path()), "fresh");
         file.set_modified(SystemTime::now() - Duration::from_hours(8 * 24)).unwrap();
         assert!(OfflineDb::needs_update(dir.path()), "older than a week");

@@ -52,8 +52,9 @@ enum Cmd {
         #[arg(long)]
         forget_gone: bool,
     },
-    /// Scan every media folder, then update metadata as the TUI does on start
-    /// (and the offline database weekly). Made to run unattended, from a
+    /// Scan every media folder, back up the event log (when it changed), then
+    /// update metadata as the TUI does on start (and the offline database
+    /// weekly). Made to run unattended, from a
     /// systemd timer say: a folder that can't be reached (unmounted) or
     /// trouble with the network is a warning, and what is known stays as it was.
     Update {
@@ -641,6 +642,8 @@ fn print_scans(res: Vec<crate::app::RootScan>, lenient: bool, out: &mut impl Wri
 /// `update`: [`scan`] every root, leniently, then a background metadata
 /// update (see [`meta::background`]), which runs even if a root failed.
 fn update(ctx: &mut Ctx, no_meta: bool, out: &mut impl Write) -> Result<()> {
+    // First: the one thing that can't be rebuilt doesn't wait on the index.
+    back_up_events(ctx, out)?;
     let res = ctx.scan(None, &|_, _| {})?;
     let total = res.len();
     let failed = print_scans(res, true, out)?;
@@ -653,6 +656,29 @@ fn update(ctx: &mut Ctx, no_meta: bool, out: &mut impl Write) -> Result<()> {
         bail!("{failed} of {total} root(s) could not be scanned");
     }
     meta
+}
+
+/// `update`'s backup of the event log (see [`crate::events::backup`]). A
+/// failure is a warning, like the other troubles of an unattended update.
+fn back_up_events(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
+    use crate::events::backup;
+    let warn = yellow("!");
+    match backup::backup(ctx.log.dir(), &ctx.paths.backups_dir, now(), backup::KEPT) {
+        Ok(r) => {
+            if let Some(dir) = &r.made {
+                writeln!(out, "{ok} events: backed up to {dir}", ok = green("✓"), dir = dir.display())?;
+            }
+            for (name, why) in &r.kept {
+                let why = why.describe();
+                writeln!(out, "{warn} events: {name} {why}; its backup copy is kept")?;
+            }
+            for e in &r.unreadable {
+                writeln!(out, "{warn} events: can't back up {e}")?;
+            }
+        }
+        Err(e) => writeln!(out, "{warn} events: backup failed: {e:#}")?,
+    }
+    Ok(())
 }
 
 fn status_label(s: SeriesStatus) -> String {
@@ -1055,6 +1081,17 @@ fn doctor(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
     // Warnings are part of this report, not printed on their own.
     let Session { log, lib, .. } = ctx.session()?;
     writeln!(out, "{label} {n} events", label = bold("log:   "), n = log.events().len())?;
+    if let Some(s) = ctx.log.shrunk() {
+        let why = format!(
+            "this device's log {s}: nothing more is written to it until it is restored (see `anipv update`'s backups)"
+        );
+        writeln!(out, "  {fail} {why}", fail = red("✗"))?;
+    }
+    let backups = match crate::events::backup::newest(&ctx.paths.backups_dir) {
+        Some(dir) => format!("newest {dir}", dir = dir.display()),
+        None => format!("none yet in {dir} (`anipv update` makes them)", dir = ctx.paths.backups_dir.display()),
+    };
+    writeln!(out, "{label} {backups}", label = bold("backup:"))?;
     for w in &lib.warnings {
         writeln!(out, "  {fail} {w}", fail = red("✗"))?;
     }

@@ -648,6 +648,45 @@ fn update_warns_about_unreachable_roots() {
         .stdout(predicate::str::contains("✓ Anime").and(predicate::str::contains("metadata").not()));
 }
 
+/// `update` keeps dated backups of the event log, `doctor` says where, and a
+/// log cut short takes no more events until it is restored.
+#[test]
+fn update_backs_up_the_event_log_and_a_cut_log_is_guarded() {
+    let d = demo();
+    let backups = d.path().join("data/backups");
+    anipv(d.path()).arg("doctor").assert().success().stdout(predicate::str::contains("backup: none yet"));
+    anipv(d.path())
+        .args(["update", "--no-meta"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ events: backed up to"));
+    let made: Vec<_> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().path()).collect();
+    let [day] = &made[..] else { panic!("one backup: {made:?}") };
+    let copied = std::fs::read_dir(day).unwrap().count();
+    let logs = std::fs::read_dir(d.path().join("data/events")).unwrap().count();
+    assert_eq!(copied, logs, "every log");
+    anipv(d.path())
+        .args(["update", "--no-meta"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backed up").not());
+    anipv(d.path()).arg("doctor").assert().success().stdout(predicate::str::contains("backup: newest"));
+
+    // This device appends (recording its log's length), then its log is cut.
+    anipv(d.path()).args(["status", "frieren", "paused"]).assert().success();
+    let own = d.path().join("data/events/desktop.jsonl");
+    let full = std::fs::read(&own).unwrap();
+    std::fs::write(&own, &full[..full.len() / 2]).unwrap();
+    anipv(d.path())
+        .args(["status", "frieren", "following"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing was written").and(predicate::str::contains("restore it from")));
+    anipv(d.path()).arg("doctor").assert().success().stdout(predicate::str::contains("shorter than the"));
+    std::fs::write(&own, &full).unwrap();
+    anipv(d.path()).args(["status", "frieren", "following"]).assert().success();
+}
+
 /// `anilist = false` (as in the demo) means no network from the CLI either.
 #[test]
 fn meta_refresh_respects_anilist_off() {
