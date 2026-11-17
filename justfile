@@ -157,6 +157,11 @@ _need-vhs:
         command -v "$tool" >/dev/null || { echo "error: just record needs $tool on PATH (see https://github.com/charmbracelet/vhs)" >&2; exit 1; }
     done
 
+# Compare how revision `old` and the working tree (or `new`) key your library
+# and what history each shows, on copies of your data (`--all` lists every file).
+rekey-check old *args:
+    cargo run --quiet --locked --example rekey_check -- {{old}} {{args}}
+
 # Update golden files after intentional changes (review the diff!).
 update-fixtures:
     UPDATE_FIXTURES=1 cargo test --test parser_corpus --test docs

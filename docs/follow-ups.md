@@ -12,8 +12,9 @@ every folder layout. The title's words count only when the title names the
 show the folder names, so a folder that names its season its own way
 (`Mob Psycho 100 II`, `Lupin III Part 2`) holds that season, not one more.
 The corners below are what that rule still gets wrong. Each one needs a
-check against a real library (old vs new code over a copy of `index.db`,
-every file whose series or episode changes) before it ships.
+check against a real library before it ships: `just rekey-check <rev>` runs
+that revision and the working tree over copies of your data and lists every
+file whose series or episode changes, and any history that doesn't follow.
 
 ### A season in a title that runs on (`Season 3 Part 2`)
 
@@ -90,9 +91,9 @@ recorded key and the file's key name the same show (equal once their
 season words and a trailing year are dropped, as `bare_key` in
 `src/index/classify.rs` compares them), or when the recorded key is one
 the file's folders could give. Then `classify` doesn't need to know how
-older versions keyed files. Before shipping it needs the same old-vs-new
-check against a real library, comparing every item's watch state, since
-it touches every event in the log rather than only files whose key changed.
+older versions keyed files. Before shipping it needs the same check
+(`just rekey-check`, which compares every file's watch state), since it
+touches every event in the log rather than only files whose key changed.
 
 ## `anipv doctor`: a file's embedded title
 

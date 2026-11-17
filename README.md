@@ -247,6 +247,7 @@ just demo             # try the TUI against a throwaway demo library
 just screenshots      # regenerate the SVGs in this README
 just record           # re-record the demo GIF and assets/tapes/all.txt (needs vhs and ttyd)
 just update-fixtures  # update golden files after an intentional change, then review
+just rekey-check v0.2.2 # how a keying change moves your library's files and history (on copies)
 just clean            # remove build artifacts
 just gc               # garbage-collect stale build artifacts (>14 days old, or e.g. `just gc 3`)
 just install          # install a release build to ~/.cargo/bin
@@ -269,6 +270,10 @@ the Nix store): it uses yours by itself under direnv, and asks you to leave a
   and review the diff.
 - `anipv doctor` lists files in your own library that parse without an episode
   number. Good candidates for new fixtures.
+- `just rekey-check <rev>` runs that revision and the working tree over
+  copies of your own library and reports every file whose series or episode
+  changes, and any watch history or status that doesn't follow it (exit 1).
+  Run it before shipping a change to parsing or keying.
 - The SVG screenshots are drawn with a fixed clock, so `just screenshots`
   changes them only when the screens change. The GIF is recorded in real time
   and never comes out byte-identical; `just record` also writes
