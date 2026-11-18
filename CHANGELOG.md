@@ -13,6 +13,11 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+### Fixed
+
+- The README's `anipv --help` screenshot shows what `anipv update` does
+  since 0.3.0 (the event log backup and new-episode announcements).
+
 ## [0.3.0] - 2026-11-18
 
 ### Added
