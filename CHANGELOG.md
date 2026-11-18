@@ -13,6 +13,8 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
 ### Added
 
 - `anipv update` can announce new episodes: with
