@@ -13,6 +13,8 @@ change too: it may be migrated or compacted (see
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-18
+
 ### Fixed
 
 - The README's `anipv --help` screenshot shows what `anipv update` does
