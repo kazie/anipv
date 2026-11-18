@@ -15,6 +15,13 @@ change too: it may be migrated or compacted (see
 
 ### Added
 
+- `anipv update` can announce new episodes: with
+  `on_new_episodes = ["notify-send", "anipv"]` in the config, it runs that
+  command for each followed series with a new episode on disk ("Frieren:
+  ep 7 is on disk"), once per episode. What was on disk when it first saw a
+  series isn't announced, nor what came while a series wasn't followed, nor
+  an episode you watched before it ran. If the command fails, the episodes
+  are announced again next time.
 - `anipv update` keeps dated copies of the event log in
   `~/.local/share/anipv/backups/` (the newest 30, at most one a day, made
   only when it grew); `anipv doctor` names the newest. A log that got

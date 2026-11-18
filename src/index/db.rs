@@ -7,6 +7,7 @@
 //! `UPGRADABLE` are upgraded in place instead (their changes were purely
 //! additive), so the files and their first-seen times survive.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -87,6 +88,14 @@ const FILE_CHANGES: &str = "file_changes";
 /// `kv` key counting the metadata writes (updates, links, renames), so an
 /// open TUI notices one made by another process.
 const META_SYNCS: &str = "meta_syncs";
+
+/// `kv` key prefix (followed by a series key) remembering the highest
+/// episode on disk `anipv update` has seen of the series, which decides what
+/// it announces (see [`crate::app::Ctx::claim_new_episodes`]).
+const NOTIFIED: &str = "notified:";
+
+/// Just past every `kv` key that starts with [`NOTIFIED`] (`;` follows `:`).
+const NOTIFIED_END: &str = "notified;";
 
 /// `kv` key prefixes followed by a root name, forgotten with the root.
 const ROOT_KEYS: [&str; 2] = [ROOT_MOUNTED, SCAN_TRIED];
@@ -798,7 +807,7 @@ impl Db {
     }
 
     /// All known prequel lists, by `AniList` id.
-    pub fn prequels(&self) -> Result<std::collections::HashMap<u64, Vec<u64>>> {
+    pub fn prequels(&self) -> Result<HashMap<u64, Vec<u64>>> {
         let mut st = self.conn.prepare_cached("SELECT anilist, prequels FROM prequels")?;
         let rows = st.query_map([], |r| {
             Ok((from_sql(r.get(0)?), serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default()))
@@ -807,7 +816,7 @@ impl Db {
     }
 
     /// All known sequel lists, by `AniList` id, with when they were fetched.
-    pub fn sequels(&self) -> Result<std::collections::HashMap<u64, (Vec<u64>, i64)>> {
+    pub fn sequels(&self) -> Result<HashMap<u64, (Vec<u64>, i64)>> {
         let mut st = self.conn.prepare_cached("SELECT anilist, sequels, fetched_at FROM sequels")?;
         let rows = st.query_map([], |r| {
             let ids = serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default();
@@ -817,7 +826,7 @@ impl Db {
     }
 
     /// All known related lists (relation, id), by `AniList` id.
-    pub fn related(&self) -> Result<std::collections::HashMap<u64, Vec<(String, u64)>>> {
+    pub fn related(&self) -> Result<HashMap<u64, Vec<(String, u64)>>> {
         let mut st = self.conn.prepare_cached("SELECT anilist, related FROM related")?;
         let rows = st.query_map([], |r| {
             Ok((from_sql(r.get(0)?), serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default()))
@@ -827,7 +836,7 @@ impl Db {
 
     /// Data on anime no series links, by `AniList` id (rows without a series
     /// key, `refreshed_at` when they were fetched).
-    pub fn anilist_media(&self) -> Result<std::collections::HashMap<u64, SeriesMeta>> {
+    pub fn anilist_media(&self) -> Result<HashMap<u64, SeriesMeta>> {
         let mut st = self.conn.prepare_cached(
             "SELECT '', anilist, title, episodes, status, format, year, next_ep, next_airing, fetched_at, 0,
                     score, popularity, titles, hashtags, studios, season
@@ -838,11 +847,50 @@ impl Db {
     }
 
     /// When each `AniList` id was last asked about, and whether it was found.
-    pub fn anilist_checks(&self) -> Result<std::collections::HashMap<u64, AnilistCheck>> {
+    pub fn anilist_checks(&self) -> Result<HashMap<u64, AnilistCheck>> {
         let mut st = self.conn.prepare_cached("SELECT anilist, checked_at, found FROM anilist_checks")?;
         let rows =
             st.query_map([], |r| Ok((from_sql(r.get(0)?), AnilistCheck { checked_at: r.get(1)?, found: r.get(2)? })))?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Every series' new-episode mark (`notified:<series key>` in `kv`), by series key.
+    pub fn notified_marks(&self) -> Result<HashMap<String, crate::model::EpNo>> {
+        let mut st = self.conn.prepare_cached("SELECT k, v FROM kv WHERE k >= ?1 AND k < ?2")?;
+        let rows = st.query_map([NOTIFIED, NOTIFIED_END], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut marks = HashMap::new();
+        for row in rows {
+            let (k, v) = row?;
+            if let (Some(series), Ok(ep)) = (k.strip_prefix(NOTIFIED), v.parse()) {
+                marks.insert(series.to_string(), ep);
+            }
+        }
+        Ok(marks)
+    }
+
+    /// Set a series' new-episode mark.
+    pub fn set_notified_mark(&self, series: &str, ep: crate::model::EpNo) -> Result<()> {
+        write_kv(&self.conn, &format!("{NOTIFIED}{series}"), &ep.to_string())
+    }
+
+    /// Put a series' new-episode mark back to `to`, but only while it is
+    /// still `from`: another process may have moved it on since.
+    pub fn restore_notified_mark(&self, series: &str, from: crate::model::EpNo, to: crate::model::EpNo) -> Result<()> {
+        let k = format!("{NOTIFIED}{series}");
+        self.conn
+            .execute("UPDATE kv SET v = ?3 WHERE k = ?1 AND v = ?2", params![k, from.to_string(), to.to_string()])?;
+        Ok(())
+    }
+
+    /// Run `f` in one write transaction, committed when it returns `Ok` and
+    /// rolled back otherwise. It starts by taking the write lock, so another
+    /// process doing the same waits for it rather than reading what this one
+    /// is about to change.
+    pub fn atomically<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
+        let out = f(self)?;
+        tx.commit()?;
+        Ok(out)
     }
 
     /// Run `f` with all its reads seeing one state of the database (a read

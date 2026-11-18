@@ -83,6 +83,14 @@ specials_dirs = [
     "Omake",
 ]
 
+# ---- Notifications --------------------------------------------------------
+
+# A command `anipv update` runs for each followed series with a new episode on
+# disk, with a message ("Frieren: ep 7 is on disk") as its last argument.
+# Each episode once; what was on disk before is never announced. Empty = off.
+# on_new_episodes = ["notify-send", "anipv"]
+on_new_episodes = []
+
 # ---- Metadata (network) ---------------------------------------------------
 
 # Network metadata: airing info, episode counts and scores from AniList

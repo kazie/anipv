@@ -219,8 +219,7 @@ fn link(ctx: &Ctx, s: &mut Session, query: &str, anilist: u64, out: &mut impl Wr
 /// again); so is an event log that can't be read in full, which leaves
 /// metadata alone. Series the update finished are completed, as after any
 /// command that writes.
-pub(super) fn background(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
-    let mut s = ctx.loaded()?;
+pub(super) fn background(ctx: &Ctx, mut s: Session, out: &mut impl Write) -> Result<()> {
     if s.lib.partial_history {
         let why = "part of the event log can't be read (see the warning above); metadata left as it was";
         return print_warnings(out, [why]);

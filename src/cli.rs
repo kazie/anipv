@@ -5,6 +5,8 @@ mod meta;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use clap::builder::styling::{AnsiColor, Effects, Styles};
@@ -14,6 +16,7 @@ use crate::app::{Ctx, Session, find_series, parse_episode_list, queue_new};
 use crate::config::{Config, Paths, RootKind};
 use crate::events::{EventBody, Recorded, now};
 use crate::fmt::{ago, ago_opt, bold, cyan, dim, green, magenta, pad, red, yellow};
+use crate::library::Library;
 use crate::model::{ItemKind, SeriesStatus, WatchState};
 
 const STYLES: Styles = Styles::styled()
@@ -52,9 +55,10 @@ enum Cmd {
         #[arg(long)]
         forget_gone: bool,
     },
-    /// Scan every media folder, back up the event log (when it changed), then
-    /// update metadata as the TUI does on start (and the offline database
-    /// weekly). Made to run unattended, from a
+    /// Back up the event log (when it changed), scan every media folder, run
+    /// `on_new_episodes` for new episodes of followed series, then update
+    /// metadata as the TUI does on start (and the offline database weekly).
+    /// Made to run unattended, from a
     /// systemd timer say: a folder that can't be reached (unmounted) or
     /// trouble with the network is a warning, and what is known stays as it was.
     Update {
@@ -647,7 +651,10 @@ fn update(ctx: &mut Ctx, no_meta: bool, out: &mut impl Write) -> Result<()> {
     let res = ctx.scan(None, &|_, _| {})?;
     let total = res.len();
     let failed = print_scans(res, true, out)?;
-    let meta = if no_meta { Ok(()) } else { meta::background(ctx, out) };
+    // One library for what follows (built after the scan, so it has its files).
+    let session = ctx.loaded()?;
+    announce_new_episodes(ctx, &session.lib, out)?;
+    let meta = if no_meta { Ok(()) } else { meta::background(ctx, session, out) };
     if failed > 0 {
         // The scan's error is returned; the metadata one is still told.
         if let Err(e) = &meta {
@@ -679,6 +686,65 @@ fn back_up_events(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
         Err(e) => writeln!(out, "{warn} events: backup failed: {e:#}")?,
     }
     Ok(())
+}
+
+/// How long `on_new_episodes` may run before `update` stops waiting for it.
+const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `update`'s new-episode announcements: claim them (see
+/// [`Ctx::claim_new_episodes`]; marks move even when `on_new_episodes` is
+/// empty), then run `on_new_episodes` once per message. An announcement whose
+/// command fails is put back for the next update. Trouble is a warning, like
+/// the other troubles of an unattended update.
+fn announce_new_episodes(ctx: &Ctx, lib: &Library, out: &mut impl Write) -> Result<()> {
+    let warn = yellow("!");
+    let claimed = match ctx.claim_new_episodes(lib) {
+        Ok(c) => c,
+        Err(e) => return Ok(writeln!(out, "{warn} new episodes: {e:#}")?),
+    };
+    let Some((cmd, args)) = ctx.cfg.on_new_episodes.split_first() else { return Ok(()) };
+    for a in &claimed {
+        let message = &a.message;
+        writeln!(out, "{ok} new: {message}", ok = green("✓"))?;
+        let mut command = Command::new(cmd);
+        command.args(args).arg(message).stdin(Stdio::null());
+        let failed = match run_for(&mut command, ANNOUNCE_TIMEOUT) {
+            Ok(Some(status)) if status.success() => None,
+            Ok(Some(status)) => Some(format!("{cmd} {status}")),
+            // It may have shown the message: not tried again.
+            Ok(None) => {
+                let secs = ANNOUNCE_TIMEOUT.as_secs();
+                writeln!(out, "{warn} on_new_episodes: {cmd} still running after {secs}s; stopped it")?;
+                None
+            }
+            Err(e) => Some(format!("can't run {cmd}: {e}")),
+        };
+        if let Some(why) = failed {
+            writeln!(out, "{warn} on_new_episodes: {why} (tried again next update)")?;
+            if let Err(e) = ctx.unclaim(a) {
+                writeln!(out, "{warn} on_new_episodes: {e:#}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run `command` for at most `limit`: its exit status, or `None` when it was
+/// still running then (it is killed).
+fn run_for(command: &mut Command, limit: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let mut child = command.spawn()?;
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn status_label(s: SeriesStatus) -> String {
@@ -1169,6 +1235,18 @@ fn export(ctx: &Ctx, out: &mut impl Write) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command still running after the limit is stopped, and says so.
+    #[test]
+    fn announcing_commands_are_stopped_after_the_limit() {
+        let quick = run_for(Command::new("true").stdin(Stdio::null()), ANNOUNCE_TIMEOUT);
+        assert!(quick.unwrap().is_some_and(|s| s.success()));
+        let start = Instant::now();
+        let mut sleep = Command::new("sleep");
+        sleep.arg("10");
+        assert_eq!(run_for(&mut sleep, Duration::from_millis(200)).unwrap(), None);
+        assert!(start.elapsed() < Duration::from_secs(5), "killed, not waited for");
+    }
 
     /// A command that fails after recording (its output closed, say) still
     /// completes what it finished, and its error is what is returned.
