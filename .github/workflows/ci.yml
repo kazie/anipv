@@ -61,8 +61,22 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
       - run: rustc --version && cargo --version
       # The real-mpv playback test (it skips itself without these); once is enough.
+      # Their packages (~77 MB) come from GitHub's cache, not Ubuntu's mirror,
+      # which has taken 10 minutes for them; a stale cache only fetches what
+      # changed. On a bad day the test is skipped rather than CI held up.
       - if: matrix.toolchain == 'stable'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mpv ffmpeg
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: apt-mpv-ffmpeg-ubuntu-24.04-v1
+      - if: matrix.toolchain == 'stable'
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" mpv ffmpeg
+          sudo chown -R "$USER" ~/apt-archives
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
