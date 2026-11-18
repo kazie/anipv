@@ -14,7 +14,7 @@ use crate::index::classify::{Classified, FileClass, classify_rows};
 use crate::index::db::{AnilistCheck, MatchAttempt, OFFLINE_DB_VERSION, ScanStats, ScanTry, SeriesMeta};
 use crate::index::scan::scan_root;
 use crate::library::{Library, Series};
-use crate::model::{ItemKey, SeriesStatus, WatchState};
+use crate::model::{EpNo, ItemKey, SeriesStatus, WatchState};
 use crate::mpv::{Outcome, PlayFile, outcome};
 
 /// Start of the message for a failed event log write.
@@ -665,7 +665,7 @@ fn whole_series_items(s: &Series) -> Vec<ItemKey> {
     // numbered on from the last (13–24 of a 12-episode season) has no 1–12.
     let total = s.total().unwrap_or(0);
     if s.episodes().filter_map(|i| i.key.ep).all(|ep| ep.whole() <= total) {
-        items.extend((1..=total).map(|n| ItemKey::episode(crate::model::EpNo::new(n))));
+        items.extend((1..=total).map(|n| ItemKey::episode(EpNo::new(n))));
     }
     items
 }
@@ -843,6 +843,82 @@ impl Ctx {
     }
 }
 
+/// A new-episode message claimed by [`Ctx::claim_new_episodes`].
+#[derive(Debug)]
+pub struct Announcement {
+    /// What to say (`Frieren: ep 7 is on disk`, say).
+    pub message: String,
+    /// The series.
+    series: String,
+    /// Its mark before the claim, put back by [`Ctx::unclaim`].
+    before: EpNo,
+    /// Its mark after the claim.
+    claimed: EpNo,
+}
+
+impl Ctx {
+    /// Move each series' mark up to its highest episode on disk, and return
+    /// what to announce: followed series with unwatched episodes on disk
+    /// numbered past their mark.
+    ///
+    /// Marks move for every series, whatever its status and whether anything
+    /// is announced, so a series followed again or announcements turned on
+    /// later don't announce what came meanwhile. A series seen for the first
+    /// time (the first run, a rebuilt index) only gets its mark: what is on
+    /// disk already is never announced. All in one transaction, so two
+    /// updates at once don't both claim an episode. Refused while part of the
+    /// event log can't be read: what is watched isn't known then.
+    pub fn claim_new_episodes(&self, lib: &Library) -> Result<Vec<Announcement>> {
+        if lib.partial_history {
+            bail!("not checked, part of the event log can't be read");
+        }
+        self.db.atomically(|db| {
+            let marks = db.notified_marks()?;
+            let mut claimed = Vec::new();
+            for s in &lib.series {
+                let Some(latest) = s.latest_on_disk() else { continue };
+                let mark = marks.get(&s.key).copied();
+                if mark.is_some_and(|m| latest <= m) {
+                    continue;
+                }
+                if let Some(before) = mark
+                    && s.status == SeriesStatus::Following
+                    && let Some(message) = new_episode_message(s, before)
+                {
+                    claimed.push(Announcement { message, series: s.key.clone(), before, claimed: latest });
+                }
+                db.set_notified_mark(&s.key, latest)?;
+            }
+            Ok(claimed)
+        })
+    }
+
+    /// Put back the mark of an announcement that couldn't be made, so the
+    /// next update claims it again (unless another update moved it on).
+    pub fn unclaim(&self, a: &Announcement) -> Result<()> {
+        self.db.restore_notified_mark(&a.series, a.claimed, a.before)
+    }
+}
+
+/// What to say about `s`'s unwatched episodes on disk numbered past `seen`:
+/// `Frieren: ep 7 is on disk`, `Frieren: 3 new (ep 5–7)`, or with gaps
+/// `Frieren: 2 new (ep 5, 7)`. `None` when there are none (watched already).
+fn new_episode_message(s: &Series, seen: EpNo) -> Option<String> {
+    let eps = s.unwatched_on_disk_after(seen);
+    let (title, n) = (&s.title, eps.len());
+    let (first, last) = (eps.first()?, eps.last()?);
+    let run = eps.iter().all(|e| e.is_whole()) && eps.windows(2).all(|w| w[1] == w[0].plus(1));
+    Some(match n {
+        1 => format!("{title}: ep {first} is on disk"),
+        _ if run => format!("{title}: {n} new (ep {first}–{last})"),
+        _ => {
+            let shown: Vec<String> = eps.iter().take(5).map(ToString::to_string).collect();
+            let more = if n > 5 { ", …" } else { "" };
+            format!("{title}: {n} new (ep {shown}{more})", shown = shown.join(", "))
+        }
+    })
+}
+
 /// Queue entries for up to `n` new episodes of `s`, skipping items for which `skip` is true.
 pub fn queue_new(s: &Series, n: usize, skip: impl Fn(&ItemKey) -> bool) -> Vec<QueueEntry> {
     s.queue_candidates(n, skip)
@@ -918,10 +994,10 @@ pub fn parse_episode_list(spec: &str) -> Result<Vec<ItemKey>> {
             Some((a, b)) => {
                 let a: u32 = a.trim().parse().context("bad range start")?;
                 let b: u32 = b.trim().parse().context("bad range end")?;
-                if b < a || b - a > 5000 || b > crate::model::EpNo::MAX {
+                if b < a || b - a > 5000 || b > EpNo::MAX {
                     bail!("bad range {part}");
                 }
-                out.extend((a..=b).map(|n| ItemKey::episode(crate::model::EpNo::new(n))));
+                out.extend((a..=b).map(|n| ItemKey::episode(EpNo::new(n))));
             }
             None => out.push(ItemKey::episode(part.parse().map_err(anyhow::Error::msg)?)),
         }

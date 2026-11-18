@@ -71,6 +71,10 @@ pub struct Config {
     /// Minutes a scan stays fresh: the TUI doesn't scan on start when every
     /// root was looked at more recently (by `anipv update`, say); 0 always scans.
     pub scan_fresh_for: u64,
+    /// Command `anipv update` runs, with a message as its last argument, for
+    /// each followed series with a new episode on disk (`notify-send`, say);
+    /// empty runs nothing.
+    pub on_new_episodes: Vec<String>,
     /// Directory names that are never scanned.
     pub ignore_dirs: Vec<String>,
     /// Directory names whose contents are extras (NCOP, menus, …).
@@ -101,6 +105,7 @@ impl Default for Config {
             remote_auto: true,
             roots: Vec::new(),
             scan_fresh_for: 30,
+            on_new_episodes: Vec::new(),
             ignore_dirs: ["Screens", "Screenshots", "Thumbs", "@eaDir", "lost+found"].map(String::from).to_vec(),
             extras_dirs: [
                 "Extras",

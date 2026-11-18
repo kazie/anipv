@@ -171,6 +171,12 @@ because a folder couldn't be read. With `refresh_untracked = true` it also
 refreshes the series you don't track, a few at a time (see
 [Privacy](#privacy)).
 
+Want to hear about new episodes? With
+`on_new_episodes = ["notify-send", "anipv"]` in the config, each run sends a
+desktop notification for every followed series with a new episode on disk
+("Frieren: ep 7 is on disk"), once per episode; see
+[docs/config.md](docs/config.md).
+
 Each run also first keeps a dated copy of your event log (one for each day
 it grew, the newest 30) in `~/.local/share/anipv/backups/`; see
 [docs/events.md](docs/events.md#backups-and-the-shrink-guard).

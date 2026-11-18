@@ -687,6 +687,60 @@ fn update_backs_up_the_event_log_and_a_cut_log_is_guarded() {
     anipv(d.path()).args(["status", "frieren", "following"]).assert().success();
 }
 
+/// `update` runs `on_new_episodes` once for each new episode of a followed
+/// series: never for what was on disk when it first looked, nor twice, nor
+/// for one already watched, nor for what came while the series was paused.
+/// A command that fails is a warning, and the episode is tried again.
+#[test]
+fn update_announces_new_episodes_once() {
+    let d = demo();
+    let said = d.path().join("said.txt");
+    let config = d.path().join("config/config.toml");
+    let mut cfg = anipv::config::Config::load(&config).unwrap();
+    let script = format!("printf '%s\\n' \"$1\" >> '{said}'", said = said.display());
+    cfg.on_new_episodes = vec!["/bin/sh".into(), "-c".into(), script, "sh".into()];
+    cfg.save(&config).unwrap();
+    let update = || anipv(d.path()).args(["update", "--no-meta"]).assert().success();
+    let said_lines = || std::fs::read_to_string(&said).unwrap_or_default();
+
+    update().stdout(predicate::str::contains("new:").not());
+    assert_eq!(said_lines(), "", "what is on disk already isn't announced");
+
+    let downloads = d.path().join("media/Downloads");
+    std::fs::write(downloads.join("[GroupA] Dandadan S2 - 09 (1080p) [DDDD0009].mkv"), "").unwrap();
+    std::fs::write(downloads.join("[GroupA] Dandadan S2 - 10 (1080p) [DDDD0010].mkv"), "").unwrap();
+    update().stdout(predicate::str::contains("✓ new: Dandadan S2: 2 new (ep 9–10)"));
+    assert_eq!(said_lines(), "Dandadan S2: 2 new (ep 9–10)\n");
+    update().stdout(predicate::str::contains("new:").not());
+    assert_eq!(said_lines().lines().count(), 1, "once");
+
+    // Watched before `update` saw it: nothing to announce.
+    std::fs::write(downloads.join("[GroupA] Dandadan S2 - 11 (1080p) [DDDD0011].mkv"), "").unwrap();
+    anipv(d.path()).args(["scan"]).assert().success();
+    anipv(d.path()).args(["mark", "dandadan s2", "11"]).assert().success();
+    update().stdout(predicate::str::contains("new:").not());
+
+    // What came while it was paused isn't announced when it is followed again.
+    anipv(d.path()).args(["status", "dandadan s2", "paused"]).assert().success();
+    std::fs::write(downloads.join("[GroupA] Dandadan S2 - 12 (1080p) [DDDD0012].mkv"), "").unwrap();
+    update().stdout(predicate::str::contains("new:").not());
+    anipv(d.path()).args(["status", "dandadan s2", "following"]).assert().success();
+    update().stdout(predicate::str::contains("new:").not());
+
+    // A command that can't run puts the episode back for the next update.
+    let working = cfg.on_new_episodes.clone();
+    cfg.on_new_episodes = vec!["/nonexistent/notify".into()];
+    cfg.save(&config).unwrap();
+    std::fs::write(downloads.join("[GroupA] Dandadan S2 - 13 (1080p) [DDDD0013].mkv"), "").unwrap();
+    std::fs::write(downloads.join("[GroupA] Dandadan S2 - 15 (1080p) [DDDD0015].mkv"), "").unwrap();
+    update().stdout(predicate::str::contains("! on_new_episodes: can't run /nonexistent/notify"));
+    cfg.on_new_episodes = working;
+    cfg.save(&config).unwrap();
+    update().stdout(predicate::str::contains("✓ new: Dandadan S2: 2 new (ep 13, 15)"));
+    assert_eq!(said_lines().lines().last(), Some("Dandadan S2: 2 new (ep 13, 15)"));
+    assert_eq!(said_lines().lines().count(), 2);
+}
+
 /// `anilist = false` (as in the demo) means no network from the CLI either.
 #[test]
 fn meta_refresh_respects_anilist_off() {

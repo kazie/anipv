@@ -249,6 +249,19 @@ impl Series {
         self.items.iter().filter(|i| i.key.kind != ItemKind::Extra && i.present()).count()
     }
 
+    /// Unwatched episodes on disk numbered past `ep`, in order, each once.
+    pub fn unwatched_on_disk_after(&self, ep: EpNo) -> Vec<EpNo> {
+        let mut eps: Vec<EpNo> = self
+            .episodes()
+            .filter(|i| i.present() && !i.state.is_watched())
+            .filter_map(|i| i.key.ep)
+            .filter(|e| *e > ep)
+            .collect();
+        eps.sort_unstable();
+        eps.dedup();
+        eps
+    }
+
     /// Highest episode number on disk.
     pub fn latest_on_disk(&self) -> Option<EpNo> {
         self.episodes().filter(|i| i.present()).filter_map(|i| i.key.ep).max()
