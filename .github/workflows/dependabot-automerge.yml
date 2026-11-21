@@ -1,22 +1,29 @@
 name: Dependabot auto-merge
 
-# Turns on auto-merge for Dependabot's minor and patch updates; GitHub merges
-# them once the required checks on master pass. Majors are left for review.
+# Turns on auto-merge for every Dependabot update except majors; GitHub merges them once the required
+# checks on master pass (ruleset "master": CI's jobs). Majors are assigned to the repo owner: the assignment
+# is the notification that a person is needed. dependabot-attention.yml does the same when a check fails.
 on: pull_request
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   automerge:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-24.04
+    env:
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      OWNER: ${{ github.repository_owner }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - id: meta
         uses: dependabot/fetch-metadata@v3
-      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+      - id: auto
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
         run: gh pr merge --auto --merge "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.auto.outcome == 'skipped'
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/assignees" -f "assignees[]=$OWNER" --silent
